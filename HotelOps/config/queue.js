@@ -79,4 +79,8 @@ module.exports = {
   REQUEST: "daily_breakage_request",
   RESPONSE: "daily_breakage_response",
 },
+GATEPASS: {
+  REQUEST: "gatepass_request_queue",
+  RESPONSE: "gatepass_response_queue",
+},
 };
