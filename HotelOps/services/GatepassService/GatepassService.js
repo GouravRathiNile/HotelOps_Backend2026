@@ -6,7 +6,7 @@ const generateUrl = require("../../AzurConfigration/Gatepass/AzureGetData");
 const { generatePdf, loadLogo } = require("../../utils/pdfHelper");
 const PdfPrinter = require("pdfmake");
 const path = require("path");
-const  EQUIPMENT_DETAIL_PDF_FONTS = {
+const  RGP_DETAIL_PDF_FONTS = {
   Roboto: {
     normal: path.join(process.cwd(), "fonts/Roboto-Regular.ttf"),
     bold: path.join(process.cwd(), "fonts/Roboto-Medium.ttf"),
@@ -5428,8 +5428,5771 @@ const getRGPPendingReturnReport = async (data) => {
     );
   }
 };
+// ========================================================================PDF
+const getRGPReportOrganizationName = async (organizationID) => {
+  if (!organizationID) return "All Organizations";
+  const result = await pool.query(
+    `SELECT OrganizationName FROM Organization_Master WHERE OrganizationID = $1 LIMIT 1;`,
+    [organizationID],
+  );
+  return result.rows[0]?.organizationname || "-";
+};
+// ============================================================RGP List Report PDF
+const getRGPListReportPdf = async (data) => {
+  try {
+    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const values = [];
+    const conditions = [
+      "m.IsDeleted = FALSE",
+    ];
+
+    // ============================================================
+    // Organization Filter
+    // ============================================================
+
+    if (data.OrganizationID) {
+      values.push(data.OrganizationID);
+
+      conditions.push(
+        `m.OrganizationID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // From Date
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(data.FromDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+    // ============================================================
+    // To Date
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(data.ToDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+    // ============================================================
+    // Department Filter
+    // ============================================================
+
+    if (data.DepartmentID) {
+      values.push(data.DepartmentID);
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // RGP Status Report Filter
+    // ============================================================
+
+    const reportStatus =
+      String(data.Status || "").trim();
+
+    switch (reportStatus) {
+      case "All RGP Open":
+        conditions.push(`
+          UPPER(m.Status) IN (
+            'PENDING',
+            'APPROVED'
+          )
+        `);
+        break;
+
+      case "All RGP Out":
+        conditions.push(`
+          UPPER(m.Status) IN (
+            'CHECKED OUT',
+            'RETURN PENDING'
+          )
+        `);
+        break;
+
+      case "All RGP Closed":
+        conditions.push(`
+          UPPER(m.Status) = 'RETURNED'
+        `);
+        break;
+
+      case "All RGP Cancelled":
+        conditions.push(`
+          UPPER(m.Status) IN (
+            'CANCELLED',
+            'REJECTED'
+          )
+        `);
+        break;
+
+      case "All RGP Overdue":
+        conditions.push(`
+          m.ExpectedReturnDate <
+            (CURRENT_DATE - INTERVAL '30 days')
+
+          AND UPPER(m.Status) IN (
+            'CHECKED OUT',
+            'RETURN PENDING'
+          )
+        `);
+        break;
+    }
+
+    // ============================================================
+    // RGP Number Filter
+    // ============================================================
+
+    if (data.RGPNumber) {
+      values.push(data.RGPNumber);
+
+      conditions.push(
+        `m.RGPNumber = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Vendor Filter
+    // ============================================================
+
+    if (data.VendorName) {
+      values.push(
+        `%${String(data.VendorName).trim()}%`,
+      );
+
+      conditions.push(
+        `m.VendorName ILIKE $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Search
+    // ============================================================
+
+    if (data.Search) {
+      values.push(
+        `%${String(data.Search).trim()}%`,
+      );
+
+      const searchIndex = values.length;
+
+      conditions.push(`
+        (
+          CAST(m.RGPNumber AS TEXT)
+            ILIKE $${searchIndex}
+
+          OR m.VendorName
+            ILIKE $${searchIndex}
+
+          OR m.Company
+            ILIKE $${searchIndex}
+
+          OR m.ContactNumber
+            ILIKE $${searchIndex}
+
+          OR m.TakenBy
+            ILIKE $${searchIndex}
+
+          OR d.DepartmentName
+            ILIKE $${searchIndex}
+
+          OR EXISTS (
+            SELECT 1
+            FROM Gatepass_RGP_Entry_Item_Details si
+            WHERE si.RGPID = m.RGPID
+              AND si.IsDeleted = FALSE
+              AND si.ItemName
+                ILIKE $${searchIndex}
+          )
+        )
+      `);
+    }
+
+    const whereClause =
+      conditions.length
+        ? `WHERE ${conditions.join(" AND ")}`
+        : "";
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.RGPID,
+          m.RGPNumber,
+
+          m.OrganizationID,
+
+          m.VendorName,
+          m.ContactNumber,
+          m.Company,
+
+          m.ExpectedReturnDate,
+
+          m.DepartmentID,
+          d.DepartmentName,
+
+          m.TakenBy,
+
+          m.Status,
+
+          m.CreatedDate
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID =
+            m.DepartmentID
+
+${whereClause}
+
+        ORDER BY
+          m.CreatedDate DESC,
+          m.RGPID DESC;
+        `,
+        values,
+      );
+
+    const relatedRecords = await attachRGPRelatedData(result.rows);
+    const reportData = result.rows.map((row, index) => ({
+      ...row,
+      expectedreturndate: formatDate(row.expectedreturndate),
+      createddate: formatDate(row.createddate),
+      Items: relatedRecords[index].Items,
+      Approvals: relatedRecords[index].Approvals,
+    }));
+
+    // Each item gets its own row; show parent details only on the first row.
+    const pdfRows = reportData.flatMap((rgp) => {
+      const items = Array.isArray(rgp.Items) && rgp.Items.length ? rgp.Items : [{}];
+      return items.map((item, index) => ({
+        RGPNumber: index === 0 ? rgp.rgpnumber : "-",
+        PersonName: index === 0 ? rgp.takenby : "-",
+        Company: index === 0 ? rgp.company : "-",
+        ExpectedReturnDate: index === 0 ? rgp.expectedreturndate : "-",
+        DepartmentName: index === 0 ? rgp.departmentname : "-",
+        CreatedDate: index === 0 ? rgp.createddate : "-",
+        ItemName: item.ItemName ?? item.itemname ?? "-",
+        Quantity: item.Quantity ?? item.quantity ?? "-",
+      }));
+    });
+    // PDF Metadata / Applied Filters
+    // ============================================================
+
+    const metadata = [
+      { label: "Organization", value: organizationName },
+      {
+        label: "From Date",
+        value:
+          data.FromDate
+            ? formatDate(data.FromDate)
+            : "All",
+      },
+      {
+        label: "To Date",
+        value:
+          data.ToDate
+            ? formatDate(data.ToDate)
+            : "All",
+      },
+      {
+        label: "Status",
+        value:
+          reportStatus || "All",
+      },
+      {
+        label: "Department",
+        value:
+          data.DepartmentName ||
+          "All Department",
+      },
+    ];
+
+    // ============================================================
+    // Generate PDF
+    // ============================================================
+
+    const pdfBuffer =
+      await generatePdf({
+        title:
+          "RGP LIST REPORT",
+
+        reportName:
+          "RGP List Report",
+
+        organizationId:
+          data.OrganizationID,
+
+        orientation:
+          "landscape",
+
+        metadata,
+
+        columns: [
+          {
+            header: "RGP No.",
+            key: "RGPNumber",
+            width: 55,
+          },
+          {
+            header: "Person Name",
+            key: "PersonName",
+            width: 85,
+          },
+          {
+            header: "Company",
+            key: "Company",
+            width: 90,
+          },
+          {
+            header: "Exp. Return Date",
+            key: "ExpectedReturnDate",
+            width: 85,
+          },
+          {
+            header: "Department",
+            key: "DepartmentName",
+            width: 85,
+          },
+          {
+            header: "Created Date",
+            key: "CreatedDate",
+            width: 95,
+          },
+          {
+            header: "Item Name",
+            key: "ItemName",
+            width: "*",
+          },
+          {
+            header: "Qty.",
+            key: "Quantity",
+            width: 45,
+            align: "center",
+          },
+        ],
+
+        rows:
+          pdfRows,
+      });
+
+    return {
+      success: true,
+      message:
+        "RGP list report PDF generated successfully.",
+      data: pdfBuffer,
+    };
+  } catch (error) {
+    console.error(
+      "RGP List Report PDF Error:",
+      error,
+    );
+
+    return databaseFailure(
+      error,
+      "Generate RGP list report PDF",
+    );
+  }
+};
+// ============================================================Department Wise Report PDF
+const getRGPDepartmentWiseReportPdf = async (data) => {
+  try {
+    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const values = [];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+    ];
+
+    // ============================================================
+    // Organization Filter
+    // ============================================================
+
+    if (data.OrganizationID) {
+      values.push(
+        data.OrganizationID,
+      );
+
+      conditions.push(
+        `m.OrganizationID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // From Date
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(
+        data.FromDate,
+      );
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+    // ============================================================
+    // To Date
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(
+        data.ToDate,
+      );
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+    // ============================================================
+    // Department Filter
+    // ============================================================
+
+    if (data.DepartmentID) {
+      values.push(
+        data.DepartmentID,
+      );
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Search Department
+    // ============================================================
+
+    if (data.Search) {
+      values.push(
+        `%${String(data.Search).trim()}%`,
+      );
+
+      conditions.push(
+        `d.DepartmentName ILIKE $${values.length}`,
+      );
+    }
+
+    const whereClause =
+      `WHERE ${conditions.join(" AND ")}`;
+
+    // ============================================================
+    // Department Wise Report
+    // SAME QUERY / SAME CONDITIONS AS GET API
+    // Only pagination removed for PDF
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.DepartmentID,
+
+          COALESCE(
+            d.DepartmentName,
+            'Unknown'
+          ) AS DepartmentName,
+
+          COUNT(
+            DISTINCT m.RGPID
+          )::BIGINT AS TotalRGP,
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE UPPER(m.Status)
+              IN (
+                'PENDING',
+                'APPROVED'
+              )
+          )::BIGINT AS OpenRGP,
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE UPPER(m.Status)
+              IN (
+                'CHECKED OUT',
+                'RETURN PENDING'
+              )
+          )::BIGINT AS OutRGP,
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE UPPER(m.Status)
+              = 'RETURNED'
+          )::BIGINT AS ClosedRGP,
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE UPPER(m.Status)
+              IN (
+                'CANCELLED',
+                'REJECTED'
+              )
+          )::BIGINT AS CancelledRGP,
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE
+              m.ExpectedReturnDate <
+                (
+                  CURRENT_DATE -
+                  INTERVAL '30 days'
+                )
+
+              AND UPPER(m.Status)
+                IN (
+                  'CHECKED OUT',
+                  'RETURN PENDING'
+                )
+          )::BIGINT AS OverdueRGP
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID =
+            m.DepartmentID
+
+        ${whereClause}
+
+        GROUP BY
+          m.DepartmentID,
+          d.DepartmentName
+
+        ORDER BY
+          TotalRGP DESC,
+          d.DepartmentName ASC;
+        `,
+        values,
+      );
+
+    // ============================================================
+    // SAME RESPONSE MAPPING AS GET API
+    // ============================================================
+
+    const reportData =
+      result.rows.map(
+        (row) => ({
+          DepartmentID:
+            Number(
+              row.departmentid,
+            ),
+
+          DepartmentName:
+            row.departmentname,
+
+          TotalRGP:
+            Number(
+              row.totalrgp,
+            ),
+
+          OpenRGP:
+            Number(
+              row.openrgp,
+            ),
+
+          OutRGP:
+            Number(
+              row.outrgp,
+            ),
+
+          ClosedRGP:
+            Number(
+              row.closedrgp,
+            ),
+
+          CancelledRGP:
+            Number(
+              row.cancelledrgp,
+            ),
+
+          OverdueRGP:
+            Number(
+              row.overduergp,
+            ),
+        }),
+      );
+
+    // ============================================================
+    // PDF Generate
+    // ============================================================
+
+    const pdfBuffer =
+      await generatePdf({
+        title:
+          "RGP DEPARTMENT WISE REPORT",
+
+        reportName:
+          "RGP Department Wise Report",
+
+        organizationId:
+          data.OrganizationID,
+
+        orientation:
+          "landscape",
+
+        metadata: [
+          { label: "Organization", value: organizationName },
+          {
+            label: "From Date",
+            value:
+              data.FromDate
+                ? formatDate(
+                    data.FromDate,
+                  )
+                : "All",
+          },
+          {
+            label: "To Date",
+            value:
+              data.ToDate
+                ? formatDate(
+                    data.ToDate,
+                  )
+                : "All",
+          },
+          {
+            label: "Department",
+            value:
+              data.DepartmentName ||
+              "All Department",
+          },
+        ],
+
+        columns: [
+          {
+            header: "Department",
+            key: "DepartmentName",
+            width: "*",
+          },
+          {
+            header: "Total RGP",
+            key: "TotalRGP",
+            width: 70,
+            align: "center",
+          },
+          {
+            header: "Open RGP",
+            key: "OpenRGP",
+            width: 70,
+            align: "center",
+          },
+          {
+            header: "Out RGP",
+            key: "OutRGP",
+            width: 70,
+            align: "center",
+          },
+          {
+            header: "Closed RGP",
+            key: "ClosedRGP",
+            width: 75,
+            align: "center",
+          },
+          {
+            header: "Cancelled RGP",
+            key: "CancelledRGP",
+            width: 85,
+            align: "center",
+          },
+          {
+            header: "Overdue RGP",
+            key: "OverdueRGP",
+            width: 80,
+            align: "center",
+          },
+        ],
+
+        rows:
+          reportData,
+      });
+
+    return {
+      success: true,
+      message:
+        "RGP department wise report PDF generated successfully.",
+      data: pdfBuffer,
+    };
+  } catch (error) {
+    console.error(
+      "RGP Department Wise Report PDF Error:",
+      error,
+    );
+
+    return databaseFailure(
+      error,
+      "Generate RGP department wise report PDF",
+    );
+  }
+};
+// ============================================================RGP Vendor Wise Report PDF
+const getRGPVendorWiseReportPdf = async (data) => {
+  try {
+    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const values = [];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+    ];
+
+    // ============================================================
+    // Organization Filter
+    // ============================================================
+
+    if (data.OrganizationID) {
+      values.push(
+        data.OrganizationID,
+      );
+
+      conditions.push(
+        `m.OrganizationID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // From Date - Created Date
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(
+        data.FromDate,
+      );
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+    // ============================================================
+    // To Date - Created Date
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(
+        data.ToDate,
+      );
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+    // ============================================================
+    // Vendor Filter
+    // ============================================================
+
+    if (data.VendorName) {
+      values.push(
+        `%${String(
+          data.VendorName,
+        ).trim()}%`,
+      );
+
+      conditions.push(
+        `m.VendorName ILIKE $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Search
+    // ============================================================
+
+    if (data.Search) {
+      values.push(
+        `%${String(
+          data.Search,
+        ).trim()}%`,
+      );
+
+      const searchIndex =
+        values.length;
+
+      conditions.push(`
+        (
+          m.VendorName
+            ILIKE $${searchIndex}
+
+          OR m.Company
+            ILIKE $${searchIndex}
+        )
+      `);
+    }
+
+    const whereClause =
+      `WHERE ${conditions.join(
+        " AND ",
+      )}`;
+
+    // ============================================================
+    // Vendor Wise Report
+    // SAME QUERY / SAME CONDITIONS AS GET API
+    // Only LIMIT/OFFSET removed for PDF
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.VendorName,
+
+          COUNT(
+            DISTINCT m.RGPID
+          )::BIGINT AS TotalRGP,
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE UPPER(m.Status)
+              IN (
+                'PENDING',
+                'APPROVED'
+              )
+          )::BIGINT AS OpenRGP,
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE UPPER(m.Status)
+              IN (
+                'CHECKED OUT',
+                'RETURN PENDING'
+              )
+          )::BIGINT AS OutRGP,
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE UPPER(m.Status)
+              = 'RETURNED'
+          )::BIGINT AS ClosedRGP,
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE UPPER(m.Status)
+              IN (
+                'CANCELLED',
+                'REJECTED'
+              )
+          )::BIGINT AS CancelledRGP,
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE
+              m.ExpectedReturnDate <
+                (
+                  CURRENT_DATE -
+                  INTERVAL '30 days'
+                )
+
+              AND UPPER(m.Status)
+                IN (
+                  'CHECKED OUT',
+                  'RETURN PENDING'
+                )
+          )::BIGINT AS OverdueRGP
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        ${whereClause}
+
+        GROUP BY
+          m.VendorName
+
+        ORDER BY
+          TotalRGP DESC,
+          m.VendorName ASC;
+        `,
+        values,
+      );
+
+    // ============================================================
+    // SAME DATA MAPPING AS GET API
+    // ============================================================
+
+    const reportData =
+      result.rows.map(
+        (row) => ({
+          VendorName:
+            row.vendorname,
+
+          TotalRGP:
+            Number(
+              row.totalrgp,
+            ),
+
+          OpenRGP:
+            Number(
+              row.openrgp,
+            ),
+
+          OutRGP:
+            Number(
+              row.outrgp,
+            ),
+
+          ClosedRGP:
+            Number(
+              row.closedrgp,
+            ),
+
+          CancelledRGP:
+            Number(
+              row.cancelledrgp,
+            ),
+
+          OverdueRGP:
+            Number(
+              row.overduergp,
+            ),
+        }),
+      );
+
+    // ============================================================
+    // Generate PDF
+    // ============================================================
+
+    const pdfBuffer =
+      await generatePdf({
+        title:
+          "RGP VENDOR WISE REPORT",
+
+        reportName:
+          "RGP Vendor Wise Report",
+
+        organizationId:
+          data.OrganizationID,
+
+        orientation:
+          "landscape",
+
+        metadata: [
+          { label: "Organization", value: organizationName },
+          {
+            label: "From Date",
+            value:
+              data.FromDate
+                ? formatDate(
+                    data.FromDate,
+                  )
+                : "All",
+          },
+          {
+            label: "To Date",
+            value:
+              data.ToDate
+                ? formatDate(
+                    data.ToDate,
+                  )
+                : "All",
+          },
+          {
+            label: "Vendor",
+            value:
+              data.VendorName ||
+              "All Vendor",
+          },
+        ],
+
+        columns: [
+          {
+            header: "Vendor Name",
+            key: "VendorName",
+            width: "*",
+          },
+          {
+            header: "Total RGP",
+            key: "TotalRGP",
+            width: 75,
+            align: "center",
+          },
+          {
+            header: "Open RGP",
+            key: "OpenRGP",
+            width: 75,
+            align: "center",
+          },
+          {
+            header: "Out RGP",
+            key: "OutRGP",
+            width: 75,
+            align: "center",
+          },
+          {
+            header: "Closed RGP",
+            key: "ClosedRGP",
+            width: 80,
+            align: "center",
+          },
+          {
+            header: "Cancelled RGP",
+            key: "CancelledRGP",
+            width: 90,
+            align: "center",
+          },
+          {
+            header: "Overdue RGP",
+            key: "OverdueRGP",
+            width: 85,
+            align: "center",
+          },
+        ],
+
+        rows:
+          reportData,
+      });
+
+    return {
+      success: true,
+      message:
+        "RGP vendor wise report PDF generated successfully.",
+      data: pdfBuffer,
+    };
+  } catch (error) {
+    console.error(
+      "RGP Vendor Wise Report PDF Error:",
+      error,
+    );
+
+    return databaseFailure(
+      error,
+      "Generate RGP vendor wise report PDF",
+    );
+  }
+};
+// ============================================================Pending Return Item Report PDF
+const getRGPPendingReturnReportPdf = async (data) => {
+  try {
+    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const values = [];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+      "i.IsDeleted = FALSE",
+
+      // Only material which is currently outside
+      `UPPER(m.Status) IN (
+        'CHECKED OUT',
+        'RETURN PENDING'
+      )`,
+
+      // Only pending items
+      "i.RemainingQuantity > 0",
+    ];
+
+    // ============================================================
+    // Organization Filter
+    // ============================================================
+
+    if (data.OrganizationID) {
+      values.push(
+        data.OrganizationID,
+      );
+
+      conditions.push(
+        `m.OrganizationID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // From Date - Created Date
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(
+        data.FromDate,
+      );
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+    // ============================================================
+    // To Date - Created Date
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(
+        data.ToDate,
+      );
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+    // ============================================================
+    // Department Filter
+    // ============================================================
+
+    if (data.DepartmentID) {
+      values.push(
+        data.DepartmentID,
+      );
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // RGP Number Filter
+    // ============================================================
+
+    if (data.RGPNumber) {
+      values.push(
+        data.RGPNumber,
+      );
+
+      conditions.push(
+        `m.RGPNumber = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Vendor Filter
+    // ============================================================
+
+    if (data.VendorName) {
+      values.push(
+        `%${String(
+          data.VendorName,
+        ).trim()}%`,
+      );
+
+      conditions.push(
+        `m.VendorName ILIKE $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Search
+    // ============================================================
+
+    if (data.Search) {
+      values.push(
+        `%${String(
+          data.Search,
+        ).trim()}%`,
+      );
+
+      const searchIndex =
+        values.length;
+
+      conditions.push(`
+        (
+          CAST(m.RGPNumber AS TEXT)
+            ILIKE $${searchIndex}
+
+          OR m.VendorName
+            ILIKE $${searchIndex}
+
+          OR m.Company
+            ILIKE $${searchIndex}
+
+          OR d.DepartmentName
+            ILIKE $${searchIndex}
+
+          OR i.ItemName
+            ILIKE $${searchIndex}
+
+          OR i.MakeModel
+            ILIKE $${searchIndex}
+
+          OR i.SerialNumber
+            ILIKE $${searchIndex}
+        )
+      `);
+    }
+
+    const whereClause =
+      `WHERE ${conditions.join(
+        " AND ",
+      )}`;
+
+    // ============================================================
+    // Pending Return Report
+    // SAME QUERY / SAME CONDITIONS AS GET API
+    // Only LIMIT / OFFSET removed for PDF
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.RGPID,
+          m.RGPNumber,
+
+          m.OrganizationID,
+
+          m.ExpectedReturnDate,
+
+          m.VendorName,
+          m.ContactNumber,
+          m.Company,
+
+          m.DepartmentID,
+          d.DepartmentName,
+
+          m.TakenBy,
+          m.Status,
+
+          m.CheckoutDateTime,
+          m.CheckoutBy,
+
+          m.CreatedDate,
+
+          i.RGPItemID,
+          i.ItemName,
+          i.Specification,
+
+          i.Quantity,
+          i.Unit,
+          i.Rate,
+
+          i.MakeModel,
+          i.SerialNumber,
+
+          i.ReturnedQuantity,
+          i.RemainingQuantity,
+          i.IsReturned,
+
+          CASE
+            WHEN
+              m.ExpectedReturnDate <
+                CURRENT_DATE
+            THEN
+              (
+                CURRENT_DATE -
+                m.ExpectedReturnDate
+              )
+            ELSE 0
+          END AS OverdueDays,
+
+          CASE
+            WHEN
+              m.ExpectedReturnDate <
+                (
+                  CURRENT_DATE -
+                  INTERVAL '30 days'
+                )
+            THEN TRUE
+            ELSE FALSE
+          END AS IsOverdue
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        INNER JOIN Gatepass_RGP_Entry_Item_Details i
+          ON i.RGPID =
+            m.RGPID
+          AND i.IsDeleted =
+            FALSE
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID =
+            m.DepartmentID
+
+        ${whereClause}
+
+        ORDER BY
+          m.ExpectedReturnDate ASC,
+          m.RGPNumber DESC,
+          i.RGPItemID ASC;
+        `,
+        values,
+      );
+
+    // ============================================================
+    // SAME DATA MAPPING AS GET API
+    // ============================================================
+
+    const reportData =
+      result.rows.map(
+        (row) => ({
+          RGPID:
+            Number(row.rgpid),
+
+          RGPNumber:
+            Number(row.rgpnumber),
+
+          OrganizationID:
+            Number(
+              row.organizationid,
+            ),
+
+          ExpectedReturnDate:
+            row.expectedreturndate,
+
+          VendorName:
+            row.vendorname,
+
+          ContactNumber:
+            row.contactnumber,
+
+          Company:
+            row.company,
+
+          DepartmentID:
+            Number(
+              row.departmentid,
+            ),
+
+          DepartmentName:
+            row.departmentname,
+
+          TakenBy:
+            row.takenby,
+
+          Status:
+            row.status,
+
+          CheckoutDateTime:
+            row.checkoutdatetime,
+
+          CheckoutBy:
+            row.checkoutby,
+
+          CreatedDate:
+            row.createddate,
+
+          RGPItemID:
+            Number(
+              row.rgpitemid,
+            ),
+
+          ItemName:
+            row.itemname,
+
+          Specification:
+            row.specification,
+
+          Quantity:
+            Number(
+              row.quantity,
+            ),
+
+          Unit:
+            row.unit,
+
+          Rate:
+            row.rate !== null
+              ? Number(row.rate)
+              : null,
+
+          MakeModel:
+            row.makemodel,
+
+          SerialNumber:
+            row.serialnumber,
+
+          ReturnedQuantity:
+            Number(
+              row.returnedquantity || 0,
+            ),
+
+          RemainingQuantity:
+            Number(
+              row.remainingquantity || 0,
+            ),
+
+          IsReturned:
+            row.isreturned,
+
+          OverdueDays:
+            Number(
+              row.overduedays || 0,
+            ),
+
+          IsOverdue:
+            row.isoverdue,
+        }),
+      );
+
+    // ============================================================
+    // PDF Generate
+    // ============================================================
+
+    const pdfBuffer =
+      await generatePdf({
+        title:
+          "RGP PENDING RETURN REPORT",
+
+        reportName:
+          "RGP Pending Return Report",
+
+        organizationId:
+          data.OrganizationID,
+
+        orientation:
+          "landscape",
+
+        metadata: [
+          { label: "Organization", value: organizationName },
+          {
+            label: "From Date",
+            value:
+              data.FromDate
+                ? formatDate(
+                    data.FromDate,
+                  )
+                : "All",
+          },
+          {
+            label: "To Date",
+            value:
+              data.ToDate
+                ? formatDate(
+                    data.ToDate,
+                  )
+                : "All",
+          },
+          {
+            label: "Vendor",
+            value:
+              data.VendorName ||
+              "All Vendor",
+          },
+          {
+            label: "RGP No.",
+            value:
+              data.RGPNumber ||
+              "All",
+          },
+        ],
+
+        columns: [
+          {
+            header: "RGP No.",
+            key: "RGPNumber",
+            width: 40,
+          },
+          {
+            header: "Vendor Name",
+            key: "VendorName",
+            width: 70,
+          },
+          {
+            header: "Company",
+            key: "Company",
+            width: 70,
+          },
+          {
+            header: "Department",
+            key: "DepartmentName",
+            width: 70,
+          },
+          {
+            header: "Exp. Return",
+            key: "ExpectedReturnDate",
+            width: 62,
+            value: (row) =>
+              row.ExpectedReturnDate
+                ? formatDate(
+                    row.ExpectedReturnDate,
+                  )
+                : "-",
+          },
+          {
+            header: "Item Name",
+            key: "ItemName",
+            width: 75,
+          },
+          {
+            header: "Qty.",
+            key: "Quantity",
+            width: 35,
+            align: "center",
+          },
+          {
+            header: "Returned",
+            key: "ReturnedQuantity",
+            width: 40,
+            align: "center",
+          },
+          {
+            header: "Remaining",
+            key: "RemainingQuantity",
+            width: 52,
+            align: "center",
+          },
+          {
+            header: "Unit",
+            key: "Unit",
+            width: 35,
+          },
+          {
+            header: "Status",
+            key: "Status",
+            width: 62,
+          },
+          {
+            header: "Overdue Days",
+            key: "OverdueDays",
+            width: 55,
+            align: "center",
+          },
+        ],
+
+        rows:
+          reportData,
+      });
+
+    return {
+      success: true,
+      message:
+        "RGP pending return report PDF generated successfully.",
+      data: pdfBuffer,
+    };
+  } catch (error) {
+    console.error(
+      "RGP Pending Return Report PDF Error:",
+      error,
+    );
+
+    return databaseFailure(
+      error,
+      "Generate RGP pending return report PDF",
+    );
+  }
+};
+// ============================================================RGP Details PDF
+const generateRGPDetailPdf = async (data) => {
+  try {
+
+    // ============================================================
+    // Validate
+    // ============================================================
+
+    const rgpID =
+      Number(data.RGPID);
+
+    if (
+      !Number.isInteger(rgpID) ||
+      rgpID <= 0
+    ) {
+      return fail(
+        "Valid RGPID is required.",
+        400,
+      );
+    }
 
 
+    // ============================================================
+    // SAME GET BY ID API
+    // No Duplicate SQL
+    // ============================================================
+
+    const rgpResult =
+      await getRGPById({
+        RGPID: rgpID,
+      });
+
+    if (!rgpResult.success) {
+      return rgpResult;
+    }
+
+    const detail =
+      rgpResult.data;
+
+
+    // ============================================================
+    // PDF Design
+    // ============================================================
+
+    const COLORS = {
+      navy:
+        "#082B5C",
+
+      label:
+        "#082B5C",
+
+      text:
+        "#172033",
+
+      muted:
+        "#64748B",
+
+      border:
+        "#CFD7E3",
+
+      labelBackground:
+        "#F4F6F9",
+    };
+
+
+    const displayValue = (
+      value,
+    ) =>
+      value === null ||
+      value === undefined ||
+      String(value).trim() === ""
+        ? "-"
+        : String(value);
+
+
+    const displayDate = (
+      value,
+    ) =>
+      value
+        ? formatDate(value)
+        : "-";
+
+
+    // ============================================================
+    // Canvas Helpers
+    // ============================================================
+
+    const line = (
+      x1,
+      y1,
+      x2,
+      y2,
+      lineWidth = 1.1,
+    ) => ({
+      type: "line",
+      x1,
+      y1,
+      x2,
+      y2,
+      lineWidth,
+      lineColor:
+        COLORS.navy,
+    });
+
+
+    const rect = (
+      x,
+      y,
+      w,
+      h,
+      r = 0,
+    ) => ({
+      type: "rect",
+      x,
+      y,
+      w,
+      h,
+      r,
+      lineWidth: 1.1,
+      lineColor:
+        COLORS.navy,
+    });
+
+
+    const ellipse = (
+      x,
+      y,
+      r1,
+      r2 = r1,
+    ) => ({
+      type: "ellipse",
+      x,
+      y,
+      r1,
+      r2,
+      lineWidth: 1.1,
+      lineColor:
+        COLORS.navy,
+    });
+
+
+    // ============================================================
+    // Icons
+    // ============================================================
+
+    const fieldIcon = (
+      type,
+    ) => {
+
+      const icons = {
+
+        number: [
+          rect(
+            2,
+            3,
+            14,
+            12,
+            1,
+          ),
+
+          line(
+            5,
+            7,
+            13,
+            7,
+          ),
+
+          line(
+            5,
+            11,
+            13,
+            11,
+          ),
+        ],
+
+
+        organization: [
+          rect(
+            4,
+            2,
+            10,
+            15,
+            1,
+          ),
+
+          line(
+            1,
+            17,
+            17,
+            17,
+          ),
+
+          line(
+            7,
+            6,
+            7,
+            8,
+          ),
+
+          line(
+            11,
+            6,
+            11,
+            8,
+          ),
+
+          line(
+            7,
+            11,
+            7,
+            13,
+          ),
+
+          line(
+            11,
+            11,
+            11,
+            13,
+          ),
+        ],
+
+
+        calendar: [
+          rect(
+            1,
+            4,
+            16,
+            13,
+            1,
+          ),
+
+          line(
+            1,
+            8,
+            17,
+            8,
+          ),
+
+          line(
+            5,
+            2,
+            5,
+            6,
+          ),
+
+          line(
+            13,
+            2,
+            13,
+            6,
+          ),
+        ],
+
+
+        vendor: [
+          ellipse(
+            9,
+            6,
+            4,
+          ),
+
+          line(
+            3,
+            17,
+            15,
+            17,
+          ),
+
+          line(
+            5,
+            17,
+            5,
+            13,
+          ),
+
+          line(
+            13,
+            17,
+            13,
+            13,
+          ),
+        ],
+
+
+        phone: [
+          rect(
+            3,
+            1,
+            12,
+            17,
+            2,
+          ),
+
+          line(
+            7,
+            15,
+            11,
+            15,
+          ),
+        ],
+
+
+        department: [
+          rect(
+            2,
+            4,
+            14,
+            13,
+            1,
+          ),
+
+          line(
+            6,
+            1,
+            12,
+            1,
+          ),
+
+          line(
+            9,
+            1,
+            9,
+            4,
+          ),
+        ],
+
+
+        location: [
+          ellipse(
+            9,
+            7,
+            5,
+          ),
+
+          ellipse(
+            9,
+            7,
+            1.5,
+          ),
+
+          {
+            type:
+              "polyline",
+
+            points: [
+              {
+                x: 5,
+                y: 10,
+              },
+              {
+                x: 9,
+                y: 18,
+              },
+              {
+                x: 13,
+                y: 10,
+              },
+            ],
+
+            lineWidth:
+              1.1,
+
+            lineColor:
+              COLORS.navy,
+          },
+        ],
+
+
+        status: [
+          ellipse(
+            9,
+            9,
+            7,
+          ),
+
+          line(
+            5,
+            9,
+            8,
+            12,
+          ),
+
+          line(
+            8,
+            12,
+            13,
+            6,
+          ),
+        ],
+
+
+        quantity: [
+          rect(
+            2,
+            3,
+            14,
+            12,
+            1,
+          ),
+
+          line(
+            5,
+            7,
+            13,
+            7,
+          ),
+
+          line(
+            5,
+            11,
+            13,
+            11,
+          ),
+        ],
+      };
+
+
+      const iconScale =
+        0.82;
+
+
+      return (
+        icons[type] ||
+        icons.quantity
+      ).map(
+        (shape) => {
+
+          const scaledShape = {
+            ...shape,
+
+            lineWidth:
+              (
+                shape.lineWidth ||
+                1
+              ) *
+              iconScale,
+          };
+
+
+          for (
+            const coordinate
+            of [
+              "x",
+              "y",
+              "x1",
+              "y1",
+              "x2",
+              "y2",
+              "w",
+              "h",
+              "r",
+              "r1",
+              "r2",
+            ]
+          ) {
+
+            if (
+              typeof scaledShape[
+                coordinate
+              ] ===
+              "number"
+            ) {
+              scaledShape[
+                coordinate
+              ] *=
+                iconScale;
+            }
+          }
+
+
+          if (
+            Array.isArray(
+              scaledShape.points,
+            )
+          ) {
+            scaledShape.points =
+              scaledShape.points.map(
+                (point) => ({
+                  x:
+                    point.x *
+                    iconScale,
+
+                  y:
+                    point.y *
+                    iconScale,
+                }),
+              );
+          }
+
+
+          return scaledShape;
+        },
+      );
+    };
+
+
+    // ============================================================
+    // Cell Helpers
+    // ============================================================
+
+    const labelCell = (
+      label,
+      icon,
+    ) => ({
+      columns: [
+        {
+          width:
+            22,
+
+          canvas:
+            fieldIcon(
+              icon,
+            ),
+
+          margin:
+            [
+              0,
+              0,
+              0,
+              0,
+            ],
+        },
+
+        {
+          width:
+            "*",
+
+          text:
+            label,
+
+          style:
+            "fieldLabel",
+
+          margin:
+            [
+              2,
+              3,
+              0,
+              0,
+            ],
+        },
+      ],
+
+      fillColor:
+        COLORS.labelBackground,
+
+      margin:
+        [
+          8,
+          6,
+          5,
+          6,
+        ],
+    });
+
+
+    const valueCell = (
+      value,
+    ) => ({
+      text:
+        displayValue(
+          value,
+        ),
+
+      style:
+        "fieldValue",
+
+      margin:
+        [
+          9,
+          8,
+          7,
+          7,
+        ],
+    });
+
+
+    const tableLayout = {
+      hLineColor:
+        () =>
+          COLORS.border,
+
+      vLineColor:
+        () =>
+          COLORS.border,
+
+      hLineWidth:
+        () =>
+          0.7,
+
+      vLineWidth:
+        () =>
+          0.7,
+
+      paddingLeft:
+        () =>
+          0,
+
+      paddingRight:
+        () =>
+          0,
+
+      paddingTop:
+        () =>
+          0,
+
+      paddingBottom:
+        () =>
+          0,
+    };
+
+
+    const sectionHeading = (
+      title,
+    ) => ({
+      text:
+        title,
+
+      fontSize:
+        11,
+
+      bold:
+        true,
+
+      color:
+        COLORS.navy,
+
+      margin:
+        [
+          0,
+          4,
+          0,
+          7,
+        ],
+    });
+
+
+    // ============================================================
+    // Logo
+    // ============================================================
+
+    const logo =
+      await loadLogo(
+        detail.OrganizationID,
+        data.logoUrl,
+      );
+
+
+    const generatedOn =
+      formatDate(
+        new Date(),
+        "DD MMM YYYY hh:mm A",
+      );
+
+
+    // ============================================================
+    // RGP Item Details Table
+    // ============================================================
+
+    const itemDetailsBody = [
+      [
+        {
+          text: "Sr.No.",
+          style: "tableHeader",
+          alignment: "center",
+        },
+        {
+          text: "Item Name",
+          style: "tableHeader",
+        },
+        {
+          text: "Specification",
+          style: "tableHeader",
+        },
+        {
+          text: "Qty.",
+          style: "tableHeader",
+          alignment: "center",
+        },
+        {
+          text: "Unit",
+          style: "tableHeader",
+          alignment: "center",
+        },
+        {
+          text: "Rate",
+          style: "tableHeader",
+          alignment: "center",
+        },
+        {
+          text: "Make / Model",
+          style: "tableHeader",
+        },
+        {
+          text: "Serial No.",
+          style: "tableHeader",
+        },
+        {
+          text: "Returned",
+          style: "tableHeader",
+          alignment: "center",
+        },
+        {
+          text: "Remaining",
+          style: "tableHeader",
+          alignment: "center",
+        },
+      ],
+    ];
+
+
+    if (
+      Array.isArray(detail.Items) &&
+      detail.Items.length > 0
+    ) {
+
+      detail.Items.forEach(
+        (item, index) => {
+
+          itemDetailsBody.push([
+            {
+              text:
+                index + 1,
+
+              style:
+                "tableValue",
+
+              alignment:
+                "center",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.ItemName,
+                ),
+
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.Specification,
+                ),
+
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.Quantity,
+                ),
+
+              style:
+                "tableValue",
+
+              alignment:
+                "center",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.Unit,
+                ),
+
+              style:
+                "tableValue",
+
+              alignment:
+                "center",
+            },
+
+            {
+              text:
+                item.Rate !== null &&
+                item.Rate !== undefined
+                  ? Number(
+                      item.Rate,
+                    ).toFixed(2)
+                  : "-",
+
+              style:
+                "tableValue",
+
+              alignment:
+                "center",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.MakeModel,
+                ),
+
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.SerialNumber,
+                ),
+
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.ReturnedQuantity,
+                ),
+
+              style:
+                "tableValue",
+
+              alignment:
+                "center",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.RemainingQuantity,
+                ),
+
+              style:
+                "tableValue",
+
+              alignment:
+                "center",
+            },
+          ]);
+        },
+      );
+
+    } else {
+
+      itemDetailsBody.push([
+        {
+          text:
+            "No RGP item details found.",
+
+          colSpan:
+            10,
+
+          alignment:
+            "center",
+
+          color:
+            COLORS.muted,
+
+          margin:
+            [
+              0,
+              8,
+              0,
+              8,
+            ],
+        },
+
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+      ]);
+    }
+
+
+    // ============================================================
+    // Approval Details Table
+    // ============================================================
+
+    const approvalDetailsBody = [
+      [
+        {
+          text: "Level",
+          style: "tableHeader",
+          alignment: "center",
+        },
+        {
+          text: "Role",
+          style: "tableHeader",
+        },
+        {
+          text: "Status",
+          style: "tableHeader",
+        },
+        {
+          text: "Action By",
+          style: "tableHeader",
+        },
+        {
+          text: "Remarks",
+          style: "tableHeader",
+        },
+      ],
+    ];
+
+
+    if (
+      Array.isArray(detail.Approvals) &&
+      detail.Approvals.length > 0
+    ) {
+
+      detail.Approvals.forEach(
+        (approval) => {
+
+          approvalDetailsBody.push([
+            {
+              text:
+                displayValue(
+                  approval.ApprovalLevel,
+                ),
+
+              style:
+                "tableValue",
+
+              alignment:
+                "center",
+            },
+
+            {
+              text:
+                displayValue(
+                  approval.ApprovalRole,
+                ),
+
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  approval.Status,
+                ),
+
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  approval.ActionBy,
+                ),
+
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  approval.Remarks,
+                ),
+
+              style:
+                "tableValue",
+            },
+          ]);
+        },
+      );
+
+    } else {
+
+      approvalDetailsBody.push([
+        {
+          text:
+            "No approval details found.",
+
+          colSpan:
+            5,
+
+          alignment:
+            "center",
+
+          color:
+            COLORS.muted,
+
+          margin:
+            [
+              0,
+              8,
+              0,
+              8,
+            ],
+        },
+
+        {},
+        {},
+        {},
+        {},
+      ]);
+    }
+
+
+    // ============================================================
+    // Document Definition
+    // ============================================================
+
+    const documentDefinition = {
+
+      pageSize:
+        "A4",
+
+      pageOrientation:
+        "portrait",
+
+      pageMargins:
+        [
+          22,
+          26,
+          22,
+          72,
+        ],
+
+
+      defaultStyle: {
+        font:
+          "Roboto",
+
+        fontSize:
+          9,
+
+        color:
+          COLORS.text,
+      },
+
+
+      content: [
+
+        // ========================================================
+        // Header
+        // ========================================================
+
+        {
+          table: {
+            widths: [
+              130,
+              "*",
+              80,
+            ],
+
+            body: [
+              [
+                logo
+                  ? {
+                      image:
+                        logo,
+
+                      fit:
+                        [
+                          88,
+                          50,
+                        ],
+
+                      border:
+                        [
+                          false,
+                          false,
+                          false,
+                          false,
+                        ],
+                    }
+                  : {
+                      text:
+                        "",
+
+                      border:
+                        [
+                          false,
+                          false,
+                          false,
+                          false,
+                        ],
+                    },
+
+
+                {
+                  text:
+                    "RGP Detail Report",
+
+                  style:
+                    "title",
+
+                  alignment:
+                    "center",
+
+                  margin:
+                    [
+                      0,
+                      18,
+                      0,
+                      0,
+                    ],
+
+                  border:
+                    [
+                      false,
+                      false,
+                      false,
+                      false,
+                    ],
+                },
+
+
+                {
+                  text:
+                    "",
+
+                  border:
+                    [
+                      false,
+                      false,
+                      false,
+                      false,
+                    ],
+                },
+              ],
+            ],
+          },
+
+          layout:
+            "noBorders",
+        },
+
+
+        // ========================================================
+        // Header Line
+        // ========================================================
+
+        {
+          canvas: [
+            {
+              type:
+                "line",
+
+              x1:
+                0,
+
+              y1:
+                0,
+
+              x2:
+                551,
+
+              y2:
+                0,
+
+              lineWidth:
+                0.8,
+
+              lineColor:
+                COLORS.navy,
+            },
+          ],
+
+          margin:
+            [
+              0,
+              7,
+              0,
+              14,
+            ],
+        },
+
+
+        // ========================================================
+        // RGP Details
+        // ========================================================
+
+        sectionHeading(
+          "RGP Details",
+        ),
+
+
+        {
+          table: {
+            widths: [
+              105,
+              "*",
+              105,
+              "*",
+            ],
+
+            body: [
+
+              // Row 1
+              [
+                labelCell(
+                  "RGP No.",
+                  "number",
+                ),
+
+                valueCell(
+                  detail.RGPNumber,
+                ),
+
+                labelCell(
+                  "Expected Return",
+                  "calendar",
+                ),
+
+                valueCell(
+                  displayDate(
+                    detail.ExpectedReturnDate,
+                  ),
+                ),
+              ],
+
+
+              // Row 2
+              [
+                labelCell(
+                  "Department",
+                  "department",
+                ),
+
+                valueCell(
+                  detail.DepartmentName,
+                ),
+
+                labelCell(
+                  "Status",
+                  "status",
+                ),
+
+                valueCell(
+                  detail.Status,
+                ),
+              ],
+
+
+              // Row 3
+              [
+                labelCell(
+                  "Vendor Name",
+                  "vendor",
+                ),
+
+                valueCell(
+                  detail.VendorName,
+                ),
+
+                labelCell(
+                  "Contact No.",
+                  "phone",
+                ),
+
+                valueCell(
+                  detail.ContactNumber,
+                ),
+              ],
+
+
+              // Row 4
+              [
+                labelCell(
+                  "Company",
+                  "organization",
+                ),
+
+                valueCell(
+                  detail.Company,
+                ),
+
+                labelCell(
+                  "Taken By",
+                  "vendor",
+                ),
+
+                valueCell(
+                  detail.TakenBy,
+                ),
+              ],
+
+
+              // Row 5
+              [
+                labelCell(
+                  "Address",
+                  "location",
+                ),
+
+                {
+                  ...valueCell(
+                    detail.Address,
+                  ),
+
+                  colSpan:
+                    3,
+                },
+
+                {},
+                {},
+              ],
+            ],
+          },
+
+          layout:
+            tableLayout,
+
+          margin:
+            [
+              0,
+              0,
+              0,
+              15,
+            ],
+        },
+
+
+        // ========================================================
+        // RGP Item Details
+        // ========================================================
+
+        sectionHeading(
+          "RGP Item Details",
+        ),
+
+
+        {
+          table: {
+            headerRows:
+              1,
+
+            dontBreakRows:
+              true,
+
+            widths: [
+              28,
+              58,
+              62,
+              32,
+              32,
+              40,
+              55,
+              55,
+              45,
+              50,
+            ],
+
+            body:
+              itemDetailsBody,
+          },
+
+          layout: {
+            hLineColor:
+              () =>
+                COLORS.border,
+
+            vLineColor:
+              () =>
+                COLORS.border,
+
+            hLineWidth:
+              () =>
+                0.7,
+
+            vLineWidth:
+              () =>
+                0.7,
+
+            paddingLeft:
+              () =>
+                4,
+
+            paddingRight:
+              () =>
+                4,
+
+            paddingTop:
+              () =>
+                6,
+
+            paddingBottom:
+              () =>
+                6,
+          },
+
+          margin:
+            [
+              0,
+              0,
+              0,
+              15,
+            ],
+        },
+
+
+        // ========================================================
+        // Approval Details
+        // ========================================================
+
+        sectionHeading(
+          "Approval Details",
+        ),
+
+
+        {
+          table: {
+            headerRows:
+              1,
+
+            dontBreakRows:
+              true,
+
+            widths: [
+              45,
+              70,
+              65,
+              95,
+              "*",
+            ],
+
+            body:
+              approvalDetailsBody,
+          },
+
+          layout: {
+            hLineColor:
+              () =>
+                COLORS.border,
+
+            vLineColor:
+              () =>
+                COLORS.border,
+
+            hLineWidth:
+              () =>
+                0.7,
+
+            vLineWidth:
+              () =>
+                0.7,
+
+            paddingLeft:
+              () =>
+                6,
+
+            paddingRight:
+              () =>
+                6,
+
+            paddingTop:
+              () =>
+                6,
+
+            paddingBottom:
+              () =>
+                6,
+          },
+        },
+      ],
+
+
+      // ==========================================================
+      // Footer
+      // ==========================================================
+
+      footer:
+        () => ({
+          margin:
+            [
+              22,
+              8,
+              22,
+              0,
+            ],
+
+          stack: [
+            {
+              canvas: [
+                {
+                  type:
+                    "line",
+
+                  x1:
+                    0,
+
+                  y1:
+                    0,
+
+                  x2:
+                    551,
+
+                  y2:
+                    0,
+
+                  lineWidth:
+                    0.7,
+
+                  lineColor:
+                    COLORS.navy,
+                },
+              ],
+
+              margin:
+                [
+                  0,
+                  0,
+                  0,
+                  8,
+                ],
+            },
+
+
+            {
+              columns: [
+                {
+                  stack: [
+                    {
+                      text:
+                        "Powered by HotelOps",
+
+                      bold:
+                        true,
+
+                      color:
+                        COLORS.navy,
+
+                      fontSize:
+                        8,
+                    },
+                  ],
+                },
+
+
+                {
+                  width:
+                    130,
+
+                  stack: [
+                    {
+                      text:
+                        `Generated On   :  ${generatedOn}`,
+
+                      fontSize:
+                        7,
+
+                      color:
+                        COLORS.label,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+
+
+      // ==========================================================
+      // Styles
+      // ==========================================================
+
+      styles: {
+
+        title: {
+          fontSize:
+            18,
+
+          bold:
+            true,
+
+          color:
+            COLORS.navy,
+        },
+
+
+        fieldLabel: {
+          fontSize:
+            8.5,
+
+          bold:
+            true,
+
+          color:
+            COLORS.label,
+        },
+
+
+        fieldValue: {
+          fontSize:
+            9,
+
+          color:
+            COLORS.text,
+        },
+
+
+        tableHeader: {
+          fontSize:
+            7,
+
+          bold:
+            true,
+
+          color:
+            COLORS.navy,
+
+          fillColor:
+            COLORS.labelBackground,
+
+          margin:
+            [
+              0,
+              2,
+              0,
+              2,
+            ],
+        },
+
+
+        tableValue: {
+          fontSize:
+            7,
+
+          color:
+            COLORS.text,
+
+          margin:
+            [
+              0,
+              2,
+              0,
+              2,
+            ],
+        },
+      },
+    };
+
+
+    // ============================================================
+    // Generate PDF Buffer
+    // ============================================================
+
+    const pdfBuffer =
+      await new Promise(
+        (
+          resolve,
+          reject,
+        ) => {
+          try {
+
+            const pdfDocument =
+              new PdfPrinter(
+                RGP_DETAIL_PDF_FONTS,
+              )
+                .createPdfKitDocument(
+                  documentDefinition,
+                );
+
+
+            const chunks = [];
+
+
+            pdfDocument.on(
+              "data",
+              (chunk) =>
+                chunks.push(
+                  chunk,
+                ),
+            );
+
+
+            pdfDocument.on(
+              "end",
+              () =>
+                resolve(
+                  Buffer.concat(
+                    chunks,
+                  ),
+                ),
+            );
+
+
+            pdfDocument.on(
+              "error",
+              reject,
+            );
+
+
+            pdfDocument.end();
+
+          } catch (error) {
+            reject(error);
+          }
+        },
+      );
+
+
+    // ============================================================
+    // Return
+    // ============================================================
+
+    return {
+      success:
+        true,
+
+      message:
+        "RGP detail PDF generated successfully.",
+
+      data:
+        pdfBuffer,
+
+      fileName:
+        `RGP-Detail-${detail.RGPNumber || rgpID}.pdf`,
+
+      contentType:
+        "application/pdf",
+    };
+
+  } catch (error) {
+
+    console.error(
+      "Generate RGP detail PDF error:",
+      error,
+    );
+
+
+    return databaseFailure(
+      error,
+      "Generate RGP detail PDF",
+    );
+  }
+};
+
+
+// ===========================================================================================NRGP
+// ============================================================Helpers
+// ======================== Default NRGP Approval Levels
+const DEFAULT_NRGP_APPROVALS = Object.freeze([
+  {
+    LevelNo: 1,
+    ApprovalRole: "HOD",
+  },
+  {
+    LevelNo: 2,
+    ApprovalRole: "DOF",
+  },
+  {
+    LevelNo: 3,
+    ApprovalRole: "GM",
+  },
+]);
+// ======================== NRGP Mapping Helpers
+const mapNRGPMaster = (row) => ({
+  NRGPID:
+    Number(row.nrgpid),
+
+  NRGPNumber:
+    Number(row.nrgpnumber),
+
+  OrganizationID:
+    Number(row.organizationid),
+
+  VendorName:
+    row.vendorname,
+
+  ContactNumber:
+    row.contactnumber,
+
+  Company:
+    row.company,
+
+  SendTo:
+    row.sendto,
+
+  DepartmentID:
+    row.departmentid
+      ? Number(row.departmentid)
+      : null,
+
+  DepartmentName:
+    row.departmentname,
+
+  Address:
+    row.address,
+
+  TakenBy:
+    row.takenby,
+
+  Status:
+    row.status,
+
+  CreatedBy:
+    row.createdby
+      ? Number(row.createdby)
+      : null,
+
+  CreatedDate:
+    row.createddate,
+
+  ModifiedBy:
+    row.modifiedby
+      ? Number(row.modifiedby)
+      : null,
+
+  ModifiedDate:
+    row.modifieddate,
+});
+// ========================NRGP Item Mapping
+const mapNRGPItem = (row) => ({
+  NRGPItemID:
+    Number(row.nrgpitemid),
+
+  NRGPID:
+    Number(row.nrgpid),
+
+  OrganizationID:
+    Number(row.organizationid),
+
+  ItemName:
+    row.itemname,
+
+  Specification:
+    row.specification,
+
+  Quantity:
+    Number(row.quantity),
+
+  Rate:
+    row.rate !== null
+      ? Number(row.rate)
+      : null,
+
+  MakeModel:
+    row.makemodel,
+
+  SerialNumber:
+    row.serialnumber,
+
+  CreatedBy:
+    row.createdby
+      ? Number(row.createdby)
+      : null,
+
+  CreatedDate:
+    row.createddate,
+
+  ModifiedBy:
+    row.modifiedby
+      ? Number(row.modifiedby)
+      : null,
+
+  ModifiedDate:
+    row.modifieddate,
+});
+// ========================NRGP Approval Mapping
+const mapNRGPApproval = (row) => ({
+  NRGPApprovalID:
+    Number(row.nrgpapprovalid),
+
+  NRGPID:
+    Number(row.nrgpid),
+
+  NRGPApprovalConfigID:
+    row.nrgpapprovalconfigid
+      ? Number(row.nrgpapprovalconfigid)
+      : null,
+
+  ApprovalLevel:
+    Number(row.approvallevel),
+
+  ApprovalRole:
+    row.approvalrole,
+
+  ApprovalOrder:
+    Number(row.approvalorder),
+
+  Status:
+    row.status,
+
+  StatusDateTime:
+    row.statusdatetime,
+
+  ActionBy:
+    row.actionby
+      ? Number(row.actionby)
+      : null,
+
+  Remarks:
+    row.remarks,
+});
+// ========================Attach NRGP Related Data
+const attachNRGPRelatedData = async (rows) => {
+  if (!rows.length) {
+    return [];
+  }
+
+  const NRGPIDs =
+    rows.map((row) =>
+      Number(row.nrgpid),
+    );
+
+  // ============================================================
+  // Items
+  // ============================================================
+
+  const itemResult =
+    await pool.query(
+      `
+      SELECT
+        NRGPItemID,
+        NRGPID,
+        OrganizationID,
+        ItemName,
+        Specification,
+        Quantity,
+        Rate,
+        MakeModel,
+        SerialNumber,
+        CreatedBy,
+        CreatedDate,
+        ModifiedBy,
+        ModifiedDate
+      FROM Gatepass_NRGP_Entry_Item_Details
+      WHERE NRGPID = ANY($1::BIGINT[])
+        AND IsDeleted = FALSE
+      ORDER BY NRGPItemID ASC;
+      `,
+      [NRGPIDs],
+    );
+
+  // ============================================================
+  // Approvals
+  // ============================================================
+
+  const approvalResult =
+    await pool.query(
+      `
+      SELECT
+        NRGPApprovalID,
+        NRGPID,
+        NRGPApprovalConfigID,
+        ApprovalLevel,
+        ApprovalRole,
+        ApprovalOrder,
+        Status,
+        StatusDateTime,
+        ActionBy,
+        Remarks,
+        CreatedBy,
+        CreatedDate,
+        ModifiedBy,
+        ModifiedDate
+      FROM Gatepass_NRGP_Approval
+      WHERE NRGPID = ANY($1::BIGINT[])
+        AND IsDeleted = FALSE
+      ORDER BY
+        NRGPID ASC,
+        ApprovalOrder ASC;
+      `,
+      [NRGPIDs],
+    );
+
+  // ============================================================
+  // Mapping
+  // ============================================================
+
+  const items =
+    itemResult.rows.map(
+      mapNRGPItem,
+    );
+
+  const approvals =
+    approvalResult.rows.map(
+      mapNRGPApproval,
+    );
+
+  // ============================================================
+  // Attach
+  // ============================================================
+
+  return rows.map((row) => {
+    const record =
+      mapNRGPMaster(row);
+
+    record.Items =
+      items.filter(
+        (item) =>
+          item.NRGPID ===
+          record.NRGPID,
+      );
+
+    record.Approvals =
+      approvals.filter(
+        (approval) =>
+          approval.NRGPID ===
+          record.NRGPID,
+      );
+
+    return record;
+  });
+};
+// ============================================================Create NRGP
+const createNRGP = async (data) => {
+  const client = await pool.connect();
+
+  try {
+    // ============================================================
+    // Validate Organization
+    // ============================================================
+
+    const organizationID = Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Validate Vendor
+    // ============================================================
+
+    if (
+      !data.VendorName ||
+      !String(data.VendorName).trim()
+    ) {
+      return fail(
+        "VendorName is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Validate Department
+    // ============================================================
+
+    const departmentID = Number(data.DepartmentID);
+
+    if (
+      !Number.isInteger(departmentID) ||
+      departmentID <= 0
+    ) {
+      return fail(
+        "Valid DepartmentID is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Validate Items
+    // ============================================================
+
+    if (
+      !Array.isArray(data.Items) ||
+      data.Items.length === 0
+    ) {
+      return fail(
+        "At least one item is required.",
+        400,
+      );
+    }
+
+    for (
+      let index = 0;
+      index < data.Items.length;
+      index++
+    ) {
+      const item = data.Items[index];
+
+      if (
+        !item.ItemName ||
+        !String(item.ItemName).trim()
+      ) {
+        return fail(
+          `ItemName is required for item ${index + 1}.`,
+          400,
+        );
+      }
+
+      const quantity = Number(item.Quantity);
+
+      if (
+        !Number.isFinite(quantity) ||
+        quantity <= 0
+      ) {
+        return fail(
+          `Valid Quantity is required for item ${index + 1}.`,
+          400,
+        );
+      }
+
+      if (
+        item.Rate !== undefined &&
+        item.Rate !== null &&
+        item.Rate !== ""
+      ) {
+        const rate = Number(item.Rate);
+
+        if (
+          !Number.isFinite(rate) ||
+          rate < 0
+        ) {
+          return fail(
+            `Valid Rate is required for item ${index + 1}.`,
+            400,
+          );
+        }
+      }
+    }
+
+    // ============================================================
+    // Begin Transaction
+    // ============================================================
+
+    await client.query("BEGIN");
+
+    // ============================================================
+    // Insert Master
+    // ============================================================
+
+    const masterResult = await client.query(
+      `
+      INSERT INTO Gatepass_NRGP_Entry_Master
+      (
+        OrganizationID,
+        VendorName,
+        ContactNumber,
+        Company,
+        SendTo,
+        DepartmentID,
+        Address,
+        TakenBy,
+        Status,
+        CreatedBy,
+        CreatedDate
+      )
+      VALUES
+      (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        'PENDING',
+        $9,
+        CURRENT_TIMESTAMP
+      )
+      RETURNING
+        NRGPID,
+        NRGPNumber;
+      `,
+      [
+        organizationID,
+        String(data.VendorName).trim(),
+
+        data.ContactNumber
+          ? String(data.ContactNumber).trim()
+          : null,
+
+        data.Company
+          ? String(data.Company).trim()
+          : null,
+
+        data.SendTo
+          ? String(data.SendTo).trim()
+          : null,
+
+        departmentID,
+
+        data.Address
+          ? String(data.Address).trim()
+          : null,
+
+        data.TakenBy
+          ? String(data.TakenBy).trim()
+          : null,
+
+        data.UserID || null,
+      ],
+    );
+
+    const NRGPID =
+      Number(masterResult.rows[0].nrgpid);
+
+    const NRGPNumber =
+      Number(masterResult.rows[0].nrgpnumber);
+
+    // ============================================================
+    // Insert Items
+    // ============================================================
+
+    for (const item of data.Items) {
+      await client.query(
+        `
+        INSERT INTO Gatepass_NRGP_Entry_Item_Details
+        (
+          NRGPID,
+          OrganizationID,
+          ItemName,
+          Specification,
+          Quantity,
+          Rate,
+          MakeModel,
+          SerialNumber,
+          CreatedBy,
+          CreatedDate
+        )
+        VALUES
+        (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          CURRENT_TIMESTAMP
+        );
+        `,
+        [
+          NRGPID,
+          organizationID,
+          String(item.ItemName).trim(),
+
+          item.Specification
+            ? String(item.Specification).trim()
+            : null,
+
+          Number(item.Quantity),
+
+          item.Rate !== undefined &&
+          item.Rate !== null &&
+          item.Rate !== ""
+            ? Number(item.Rate)
+            : null,
+
+          item.MakeModel
+            ? String(item.MakeModel).trim()
+            : null,
+
+          item.SerialNumber
+            ? String(item.SerialNumber).trim()
+            : null,
+
+          data.UserID || null,
+        ],
+      );
+    }
+
+    // ============================================================
+    // Get Approval Config
+    // ============================================================
+
+    const configResult = await client.query(
+      `
+      SELECT
+        NRGPApprovalConfigID,
+        ApprovalLevel,
+        ApprovalRole,
+        ApprovalOrder
+      FROM Gatepass_NRGP_Approval_Config
+      WHERE OrganizationID = $1
+        AND IsDeleted = FALSE
+      ORDER BY ApprovalOrder ASC;
+      `,
+      [organizationID],
+    );
+
+    // ============================================================
+    // Config / Default Approvals
+    // ============================================================
+
+    let approvalFlow = [];
+
+    if (configResult.rows.length > 0) {
+      approvalFlow = configResult.rows.map(
+        (row) => ({
+          NRGPApprovalConfigID:
+            Number(row.nrgpapprovalconfigid),
+
+          ApprovalLevel:
+            Number(row.approvallevel),
+
+          ApprovalRole:
+            row.approvalrole,
+
+          ApprovalOrder:
+            Number(row.approvalorder),
+        }),
+      );
+    } else {
+      approvalFlow =
+        DEFAULT_NRGP_APPROVALS.map(
+          (approval, index) => ({
+            NRGPApprovalConfigID: null,
+
+            ApprovalLevel:
+              Number(approval.LevelNo),
+
+            ApprovalRole:
+              approval.ApprovalRole,
+
+            ApprovalOrder:
+              index + 1,
+          }),
+        );
+    }
+
+    // ============================================================
+    // Insert Approval Flow
+    // ============================================================
+
+    for (const approval of approvalFlow) {
+      await client.query(
+        `
+        INSERT INTO Gatepass_NRGP_Approval
+        (
+          NRGPID,
+          NRGPApprovalConfigID,
+          ApprovalLevel,
+          ApprovalRole,
+          ApprovalOrder,
+          Status,
+          CreatedBy,
+          CreatedDate
+        )
+        VALUES
+        (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          'Pending',
+          $6,
+          CURRENT_TIMESTAMP
+        );
+        `,
+        [
+          NRGPID,
+          approval.NRGPApprovalConfigID,
+          approval.ApprovalLevel,
+          approval.ApprovalRole,
+          approval.ApprovalOrder,
+          data.UserID || null,
+        ],
+      );
+    }
+
+    // ============================================================
+    // Commit
+    // ============================================================
+
+    await client.query("COMMIT");
+
+    return ok(
+      "NRGP created successfully.",
+      {
+        NRGPID,
+        NRGPNumber,
+        Status: "PENDING",
+      },
+    );
+
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error(
+        "Create NRGP Rollback Error:",
+        rollbackError.message,
+      );
+    }
+
+    return databaseFailure(
+      error,
+      "Create NRGP",
+    );
+  } finally {
+    client.release();
+  }
+};
+// ============================================================NRGP List
+const getNRGPList = async (data) => {
+  try {
+    const page =
+      Number(data.page) || 1;
+
+    const pageSize =
+      Math.min(
+        Number(data.PageSize) || 10,
+        100,
+      );
+
+    const offset =
+      (page - 1) * pageSize;
+
+    const values = [];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+    ];
+
+
+    // ============================================================
+    // Organization
+    // ============================================================
+
+    if (!data.OrganizationID) {
+      return fail(
+        "OrganizationID is required.",
+        400,
+      );
+    }
+
+    const organizationID =
+      Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+    values.push(
+      organizationID,
+    );
+
+    conditions.push(
+      `m.OrganizationID = $${values.length}`,
+    );
+
+
+    // ============================================================
+    // NRGP Number
+    // ============================================================
+
+    if (data.NRGPNumber) {
+      const nrgpNumber =
+        Number(data.NRGPNumber);
+
+      if (
+        !Number.isInteger(nrgpNumber) ||
+        nrgpNumber <= 0
+      ) {
+        return fail(
+          "Valid NRGPNumber is required.",
+          400,
+        );
+      }
+
+      values.push(
+        nrgpNumber,
+      );
+
+      conditions.push(
+        `m.NRGPNumber = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // Status
+    // ============================================================
+
+    if (data.Status) {
+      values.push(
+        String(data.Status)
+          .trim()
+          .toUpperCase(),
+      );
+
+      conditions.push(
+        `UPPER(m.Status) = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // Department
+    // ============================================================
+
+    if (data.DepartmentID) {
+      const departmentID =
+        Number(data.DepartmentID);
+
+      if (
+        !Number.isInteger(departmentID) ||
+        departmentID <= 0
+      ) {
+        return fail(
+          "Valid DepartmentID is required.",
+          400,
+        );
+      }
+
+      values.push(
+        departmentID,
+      );
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // From Date
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(
+        data.FromDate,
+      );
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // To Date
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(
+        data.ToDate,
+      );
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // Search
+    // ============================================================
+
+    if (
+      data.Search &&
+      String(data.Search).trim()
+    ) {
+      values.push(
+        `%${String(data.Search).trim()}%`,
+      );
+
+      const searchIndex =
+        values.length;
+
+      conditions.push(`
+        (
+          CAST(m.NRGPNumber AS TEXT) ILIKE $${searchIndex}
+          OR m.VendorName ILIKE $${searchIndex}
+          OR m.ContactNumber ILIKE $${searchIndex}
+          OR m.Company ILIKE $${searchIndex}
+          OR m.SendTo ILIKE $${searchIndex}
+          OR m.Address ILIKE $${searchIndex}
+          OR m.TakenBy ILIKE $${searchIndex}
+          OR d.DepartmentName ILIKE $${searchIndex}
+        )
+      `);
+    }
+
+
+    const whereClause =
+      `WHERE ${conditions.join(" AND ")}`;
+
+
+    // ============================================================
+    // Count
+    // ============================================================
+
+    const countResult =
+      await pool.query(
+        `
+        SELECT
+          COUNT(*) AS TotalCount
+        FROM Gatepass_NRGP_Entry_Master m
+        LEFT JOIN department_master d
+          ON d.DepartmentID = m.DepartmentID
+        ${whereClause};
+        `,
+        values,
+      );
+
+
+    const totalCount =
+      Number(
+        countResult.rows[0].totalcount,
+      );
+
+
+    // ============================================================
+    // List
+    // ============================================================
+
+    const queryValues = [
+      ...values,
+      pageSize,
+      offset,
+    ];
+
+    const limitIndex =
+      values.length + 1;
+
+    const offsetIndex =
+      values.length + 2;
+
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.NRGPID,
+          m.NRGPNumber,
+          m.OrganizationID,
+          m.VendorName,
+          m.ContactNumber,
+          m.Company,
+          m.SendTo,
+          m.DepartmentID,
+          d.DepartmentName,
+          m.Address,
+          m.TakenBy,
+          m.Status,
+          m.CreatedBy,
+          m.CreatedDate,
+          m.ModifiedBy,
+          m.ModifiedDate
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID = m.DepartmentID
+
+        ${whereClause}
+
+        ORDER BY
+          m.NRGPID DESC
+
+        LIMIT $${limitIndex}
+        OFFSET $${offsetIndex};
+        `,
+        queryValues,
+      );
+
+
+    // ============================================================
+    // Mapping
+    // ============================================================
+
+    const records =
+      result.rows.map(
+        mapNRGPMaster,
+      );
+
+
+    return {
+      success: true,
+      message:
+        "NRGP list fetched successfully.",
+
+      TotalCount:
+        totalCount,
+
+      Page:
+        page,
+
+      PageSize:
+        pageSize,
+
+      TotalPages:
+        Math.ceil(
+          totalCount / pageSize,
+        ),
+
+      data:
+        records,
+    };
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch NRGP list",
+    );
+  }
+};
+// ============================================================ Get NRGP By ID
+const getNRGPById = async (data) => {
+  try {
+    // ============================================================
+    // Validate
+    // ============================================================
+
+    const NRGPID =
+      Number(data.NRGPID);
+
+    if (
+      !Number.isInteger(NRGPID) ||
+      NRGPID <= 0
+    ) {
+      return fail(
+        "Valid NRGPID is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Get Master
+    // ============================================================
+
+    const masterResult =
+      await pool.query(
+        `
+        SELECT
+          m.NRGPID,
+          m.NRGPNumber,
+          m.OrganizationID,
+
+          m.VendorName,
+          m.ContactNumber,
+          m.Company,
+          m.SendTo,
+
+          m.DepartmentID,
+          d.DepartmentName,
+
+          m.Address,
+          m.TakenBy,
+
+          m.Status,
+
+          m.CreatedBy,
+          m.CreatedDate,
+          m.ModifiedBy,
+          m.ModifiedDate
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID = m.DepartmentID
+
+        WHERE m.NRGPID = $1
+          AND m.IsDeleted = FALSE
+
+        LIMIT 1;
+        `,
+        [NRGPID],
+      );
+
+    // ============================================================
+    // Not Found
+    // ============================================================
+
+    if (
+      masterResult.rows.length === 0
+    ) {
+      return fail(
+        "NRGP record not found.",
+        404,
+      );
+    }
+
+    // ============================================================
+    // Attach Items + Approvals
+    // ============================================================
+
+    const [NRGP] =
+      await attachNRGPRelatedData(
+        masterResult.rows,
+      );
+
+    return ok(
+      "NRGP record fetched successfully.",
+      NRGP,
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch NRGP record",
+    );
+  }
+};
+// ============================================================ Update NRGP
+const updateNRGP = async (data) => {
+  const client = await pool.connect();
+
+  try {
+    const NRGPID = Number(data.NRGPID);
+    const organizationID = Number(data.OrganizationID);
+    const departmentID = Number(data.DepartmentID);
+
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    if (!Number.isInteger(NRGPID) || NRGPID <= 0) {
+      return fail("Valid NRGPID is required.", 400);
+    }
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail("Valid OrganizationID is required.", 400);
+    }
+
+    if (
+      !data.VendorName ||
+      !String(data.VendorName).trim()
+    ) {
+      return fail("VendorName is required.", 400);
+    }
+
+    if (
+      !Number.isInteger(departmentID) ||
+      departmentID <= 0
+    ) {
+      return fail("Valid DepartmentID is required.", 400);
+    }
+
+    if (
+      data.Items !== undefined &&
+      !Array.isArray(data.Items)
+    ) {
+      return fail("Items must be an array.", 400);
+    }
+
+    if (
+      data.DeleteItemIDs !== undefined &&
+      !Array.isArray(data.DeleteItemIDs)
+    ) {
+      return fail("DeleteItemIDs must be an array.", 400);
+    }
+
+    // ============================================================
+    // Validate Items
+    // ============================================================
+
+    for (let index = 0; index < (data.Items || []).length; index++) {
+      const item = data.Items[index];
+
+      if (
+        !item.ItemName ||
+        !String(item.ItemName).trim()
+      ) {
+        return fail(
+          `ItemName is required for item ${index + 1}.`,
+          400,
+        );
+      }
+
+      const quantity = Number(item.Quantity);
+
+      if (
+        !Number.isFinite(quantity) ||
+        quantity <= 0
+      ) {
+        return fail(
+          `Valid Quantity is required for item ${index + 1}.`,
+          400,
+        );
+      }
+
+      if (
+        item.NRGPItemID !== undefined &&
+        item.NRGPItemID !== null &&
+        item.NRGPItemID !== ""
+      ) {
+        const itemID = Number(item.NRGPItemID);
+
+        if (
+          !Number.isInteger(itemID) ||
+          itemID <= 0
+        ) {
+          return fail(
+            `Valid NRGPItemID is required for item ${index + 1}.`,
+            400,
+          );
+        }
+      }
+
+      if (
+        item.Rate !== undefined &&
+        item.Rate !== null &&
+        item.Rate !== ""
+      ) {
+        const rate = Number(item.Rate);
+
+        if (
+          !Number.isFinite(rate) ||
+          rate < 0
+        ) {
+          return fail(
+            `Valid Rate is required for item ${index + 1}.`,
+            400,
+          );
+        }
+      }
+    }
+
+    // ============================================================
+    // Validate Delete Item IDs
+    // ============================================================
+
+    for (const id of data.DeleteItemIDs || []) {
+      const itemID = Number(id);
+
+      if (
+        !Number.isInteger(itemID) ||
+        itemID <= 0
+      ) {
+        return fail(
+          "DeleteItemIDs contains an invalid NRGPItemID.",
+          400,
+        );
+      }
+    }
+
+    // ============================================================
+    // Transaction
+    // ============================================================
+
+    await client.query("BEGIN");
+
+    // ============================================================
+    // Check NRGP
+    // ============================================================
+
+    const existingResult = await client.query(
+      `
+      SELECT
+        NRGPID,
+        Status
+      FROM Gatepass_NRGP_Entry_Master
+      WHERE NRGPID = $1
+        AND OrganizationID = $2
+        AND IsDeleted = FALSE
+      LIMIT 1;
+      `,
+      [
+        NRGPID,
+        organizationID,
+      ],
+    );
+
+    if (!existingResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "NRGP record not found.",
+        404,
+      );
+    }
+
+    // ============================================================
+    // Update Master
+    // ============================================================
+
+    await client.query(
+      `
+      UPDATE Gatepass_NRGP_Entry_Master
+      SET
+        VendorName = $1,
+        ContactNumber = $2,
+        Company = $3,
+        SendTo = $4,
+        DepartmentID = $5,
+        Address = $6,
+        TakenBy = $7,
+        ModifiedBy = $8,
+        ModifiedDate = CURRENT_TIMESTAMP
+      WHERE NRGPID = $9
+        AND OrganizationID = $10
+        AND IsDeleted = FALSE;
+      `,
+      [
+        String(data.VendorName).trim(),
+
+        data.ContactNumber
+          ? String(data.ContactNumber).trim()
+          : null,
+
+        data.Company
+          ? String(data.Company).trim()
+          : null,
+
+        data.SendTo
+          ? String(data.SendTo).trim()
+          : null,
+
+        departmentID,
+
+        data.Address
+          ? String(data.Address).trim()
+          : null,
+
+        data.TakenBy
+          ? String(data.TakenBy).trim()
+          : null,
+
+        data.UserID || null,
+
+        NRGPID,
+        organizationID,
+      ],
+    );
+
+    // ============================================================
+    // Delete Items
+    // ============================================================
+
+    if (
+      Array.isArray(data.DeleteItemIDs) &&
+      data.DeleteItemIDs.length > 0
+    ) {
+      const deleteItemIDs =
+        data.DeleteItemIDs.map(Number);
+
+      await client.query(
+        `
+        UPDATE Gatepass_NRGP_Entry_Item_Details
+        SET
+          IsDeleted = TRUE,
+          DeletedBy = $1,
+          DeletedDateTime = CURRENT_TIMESTAMP,
+          ModifiedBy = $1,
+          ModifiedDate = CURRENT_TIMESTAMP
+        WHERE NRGPID = $2
+          AND OrganizationID = $3
+          AND NRGPItemID = ANY($4::BIGINT[])
+          AND IsDeleted = FALSE;
+        `,
+        [
+          data.UserID || null,
+          NRGPID,
+          organizationID,
+          deleteItemIDs,
+        ],
+      );
+    }
+
+    // ============================================================
+    // Update / Insert Items
+    // ============================================================
+
+    for (const item of data.Items || []) {
+      if (item.NRGPItemID) {
+        // ========================================================
+        // Existing Item
+        // ========================================================
+
+        const itemResult = await client.query(
+          `
+          UPDATE Gatepass_NRGP_Entry_Item_Details
+          SET
+            ItemName = $1,
+            Specification = $2,
+            Quantity = $3,
+            Rate = $4,
+            MakeModel = $5,
+            SerialNumber = $6,
+            ModifiedBy = $7,
+            ModifiedDate = CURRENT_TIMESTAMP
+          WHERE NRGPItemID = $8
+            AND NRGPID = $9
+            AND OrganizationID = $10
+            AND IsDeleted = FALSE
+          RETURNING NRGPItemID;
+          `,
+          [
+            String(item.ItemName).trim(),
+
+            item.Specification
+              ? String(item.Specification).trim()
+              : null,
+
+            Number(item.Quantity),
+
+            item.Rate !== undefined &&
+            item.Rate !== null &&
+            item.Rate !== ""
+              ? Number(item.Rate)
+              : null,
+
+            item.MakeModel
+              ? String(item.MakeModel).trim()
+              : null,
+
+            item.SerialNumber
+              ? String(item.SerialNumber).trim()
+              : null,
+
+            data.UserID || null,
+
+            Number(item.NRGPItemID),
+            NRGPID,
+            organizationID,
+          ],
+        );
+
+        if (!itemResult.rows.length) {
+          await client.query("ROLLBACK");
+
+          return fail(
+            `NRGP item ${item.NRGPItemID} not found.`,
+            404,
+          );
+        }
+      } else {
+        // ========================================================
+        // New Item
+        // ========================================================
+
+        await client.query(
+          `
+          INSERT INTO Gatepass_NRGP_Entry_Item_Details
+          (
+            NRGPID,
+            OrganizationID,
+            ItemName,
+            Specification,
+            Quantity,
+            Rate,
+            MakeModel,
+            SerialNumber,
+            CreatedBy,
+            CreatedDate
+          )
+          VALUES
+          (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            $8,
+            $9,
+            CURRENT_TIMESTAMP
+          );
+          `,
+          [
+            NRGPID,
+            organizationID,
+
+            String(item.ItemName).trim(),
+
+            item.Specification
+              ? String(item.Specification).trim()
+              : null,
+
+            Number(item.Quantity),
+
+            item.Rate !== undefined &&
+            item.Rate !== null &&
+            item.Rate !== ""
+              ? Number(item.Rate)
+              : null,
+
+            item.MakeModel
+              ? String(item.MakeModel).trim()
+              : null,
+
+            item.SerialNumber
+              ? String(item.SerialNumber).trim()
+              : null,
+
+            data.UserID || null,
+          ],
+        );
+      }
+    }
+
+    // ============================================================
+    // Ensure At Least One Active Item
+    // ============================================================
+
+    const itemCountResult = await client.query(
+      `
+      SELECT COUNT(*) AS TotalCount
+      FROM Gatepass_NRGP_Entry_Item_Details
+      WHERE NRGPID = $1
+        AND OrganizationID = $2
+        AND IsDeleted = FALSE;
+      `,
+      [
+        NRGPID,
+        organizationID,
+      ],
+    );
+
+    if (
+      Number(itemCountResult.rows[0].totalcount) === 0
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "At least one active item is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Commit
+    // ============================================================
+
+    await client.query("COMMIT");
+
+    return ok(
+      "NRGP updated successfully.",
+      {
+        NRGPID,
+      },
+    );
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error(
+        "Update NRGP Rollback Error:",
+        rollbackError.message,
+      );
+    }
+
+    return databaseFailure(
+      error,
+      "Update NRGP",
+    );
+  } finally {
+    client.release();
+  }
+};
+// ============================================================ Delete NRGP
+const deleteNRGP = async (data) => {
+  const client = await pool.connect();
+
+  try {
+    const NRGPID = Number(data.NRGPID);
+
+    if (
+      !Number.isInteger(NRGPID) ||
+      NRGPID <= 0
+    ) {
+      return fail(
+        "Valid NRGPID is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Transaction
+    // ============================================================
+
+    await client.query("BEGIN");
+
+    // ============================================================
+    // Check NRGP
+    // ============================================================
+
+    const existingResult =
+      await client.query(
+        `
+        SELECT
+          NRGPID,
+          Status
+        FROM Gatepass_NRGP_Entry_Master
+        WHERE NRGPID = $1
+          AND IsDeleted = FALSE
+        LIMIT 1;
+        `,
+        [NRGPID],
+      );
+
+    if (!existingResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "NRGP record not found.",
+        404,
+      );
+    }
+
+    // ============================================================
+    // Delete Items
+    // ============================================================
+
+    await client.query(
+      `
+      UPDATE Gatepass_NRGP_Entry_Item_Details
+      SET
+        IsDeleted = TRUE,
+        DeletedBy = $1,
+        DeletedDateTime = CURRENT_TIMESTAMP,
+        ModifiedBy = $1,
+        ModifiedDate = CURRENT_TIMESTAMP
+      WHERE NRGPID = $2
+        AND IsDeleted = FALSE;
+      `,
+      [
+        data.UserID || null,
+        NRGPID,
+      ],
+    );
+
+    // ============================================================
+    // Delete Approvals
+    // ============================================================
+
+    await client.query(
+      `
+      UPDATE Gatepass_NRGP_Approval
+      SET
+        IsDeleted = TRUE,
+        DeletedBy = $1,
+        DeletedDateTime = CURRENT_TIMESTAMP,
+        ModifiedBy = $1,
+        ModifiedDate = CURRENT_TIMESTAMP
+      WHERE NRGPID = $2
+        AND IsDeleted = FALSE;
+      `,
+      [
+        data.UserID || null,
+        NRGPID,
+      ],
+    );
+
+    // ============================================================
+    // Delete Master
+    // ============================================================
+
+    await client.query(
+      `
+      UPDATE Gatepass_NRGP_Entry_Master
+      SET
+        IsDeleted = TRUE,
+        DeletedBy = $1,
+        DeletedDateTime = CURRENT_TIMESTAMP,
+        ModifiedBy = $1,
+        ModifiedDate = CURRENT_TIMESTAMP
+      WHERE NRGPID = $2
+        AND IsDeleted = FALSE;
+      `,
+      [
+        data.UserID || null,
+        NRGPID,
+      ],
+    );
+
+    // ============================================================
+    // Commit
+    // ============================================================
+
+    await client.query("COMMIT");
+
+    return ok(
+      "NRGP deleted successfully.",
+      {
+        NRGPID,
+      },
+    );
+
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error(
+        "Delete NRGP Rollback Error:",
+        rollbackError.message,
+      );
+    }
+
+    return databaseFailure(
+      error,
+      "Delete NRGP",
+    );
+  } finally {
+    client.release();
+  }
+};
+// ============================================================ NRGP Approval
+const processNRGPApproval = async (data) => {
+  const client = await pool.connect();
+
+  try {
+    const NRGPID = Number(data.NRGPID);
+
+    const action = String(
+      data.Action || "",
+    )
+      .trim()
+      .toUpperCase();
+
+    const userType = String(
+      data.UserType || "",
+    )
+      .trim()
+      .toUpperCase();
+
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    if (
+      !Number.isInteger(NRGPID) ||
+      NRGPID <= 0
+    ) {
+      return fail(
+        "Valid NRGPID is required.",
+        400,
+      );
+    }
+
+    if (
+      !["APPROVE", "REJECT", "CANCEL"].includes(
+        action,
+      )
+    ) {
+      return fail(
+        "Action must be APPROVE, REJECT or CANCEL.",
+        400,
+      );
+    }
+
+    if (!userType) {
+      return fail(
+        "User type is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Begin Transaction
+    // ============================================================
+
+    await client.query("BEGIN");
+
+    // ============================================================
+    // Get NRGP
+    // Lock record while processing approval
+    // ============================================================
+
+    const masterResult =
+      await client.query(
+        `
+        SELECT
+          NRGPID,
+          NRGPNumber,
+          OrganizationID,
+          Status
+        FROM Gatepass_NRGP_Entry_Master
+        WHERE NRGPID = $1
+          AND IsDeleted = FALSE
+        FOR UPDATE;
+        `,
+        [NRGPID],
+      );
+
+    if (!masterResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "NRGP record not found.",
+        404,
+      );
+    }
+
+    const master =
+      masterResult.rows[0];
+
+    const currentStatus =
+      String(master.status || "")
+        .trim()
+        .toUpperCase();
+
+    // ============================================================
+    // Final Status Check
+    // ============================================================
+
+    if (
+      [
+        "APPROVED",
+        "REJECTED",
+        "CANCELLED",
+      ].includes(currentStatus)
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        `NRGP is already ${currentStatus}.`,
+        400,
+      );
+    }
+
+    // ============================================================
+    // Get Current Pending Approval
+    // ============================================================
+
+    const currentApprovalResult =
+      await client.query(
+        `
+        SELECT
+          NRGPApprovalID,
+          NRGPID,
+          NRGPApprovalConfigID,
+          ApprovalLevel,
+          ApprovalRole,
+          ApprovalOrder,
+          Status
+        FROM Gatepass_NRGP_Approval
+        WHERE NRGPID = $1
+          AND IsDeleted = FALSE
+          AND UPPER(Status) = 'PENDING'
+        ORDER BY ApprovalOrder ASC
+        LIMIT 1
+        FOR UPDATE;
+        `,
+        [NRGPID],
+      );
+
+    if (!currentApprovalResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "No pending approval found for this NRGP.",
+        400,
+      );
+    }
+
+    const currentApproval =
+      currentApprovalResult.rows[0];
+
+    const approvalRole =
+      String(
+        currentApproval.approvalrole || "",
+      )
+        .trim()
+        .toUpperCase();
+
+    // ============================================================
+    // Role Validation
+    // ============================================================
+
+    if (approvalRole !== userType) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        `Current approval is pending with ${currentApproval.approvalrole}.`,
+        403,
+      );
+    }
+
+    // ============================================================
+    // APPROVE
+    // ============================================================
+
+    if (action === "APPROVE") {
+      await client.query(
+        `
+        UPDATE Gatepass_NRGP_Approval
+        SET
+          Status = 'Approved',
+          StatusDateTime = CURRENT_TIMESTAMP,
+          ActionBy = $1,
+          Remarks = $2,
+          ModifiedBy = $1,
+          ModifiedDate = CURRENT_TIMESTAMP
+        WHERE NRGPApprovalID = $3
+          AND IsDeleted = FALSE;
+        `,
+        [
+          data.UserID || null,
+          data.Remarks
+            ? String(data.Remarks).trim()
+            : null,
+          currentApproval.nrgpapprovalid,
+        ],
+      );
+
+      // ============================================================
+      // Check Remaining Pending Approvals
+      // ============================================================
+
+      const pendingResult =
+        await client.query(
+          `
+          SELECT
+            NRGPApprovalID
+          FROM Gatepass_NRGP_Approval
+          WHERE NRGPID = $1
+            AND IsDeleted = FALSE
+            AND UPPER(Status) = 'PENDING'
+          LIMIT 1;
+          `,
+          [NRGPID],
+        );
+
+      // ============================================================
+      // All Approvals Completed
+      // ============================================================
+
+      if (!pendingResult.rows.length) {
+        await client.query(
+          `
+          UPDATE Gatepass_NRGP_Entry_Master
+          SET
+            Status = 'APPROVED',
+            ModifiedBy = $1,
+            ModifiedDate = CURRENT_TIMESTAMP
+          WHERE NRGPID = $2
+            AND IsDeleted = FALSE;
+          `,
+          [
+            data.UserID || null,
+            NRGPID,
+          ],
+        );
+      }
+
+      await client.query("COMMIT");
+
+      return ok(
+        pendingResult.rows.length
+          ? "NRGP approved successfully and moved to the next approval level."
+          : "NRGP fully approved successfully.",
+        {
+          NRGPID,
+          Action: "APPROVE",
+          Status:
+            pendingResult.rows.length
+              ? "PENDING"
+              : "APPROVED",
+        },
+      );
+    }
+
+    // ============================================================
+    // REJECT
+    // ============================================================
+
+    if (action === "REJECT") {
+      await client.query(
+        `
+        UPDATE Gatepass_NRGP_Approval
+        SET
+          Status = 'Rejected',
+          StatusDateTime = CURRENT_TIMESTAMP,
+          ActionBy = $1,
+          Remarks = $2,
+          ModifiedBy = $1,
+          ModifiedDate = CURRENT_TIMESTAMP
+        WHERE NRGPApprovalID = $3
+          AND IsDeleted = FALSE;
+        `,
+        [
+          data.UserID || null,
+          data.Remarks
+            ? String(data.Remarks).trim()
+            : null,
+          currentApproval.nrgpapprovalid,
+        ],
+      );
+
+      await client.query(
+        `
+        UPDATE Gatepass_NRGP_Entry_Master
+        SET
+          Status = 'REJECTED',
+          ModifiedBy = $1,
+          ModifiedDate = CURRENT_TIMESTAMP
+        WHERE NRGPID = $2
+          AND IsDeleted = FALSE;
+        `,
+        [
+          data.UserID || null,
+          NRGPID,
+        ],
+      );
+
+      await client.query("COMMIT");
+
+      return ok(
+        "NRGP rejected successfully.",
+        {
+          NRGPID,
+          Action: "REJECT",
+          Status: "REJECTED",
+        },
+      );
+    }
+
+    // ============================================================
+    // CANCEL
+    // ============================================================
+
+    if (action === "CANCEL") {
+      await client.query(
+        `
+        UPDATE Gatepass_NRGP_Approval
+        SET
+          Status = 'Cancelled',
+          StatusDateTime = CURRENT_TIMESTAMP,
+          ActionBy = $1,
+          Remarks = $2,
+          ModifiedBy = $1,
+          ModifiedDate = CURRENT_TIMESTAMP
+        WHERE NRGPApprovalID = $3
+          AND IsDeleted = FALSE;
+        `,
+        [
+          data.UserID || null,
+          data.Remarks
+            ? String(data.Remarks).trim()
+            : null,
+          currentApproval.nrgpapprovalid,
+        ],
+      );
+
+      await client.query(
+        `
+        UPDATE Gatepass_NRGP_Entry_Master
+        SET
+          Status = 'CANCELLED',
+          ModifiedBy = $1,
+          ModifiedDate = CURRENT_TIMESTAMP
+        WHERE NRGPID = $2
+          AND IsDeleted = FALSE;
+        `,
+        [
+          data.UserID || null,
+          NRGPID,
+        ],
+      );
+
+      await client.query("COMMIT");
+
+      return ok(
+        "NRGP cancelled successfully.",
+        {
+          NRGPID,
+          Action: "CANCEL",
+          Status: "CANCELLED",
+        },
+      );
+    }
+
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error(
+        "Process NRGP Approval Rollback Error:",
+        rollbackError.message,
+      );
+    }
+
+    return databaseFailure(
+      error,
+      "Process NRGP approval",
+    );
+  } finally {
+    client.release();
+  }
+};
+// ============================================================ Get NRGP Approval Config List
+const getNRGPApprovalConfig = async (data) => {
+  try {
+    const organizationID =
+      Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          NRGPApprovalConfigID,
+          OrganizationID,
+          ApprovalLevel,
+          ApprovalRole,
+          ApprovalOrder,
+          IsMandatory,
+          CreatedBy,
+          CreatedDate,
+          ModifiedBy,
+          ModifiedDate
+        FROM Gatepass_NRGP_Approval_Config
+        WHERE OrganizationID = $1
+          AND IsDeleted = FALSE
+        ORDER BY ApprovalOrder ASC;
+        `,
+        [organizationID],
+      );
+
+    const records =
+      result.rows.map((row) => ({
+        NRGPApprovalConfigID:
+          Number(row.nrgpapprovalconfigid),
+
+        OrganizationID:
+          Number(row.organizationid),
+
+        ApprovalLevel:
+          Number(row.approvallevel),
+
+        ApprovalRole:
+          row.approvalrole,
+
+        ApprovalOrder:
+          Number(row.approvalorder),
+
+        IsMandatory:
+          row.ismandatory,
+
+        CreatedBy:
+          row.createdby
+            ? Number(row.createdby)
+            : null,
+
+        CreatedDate:
+          row.createddate,
+
+        ModifiedBy:
+          row.modifiedby
+            ? Number(row.modifiedby)
+            : null,
+
+        ModifiedDate:
+          row.modifieddate,
+      }));
+
+    return ok(
+      "NRGP approval config fetched successfully.",
+      records,
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch NRGP approval config",
+    );
+  }
+};
+// ============================================================ Save NRGP Approval Config
+const saveNRGPApprovalConfig = async (data) => {
+  const client = await pool.connect();
+
+  try {
+    const organizationID =
+      Number(data.OrganizationID);
+
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+    if (
+      !Array.isArray(data.Approvals) ||
+      data.Approvals.length === 0
+    ) {
+      return fail(
+        "At least one approval configuration is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Validate Approval Rows
+    // ============================================================
+
+    const approvalOrders =
+      new Set();
+
+    for (
+      let index = 0;
+      index < data.Approvals.length;
+      index++
+    ) {
+      const approval =
+        data.Approvals[index];
+
+      const approvalLevel =
+        Number(approval.ApprovalLevel);
+
+      const approvalOrder =
+        Number(approval.ApprovalOrder);
+
+      if (
+        !Number.isInteger(approvalLevel) ||
+        approvalLevel <= 0
+      ) {
+        return fail(
+          `Valid ApprovalLevel is required for approval ${index + 1}.`,
+          400,
+        );
+      }
+
+      if (
+        !approval.ApprovalRole ||
+        !String(approval.ApprovalRole).trim()
+      ) {
+        return fail(
+          `ApprovalRole is required for approval ${index + 1}.`,
+          400,
+        );
+      }
+
+      if (
+        !Number.isInteger(approvalOrder) ||
+        approvalOrder <= 0
+      ) {
+        return fail(
+          `Valid ApprovalOrder is required for approval ${index + 1}.`,
+          400,
+        );
+      }
+
+      if (
+        approvalOrders.has(
+          approvalOrder,
+        )
+      ) {
+        return fail(
+          `Duplicate ApprovalOrder ${approvalOrder} is not allowed.`,
+          400,
+        );
+      }
+
+      approvalOrders.add(
+        approvalOrder,
+      );
+    }
+
+    // ============================================================
+    // Begin Transaction
+    // ============================================================
+
+    await client.query(
+      "BEGIN",
+    );
+
+    // ============================================================
+    // Soft Delete Existing Config
+    // ============================================================
+
+    await client.query(
+      `
+      UPDATE Gatepass_NRGP_Approval_Config
+      SET
+        IsDeleted = TRUE,
+        DeletedBy = $1,
+        DeletedDateTime = CURRENT_TIMESTAMP,
+        ModifiedBy = $1,
+        ModifiedDate = CURRENT_TIMESTAMP
+      WHERE OrganizationID = $2
+        AND IsDeleted = FALSE;
+      `,
+      [
+        data.UserID || null,
+        organizationID,
+      ],
+    );
+
+    // ============================================================
+    // Insert New Config
+    // ============================================================
+
+    const savedApprovals = [];
+
+    const sortedApprovals =
+      [...data.Approvals].sort(
+        (a, b) =>
+          Number(a.ApprovalOrder) -
+          Number(b.ApprovalOrder),
+      );
+
+    for (
+      const approval
+      of sortedApprovals
+    ) {
+      const result =
+        await client.query(
+          `
+          INSERT INTO Gatepass_NRGP_Approval_Config
+          (
+            OrganizationID,
+            ApprovalLevel,
+            ApprovalRole,
+            ApprovalOrder,
+            IsMandatory,
+            CreatedBy,
+            CreatedDate
+          )
+          VALUES
+          (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            CURRENT_TIMESTAMP
+          )
+          RETURNING
+            NRGPApprovalConfigID,
+            OrganizationID,
+            ApprovalLevel,
+            ApprovalRole,
+            ApprovalOrder,
+            IsMandatory;
+          `,
+          [
+            organizationID,
+
+            Number(
+              approval.ApprovalLevel,
+            ),
+
+            String(
+              approval.ApprovalRole,
+            ).trim(),
+
+            Number(
+              approval.ApprovalOrder,
+            ),
+
+            approval.IsMandatory !== false,
+
+            data.UserID || null,
+          ],
+        );
+
+      const row =
+        result.rows[0];
+
+      savedApprovals.push({
+        NRGPApprovalConfigID:
+          Number(
+            row.nrgpapprovalconfigid,
+          ),
+
+        OrganizationID:
+          Number(
+            row.organizationid,
+          ),
+
+        ApprovalLevel:
+          Number(
+            row.approvallevel,
+          ),
+
+        ApprovalRole:
+          row.approvalrole,
+
+        ApprovalOrder:
+          Number(
+            row.approvalorder,
+          ),
+
+        IsMandatory:
+          row.ismandatory,
+      });
+    }
+
+    // ============================================================
+    // Commit
+    // ============================================================
+
+    await client.query(
+      "COMMIT",
+    );
+
+    return ok(
+      "NRGP approval configuration saved successfully.",
+      savedApprovals,
+    );
+
+  } catch (error) {
+    try {
+      await client.query(
+        "ROLLBACK",
+      );
+    } catch (rollbackError) {
+      console.error(
+        "Save NRGP Approval Config Rollback Error:",
+        rollbackError.message,
+      );
+    }
+
+    return databaseFailure(
+      error,
+      "Save NRGP approval config",
+    );
+  } finally {
+    client.release();
+  }
+};
+// ============================================================ Delete NRGP Approval Config
+const deleteNRGPApprovalConfig = async (data) => {
+  try {
+    const configID =
+      Number(data.NRGPApprovalConfigID);
+
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    if (
+      !Number.isInteger(configID) ||
+      configID <= 0
+    ) {
+      return fail(
+        "Valid NRGPApprovalConfigID is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Check Config
+    // ============================================================
+
+    const existingResult =
+      await pool.query(
+        `
+        SELECT
+          NRGPApprovalConfigID,
+          OrganizationID,
+          ApprovalLevel,
+          ApprovalRole,
+          ApprovalOrder
+        FROM Gatepass_NRGP_Approval_Config
+        WHERE NRGPApprovalConfigID = $1
+          AND IsDeleted = FALSE
+        LIMIT 1;
+        `,
+        [configID],
+      );
+
+    if (!existingResult.rows.length) {
+      return fail(
+        "NRGP approval configuration not found.",
+        404,
+      );
+    }
+
+    // ============================================================
+    // Soft Delete
+    // ============================================================
+
+    await pool.query(
+      `
+      UPDATE Gatepass_NRGP_Approval_Config
+      SET
+        IsDeleted = TRUE,
+        DeletedBy = $1,
+        DeletedDateTime = CURRENT_TIMESTAMP,
+        ModifiedBy = $1,
+        ModifiedDate = CURRENT_TIMESTAMP
+      WHERE NRGPApprovalConfigID = $2
+        AND IsDeleted = FALSE;
+      `,
+      [
+        data.UserID || null,
+        configID,
+      ],
+    );
+
+    return ok(
+      "NRGP approval configuration deleted successfully.",
+      {
+        NRGPApprovalConfigID:
+          configID,
+      },
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Delete NRGP approval config",
+    );
+  }
+};
 // ============================================================
 // Exports
 // ============================================================
@@ -5452,5 +11215,20 @@ module.exports = {
   getRGPDepartmentWiseReport,
   getRGPVendorWiseReport,
   getRGPPendingReturnReport,
+  getRGPListReportPdf,
+  getRGPDepartmentWiseReportPdf,
+  getRGPVendorWiseReportPdf,
+  getRGPPendingReturnReportPdf,
+  generateRGPDetailPdf,
 
+
+  createNRGP,
+  getNRGPList,
+  getNRGPById,
+  updateNRGP,
+  deleteNRGP,
+  processNRGPApproval,
+  getNRGPApprovalConfig,
+  saveNRGPApprovalConfig,
+  deleteNRGPApprovalConfig,
 };

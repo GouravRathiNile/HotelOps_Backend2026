@@ -22,21 +22,38 @@ const GatepassHandler = async (message) => {
       // ========================================================RGP_APPROVAL
       case "PROCESS_RGP_APPROVAL":
         return await GatepassService.processRGPApproval(message.data);
-      // ========================================================RGP_APPROVAL
+      // ========================================================RGP_Action
       case "PROCESS_RGP_GATE_ACTION":
         return await GatepassService.processRGPGateAction(message.data);
       // ========================================================RGP_ITEM_RETURN
       case "PROCESS_RGP_ITEM_RETURN":
         return await GatepassService.processRGPItemReturn(message.data);
-        case "SAVE_RGP_APPROVAL_CONFIG":
-  return await GatepassService.saveRGPApprovalConfig(
-    message.data,
-  );
+      // ========================================================Create Config
+      case "SAVE_RGP_APPROVAL_CONFIG":
+        return await GatepassService.saveRGPApprovalConfig(message.data);
+      // ========================================================Delete Config
+      case "DELETE_RGP_APPROVAL_CONFIG":
+        return await GatepassService.deleteRGPApprovalConfig(message.data);
 
-case "DELETE_RGP_APPROVAL_CONFIG":
-  return await GatepassService.deleteRGPApprovalConfig(
-    message.data,
-  );
+      // ================================================================================NRGP
+      // ========================================================Create
+      case "CREATE_NRGP":
+        return await GatepassService.createNRGP(message.data);
+      // ========================================================Update
+      case "UPDATE_NRGP":
+        return await GatepassService.updateNRGP(message.data);
+      // ========================================================Delete
+      case "DELETE_NRGP":
+        return await GatepassService.deleteNRGP(message.data);
+      // ========================================================NRGP_APPROVAL
+      case "PROCESS_NRGP_APPROVAL":
+        return await GatepassService.processNRGPApproval(message.data);
+      // ========================================================Create Config
+      case "SAVE_NRGP_APPROVAL_CONFIG":
+        return await GatepassService.saveNRGPApprovalConfig(message.data);
+      // ========================================================Delete Config
+      case "DELETE_NRGP_APPROVAL_CONFIG":
+        return await GatepassService.deleteNRGPApprovalConfig(message.data);
       // ========================================================
       // Invalid Action
       // ========================================================

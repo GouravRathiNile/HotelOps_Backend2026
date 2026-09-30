@@ -18,7 +18,22 @@ const {
   getRGPDepartmentWiseReport,
   getRGPVendorWiseReport,
   getRGPPendingReturnReport,
-  getRGPVendorNames
+  getRGPVendorNames,
+  getRGPListReportPdf,
+  getRGPDepartmentWiseReportPdf,
+  getRGPVendorWiseReportPdf,
+  getRGPPendingReturnReportPdf,
+  generateRGPDetailPdf,
+
+  createNRGP,
+  getNRGPList,
+  getNRGPById,
+  updateNRGP,
+  deleteNRGP,
+  processNRGPApproval,
+  getNRGPApprovalConfig,
+  saveNRGPApprovalConfig,
+  deleteNRGPApprovalConfig,
 } = require(
   "../../controllers/GatepassController/GatepassController",
 )
@@ -43,5 +58,22 @@ router.get("/RGPListReports",authenticateToken,getRGPListReport,);
 router.get("/DepartmentWiseReports",authenticateToken,getRGPDepartmentWiseReport,);
 router.get("/VendorWiseReports",authenticateToken,getRGPVendorWiseReport,);
 router.get("/PendingReturnReports",authenticateToken,getRGPPendingReturnReport,);
+// =============================================================PDF
+router.get("/RGPListReportspdf",authenticateToken,getRGPListReportPdf,);
+router.get("/DepartmentWiseReportspdf",authenticateToken,getRGPDepartmentWiseReportPdf,);
+router.get("/VendorWiseReportspdf",authenticateToken,getRGPVendorWiseReportPdf,);
+router.get("/PendingReturnReportspdf",authenticateToken,getRGPPendingReturnReportPdf,);
+router.get("/RGPById/:id",authenticateToken,getRGPById,);
+router.get("/RGPDetailPdf",authenticateToken,generateRGPDetailPdf,);
 
+// ==================================================================================NRGP
+router.post("/CreateNRGP",authenticateToken,createNRGP,);
+router.get("/NRGPList",authenticateToken,getNRGPList,);
+router.get("/NRGPById",authenticateToken,getNRGPById,);
+router.put("/UpdateNRGP",authenticateToken,updateNRGP,);
+router.delete("/DeleteNRGP",authenticateToken,deleteNRGP,);
+router.put("/ApproveNRGP",authenticateToken,processNRGPApproval,);
+router.get("/NRGPApprovalConfigList",authenticateToken,getNRGPApprovalConfig,);
+router.post("/CreateApprovalConfigNRGP",authenticateToken,saveNRGPApprovalConfig,);
+router.delete("/DeleteNRGPApprovalConfig",authenticateToken,deleteNRGPApprovalConfig,);
 module.exports = router;

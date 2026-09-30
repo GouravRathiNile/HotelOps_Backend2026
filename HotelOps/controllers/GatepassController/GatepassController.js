@@ -2305,3 +2305,1337 @@ exports.getRGPPendingReturnReport =async (req, res) => {
         });
     }
 };
+// ========================================================================PDF
+// ============================================================RGP List Report PDF
+exports.getRGPListReportPdf = async (req, res) => {
+    try {
+      const {
+        OrganizationID,
+        FromDate,
+        ToDate,
+        Status,
+        DepartmentID,
+        RGPNumber,
+        VendorName,
+        Search,
+        DepartmentName,
+      } = req.query;
+
+      // ============================================================
+      // Organization Validation
+      // ============================================================
+
+      if (
+        !OrganizationID ||
+        !Number.isInteger(
+          Number(OrganizationID),
+        ) ||
+        Number(OrganizationID) <= 0
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              "Valid OrganizationID is required.",
+          });
+      }
+
+      // ============================================================
+      // Department Validation
+      // ============================================================
+
+      if (
+        DepartmentID &&
+        (
+          !Number.isInteger(
+            Number(DepartmentID),
+          ) ||
+          Number(DepartmentID) <= 0
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              "DepartmentID must be a positive integer.",
+          });
+      }
+
+      // ============================================================
+      // RGP Number Validation
+      // ============================================================
+
+      if (
+        RGPNumber &&
+        (
+          !Number.isInteger(
+            Number(RGPNumber),
+          ) ||
+          Number(RGPNumber) <= 0
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              "RGPNumber must be a positive integer.",
+          });
+      }
+
+      const result =
+        await GatepassService
+          .getRGPListReportPdf({
+            OrganizationID:
+              Number(
+                OrganizationID,
+              ),
+
+            FromDate:
+              FromDate || null,
+
+            ToDate:
+              ToDate || null,
+
+            Status:
+              Status || null,
+
+            DepartmentID:
+              DepartmentID
+                ? Number(
+                    DepartmentID,
+                  )
+                : null,
+
+            RGPNumber:
+              RGPNumber
+                ? Number(
+                    RGPNumber,
+                  )
+                : null,
+
+            VendorName:
+              VendorName || null,
+
+            Search:
+              Search || null,
+
+            DepartmentName:
+              DepartmentName ||
+              null,
+
+            UserID:
+              req.user?.UserID,
+
+            UserType:
+              req.user?.UserType,
+
+            DepartmentNameJWT:
+              req.user
+                ?.DepartmentName,
+
+            LoginType:
+              req.user?.LoginType,
+
+            AllOrganizationAccess:
+              req.user
+                ?.AllOrganizationAccess,
+          });
+
+      if (!result.success) {
+        return res
+          .status(
+            result.statusCode ||
+              500,
+          )
+          .json(result);
+      }
+
+      // ============================================================
+      // PDF Response
+      // ============================================================
+
+      const fileName =
+        `RGP_List_Report_${Date.now()}.pdf`;
+
+      res.setHeader(
+        "Content-Type",
+        "application/pdf",
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${fileName}"`,
+      );
+
+      res.setHeader(
+        "Content-Length",
+        result.data.length,
+      );
+
+      return res.end(
+        result.data,
+      );
+    } catch (error) {
+      console.error(
+        "RGP List Report PDF Controller Error:",
+        error,
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+          message:
+            "Unable to generate RGP list report PDF.",
+        });
+    }
+};
+// ============================================================Department Wise Report PDF
+exports.getRGPDepartmentWiseReportPdf =async (req, res) => {
+    try {
+      const {
+        OrganizationID,
+        FromDate,
+        ToDate,
+        DepartmentID,
+        Search,
+        DepartmentName,
+      } = req.query;
+
+      // ============================================================
+      // Organization Validation
+      // ============================================================
+
+      if (
+        !OrganizationID ||
+        !Number.isInteger(
+          Number(OrganizationID),
+        ) ||
+        Number(OrganizationID) <= 0
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              "Valid OrganizationID is required.",
+          });
+      }
+
+      // ============================================================
+      // Department Validation
+      // ============================================================
+
+      if (
+        DepartmentID &&
+        (
+          !Number.isInteger(
+            Number(DepartmentID),
+          ) ||
+          Number(DepartmentID) <= 0
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              "DepartmentID must be a positive integer.",
+          });
+      }
+
+      // ============================================================
+      // Service
+      // ============================================================
+
+      const result =
+        await GatepassService
+          .getRGPDepartmentWiseReportPdf({
+            OrganizationID:
+              Number(
+                OrganizationID,
+              ),
+
+            FromDate:
+              FromDate || null,
+
+            ToDate:
+              ToDate || null,
+
+            DepartmentID:
+              DepartmentID
+                ? Number(
+                    DepartmentID,
+                  )
+                : null,
+
+            DepartmentName:
+              DepartmentName ||
+              null,
+
+            Search:
+              Search || null,
+
+            UserID:
+              req.user?.UserID,
+
+            UserType:
+              req.user?.UserType,
+
+            LoginType:
+              req.user?.LoginType,
+
+            AllOrganizationAccess:
+              req.user
+                ?.AllOrganizationAccess,
+          });
+
+      if (!result.success) {
+        return res
+          .status(
+            result.statusCode ||
+              500,
+          )
+          .json(result);
+      }
+
+      // ============================================================
+      // PDF Response
+      // ============================================================
+
+      const fileName =
+        `RGP_Department_Wise_Report_${Date.now()}.pdf`;
+
+      res.setHeader(
+        "Content-Type",
+        "application/pdf",
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${fileName}"`,
+      );
+
+      res.setHeader(
+        "Content-Length",
+        result.data.length,
+      );
+
+      return res.end(
+        result.data,
+      );
+    } catch (error) {
+      console.error(
+        "RGP Department Wise Report PDF Controller Error:",
+        error,
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+          message:
+            "Unable to generate RGP department wise report PDF.",
+        });
+    }
+};
+// ============================================================RGP Vendor Wise Report PDF
+exports.getRGPVendorWiseReportPdf =async (req, res) => {
+    try {
+      const {
+        OrganizationID,
+        FromDate,
+        ToDate,
+        VendorName,
+        Search,
+      } = req.query;
+
+      // ============================================================
+      // Organization Validation
+      // ============================================================
+
+      if (
+        !OrganizationID ||
+        !Number.isInteger(
+          Number(OrganizationID),
+        ) ||
+        Number(OrganizationID) <= 0
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              "Valid OrganizationID is required.",
+          });
+      }
+
+      // ============================================================
+      // Service
+      // ============================================================
+
+      const result =
+        await GatepassService
+          .getRGPVendorWiseReportPdf({
+            OrganizationID:
+              Number(
+                OrganizationID,
+              ),
+
+            FromDate:
+              FromDate || null,
+
+            ToDate:
+              ToDate || null,
+
+            VendorName:
+              VendorName || null,
+
+            Search:
+              Search || null,
+
+            UserID:
+              req.user?.UserID,
+
+            UserType:
+              req.user?.UserType,
+
+            DepartmentName:
+              req.user
+                ?.DepartmentName,
+
+            LoginType:
+              req.user?.LoginType,
+
+            AllOrganizationAccess:
+              req.user
+                ?.AllOrganizationAccess,
+          });
+
+      if (!result.success) {
+        return res
+          .status(
+            result.statusCode ||
+              500,
+          )
+          .json(result);
+      }
+
+      // ============================================================
+      // PDF Response
+      // ============================================================
+
+      const fileName =
+        `RGP_Vendor_Wise_Report_${Date.now()}.pdf`;
+
+      res.setHeader(
+        "Content-Type",
+        "application/pdf",
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${fileName}"`,
+      );
+
+      res.setHeader(
+        "Content-Length",
+        result.data.length,
+      );
+
+      return res.end(
+        result.data,
+      );
+    } catch (error) {
+      console.error(
+        "RGP Vendor Wise Report PDF Controller Error:",
+        error,
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+          message:
+            "Unable to generate RGP vendor wise report PDF.",
+        });
+    }
+};
+// ============================================================Pending Return Item Report PDF
+exports.getRGPPendingReturnReportPdf = async (req, res) => {
+    try {
+      const {
+        OrganizationID,
+        FromDate,
+        ToDate,
+        DepartmentID,
+        RGPNumber,
+        VendorName,
+        Search,
+      } = req.query;
+
+      // ============================================================
+      // Organization Validation
+      // ============================================================
+
+      if (
+        !OrganizationID ||
+        !Number.isInteger(
+          Number(OrganizationID),
+        ) ||
+        Number(OrganizationID) <= 0
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              "Valid OrganizationID is required.",
+          });
+      }
+
+      // ============================================================
+      // Department Validation
+      // ============================================================
+
+      if (
+        DepartmentID &&
+        (
+          !Number.isInteger(
+            Number(DepartmentID),
+          ) ||
+          Number(DepartmentID) <= 0
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              "DepartmentID must be a positive integer.",
+          });
+      }
+
+      // ============================================================
+      // RGP Number Validation
+      // ============================================================
+
+      if (
+        RGPNumber &&
+        (
+          !Number.isInteger(
+            Number(RGPNumber),
+          ) ||
+          Number(RGPNumber) <= 0
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message:
+              "RGPNumber must be a positive integer.",
+          });
+      }
+
+      // ============================================================
+      // Service
+      // ============================================================
+
+      const result =
+        await GatepassService
+          .getRGPPendingReturnReportPdf({
+            OrganizationID:
+              Number(
+                OrganizationID,
+              ),
+
+            FromDate:
+              FromDate || null,
+
+            ToDate:
+              ToDate || null,
+
+            DepartmentID:
+              DepartmentID
+                ? Number(
+                    DepartmentID,
+                  )
+                : null,
+
+            RGPNumber:
+              RGPNumber
+                ? Number(
+                    RGPNumber,
+                  )
+                : null,
+
+            VendorName:
+              VendorName || null,
+
+            Search:
+              Search || null,
+
+            UserID:
+              req.user?.UserID,
+
+            UserType:
+              req.user?.UserType,
+
+            DepartmentName:
+              req.user
+                ?.DepartmentName,
+
+            LoginType:
+              req.user?.LoginType,
+
+            AllOrganizationAccess:
+              req.user
+                ?.AllOrganizationAccess,
+          });
+
+      if (!result.success) {
+        return res
+          .status(
+            result.statusCode ||
+              500,
+          )
+          .json(result);
+      }
+
+      // ============================================================
+      // PDF Response
+      // ============================================================
+
+      const fileName =
+        `RGP_Pending_Return_Report_${Date.now()}.pdf`;
+
+      res.setHeader(
+        "Content-Type",
+        "application/pdf",
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${fileName}"`,
+      );
+
+      res.setHeader(
+        "Content-Length",
+        result.data.length,
+      );
+
+      return res.end(
+        result.data,
+      );
+    } catch (error) {
+      console.error(
+        "RGP Pending Return Report PDF Controller Error:",
+        error,
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+          message:
+            "Unable to generate RGP pending return report PDF.",
+        });
+    }
+};
+// ============================================================RGP Details PDF
+exports.generateRGPDetailPdf = async (req, res) => {
+  try {
+    const RGPID =
+      Number(req.query.RGPID);
+
+    if (
+      !Number.isInteger(RGPID) ||
+      RGPID <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Valid RGPID is required.",
+      });
+    }
+
+
+    const result =
+      await GatepassService
+        .generateRGPDetailPdf({
+          RGPID,
+
+          UserID:
+            req.user?.UserID,
+
+          UserType:
+            req.user?.UserType,
+
+          DepartmentName:
+            req.user?.DepartmentName,
+
+          LoginType:
+            req.user?.LoginType,
+
+          AllOrganizationAccess:
+            req.user?.AllOrganizationAccess,
+        });
+
+
+    if (!result.success) {
+      return res
+        .status(
+          result.statusCode || 500,
+        )
+        .json(result);
+    }
+
+
+    res.setHeader(
+      "Content-Type",
+      result.contentType ||
+        "application/pdf",
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${result.fileName}"`,
+    );
+
+    res.setHeader(
+      "Content-Length",
+      result.data.length,
+    );
+
+
+    return res.end(
+      result.data,
+    );
+
+  } catch (error) {
+
+    console.error(
+      "Generate RGP Detail PDF Controller Error:",
+      error,
+    );
+
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to generate RGP detail PDF.",
+    });
+  }
+};
+
+// =======================================================================================NRGP
+// ============================================================ Create NRGP
+exports.createNRGP = async (req, res) => {
+  try {
+    const {
+      OrganizationID,
+      VendorName,
+      ContactNumber,
+      Company,
+      SendTo,
+      DepartmentID,
+      Address,
+      TakenBy,
+      Items,
+    } = req.body;
+
+    // ============================================================
+    // Validate
+    // ============================================================
+
+    if (
+      !Number.isInteger(Number(OrganizationID)) ||
+      Number(OrganizationID) <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid OrganizationID is required.",
+      });
+    }
+
+    if (
+      !VendorName ||
+      !String(VendorName).trim()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "VendorName is required.",
+      });
+    }
+
+    if (
+      !Number.isInteger(Number(DepartmentID)) ||
+      Number(DepartmentID) <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid DepartmentID is required.",
+      });
+    }
+
+    if (
+      !Array.isArray(Items) ||
+      Items.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "At least one item is required.",
+      });
+    }
+
+    // ============================================================
+    // Payload
+    // ============================================================
+
+    const payload = {
+      OrganizationID:
+        Number(OrganizationID),
+
+      VendorName:
+        String(VendorName).trim(),
+
+      ContactNumber:
+        ContactNumber || null,
+
+      Company:
+        Company || null,
+
+      SendTo:
+        SendTo || null,
+
+      DepartmentID:
+        Number(DepartmentID),
+
+      Address:
+        Address || null,
+
+      TakenBy:
+        TakenBy || null,
+
+      Items,
+
+      // JWT
+      UserID:
+        req.user.UserID,
+
+      UserType:
+        req.user.UserType,
+
+      DepartmentName:
+        req.user.DepartmentName,
+
+      LoginType:
+        req.user.LoginType,
+
+      AllOrganizationAccess:
+        req.user.AllOrganizationAccess,
+    };
+
+    // ============================================================
+    // RabbitMQ
+    // ============================================================
+
+    const response =
+      await producer.sendMessage(
+        QUEUE.GATEPASS.REQUEST,
+        QUEUE.GATEPASS.RESPONSE,
+        {
+          action: "CREATE_NRGP",
+          data: payload,
+        },
+      );
+
+    return res
+      .status(
+        response.statusCode ||
+        (response.success ? 201 : 400),
+      )
+      .json(response);
+
+  } catch (error) {
+    console.error(
+      "Create NRGP Controller Error:",
+      error.message,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to create NRGP at this time.",
+    });
+  }
+};
+// ============================================================NRGP List
+exports.getNRGPList = async (req, res) => {
+  try {
+    const result =
+      await GatepassService.getNRGPList({
+        ...req.query,
+
+        UserID:
+          req.user.UserID,
+
+        UserType:
+          req.user.UserType,
+
+        DepartmentName:
+          req.user.DepartmentName,
+
+        LoginType:
+          req.user.LoginType,
+
+        AllOrganizationAccess:
+          req.user.AllOrganizationAccess,
+      });
+
+    return res
+      .status(
+        result.statusCode ||
+        (result.success ? 200 : 400),
+      )
+      .json(result);
+
+  } catch (error) {
+    console.error(
+      "Get NRGP List Controller Error:",
+      error.message,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to fetch NRGP list at this time.",
+    });
+  }
+};
+// ============================================================ Get NRGP By ID
+exports.getNRGPById = async (req, res) => {
+  try {
+    const result =
+      await GatepassService.getNRGPById({
+        NRGPID:
+          req.query.NRGPID,
+
+        UserID:
+          req.user.UserID,
+
+        UserType:
+          req.user.UserType,
+
+        DepartmentName:
+          req.user.DepartmentName,
+
+        LoginType:
+          req.user.LoginType,
+
+        AllOrganizationAccess:
+          req.user.AllOrganizationAccess,
+      });
+
+    return res
+      .status(
+        result.statusCode ||
+        (result.success ? 200 : 400),
+      )
+      .json(result);
+
+  } catch (error) {
+    console.error(
+      "Get NRGP By ID Controller Error:",
+      error.message,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to fetch NRGP record at this time.",
+    });
+  }
+};
+// ============================================================ Update NRGP
+exports.updateNRGP = async (req, res) => {
+  try {
+    const data = {
+      ...req.body,
+
+      UserID:
+        req.user.UserID,
+
+      UserType:
+        req.user.UserType,
+
+      DepartmentName:
+        req.user.DepartmentName,
+
+      LoginType:
+        req.user.LoginType,
+
+      AllOrganizationAccess:
+        req.user.AllOrganizationAccess,
+    };
+
+    const result =
+      await producer.sendMessage(
+        QUEUE.GATEPASS.REQUEST,
+        QUEUE.GATEPASS.RESPONSE,
+        {
+          action: "UPDATE_NRGP",
+          data,
+        },
+      );
+
+    return res
+      .status(
+        result.statusCode ||
+        (result.success ? 200 : 400),
+      )
+      .json(result);
+  } catch (error) {
+    console.error(
+      "Update NRGP Controller Error:",
+      error.message,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to update NRGP at this time.",
+    });
+  }
+};
+// ============================================================ Delete NRGP
+exports.deleteNRGP = async (req, res) => {
+  try {
+    const {
+      NRGPID,
+    } = req.body;
+
+    if (
+      !Number.isInteger(Number(NRGPID)) ||
+      Number(NRGPID) <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Valid NRGPID is required.",
+      });
+    }
+
+    const payload = {
+      NRGPID:
+        Number(NRGPID),
+
+      UserID:
+        req.user.UserID,
+
+      UserType:
+        req.user.UserType,
+
+      DepartmentName:
+        req.user.DepartmentName,
+
+      LoginType:
+        req.user.LoginType,
+
+      AllOrganizationAccess:
+        req.user.AllOrganizationAccess,
+    };
+
+    const result =
+      await producer.sendMessage(
+        QUEUE.GATEPASS.REQUEST,
+        QUEUE.GATEPASS.RESPONSE,
+        {
+          action: "DELETE_NRGP",
+          data: payload,
+        },
+      );
+
+    return res
+      .status(
+        result.statusCode ||
+        (result.success ? 200 : 400),
+      )
+      .json(result);
+
+  } catch (error) {
+    console.error(
+      "Delete NRGP Controller Error:",
+      error.message,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to delete NRGP at this time.",
+    });
+  }
+};
+// ============================================================ NRGP Approval
+exports.processNRGPApproval = async (req, res) => {
+  try {
+    const {
+      NRGPID,
+      Action,
+      Remarks,
+    } = req.body;
+
+    if (
+      !Number.isInteger(Number(NRGPID)) ||
+      Number(NRGPID) <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid NRGPID is required.",
+      });
+    }
+
+    const normalizedAction =
+      String(Action || "")
+        .trim()
+        .toUpperCase();
+
+    if (
+      ![
+        "APPROVE",
+        "REJECT",
+        "CANCEL",
+      ].includes(normalizedAction)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Action must be APPROVE, REJECT or CANCEL.",
+      });
+    }
+
+    const payload = {
+      NRGPID:
+        Number(NRGPID),
+
+      Action:
+        normalizedAction,
+
+      Remarks:
+        Remarks || null,
+
+      UserID:
+        req.user.UserID,
+
+      UserType:
+        req.user.UserType,
+
+      DepartmentName:
+        req.user.DepartmentName,
+
+      LoginType:
+        req.user.LoginType,
+
+      AllOrganizationAccess:
+        req.user.AllOrganizationAccess,
+    };
+
+    // YAHAN existing processRGPApproval controller
+    // ka exact RabbitMQ call same rahega.
+    // Sirf:
+    //
+    // action: "PROCESS_NRGP_APPROVAL"
+    // data: payload
+  } catch (error) {
+    console.error(
+      "Process NRGP Approval Controller Error:",
+      error.message,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to process NRGP approval at this time.",
+    });
+  }
+};
+// ============================================================ Get NRGP Approval Config List
+exports.getNRGPApprovalConfig = async (req, res) => {
+  try {
+    const result =
+      await GatepassService.getNRGPApprovalConfig({
+        OrganizationID:
+          req.query.OrganizationID,
+
+        UserID:
+          req.user.UserID,
+
+        UserType:
+          req.user.UserType,
+
+        DepartmentName:
+          req.user.DepartmentName,
+
+        LoginType:
+          req.user.LoginType,
+
+        AllOrganizationAccess:
+          req.user.AllOrganizationAccess,
+      });
+
+    return res
+      .status(
+        result.statusCode ||
+        (result.success ? 200 : 400),
+      )
+      .json(result);
+
+  } catch (error) {
+    console.error(
+      "Get NRGP Approval Config Controller Error:",
+      error.message,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to fetch NRGP approval config at this time.",
+    });
+  }
+};
+// ============================================================ Save NRGP Approval Config
+exports.saveNRGPApprovalConfig = async (req, res) => {
+  try {
+    const {
+      OrganizationID,
+      Approvals,
+    } = req.body;
+
+    if (
+      !Number.isInteger(
+        Number(OrganizationID),
+      ) ||
+      Number(OrganizationID) <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Valid OrganizationID is required.",
+      });
+    }
+
+    if (
+      !Array.isArray(Approvals) ||
+      Approvals.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "At least one approval configuration is required.",
+      });
+    }
+
+    const payload = {
+      OrganizationID:
+        Number(OrganizationID),
+
+      Approvals,
+
+      UserID:
+        req.user.UserID,
+
+      UserType:
+        req.user.UserType,
+
+      DepartmentName:
+        req.user.DepartmentName,
+
+      LoginType:
+        req.user.LoginType,
+
+      AllOrganizationAccess:
+        req.user.AllOrganizationAccess,
+    };
+
+    // Existing SAVE_RGP_APPROVAL_CONFIG controller ka
+    // RabbitMQ request block exactly yahan use karo.
+    //
+    // action: "SAVE_NRGP_APPROVAL_CONFIG"
+    // data: payload
+
+  } catch (error) {
+    console.error(
+      "Save NRGP Approval Config Controller Error:",
+      error.message,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to save NRGP approval configuration at this time.",
+    });
+  }
+};
+// ============================================================ Delete NRGP Approval Config
+exports.deleteNRGPApprovalConfig = async (req, res) => {
+  try {
+    const {
+      NRGPApprovalConfigID,
+    } = req.body;
+
+    if (
+      !Number.isInteger(
+        Number(NRGPApprovalConfigID),
+      ) ||
+      Number(NRGPApprovalConfigID) <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Valid NRGPApprovalConfigID is required.",
+      });
+    }
+
+    const payload = {
+      NRGPApprovalConfigID:
+        Number(NRGPApprovalConfigID),
+
+      UserID:
+        req.user.UserID,
+
+      UserType:
+        req.user.UserType,
+
+      DepartmentName:
+        req.user.DepartmentName,
+
+      LoginType:
+        req.user.LoginType,
+
+      AllOrganizationAccess:
+        req.user.AllOrganizationAccess,
+    };
+
+    // Existing DELETE_RGP_APPROVAL_CONFIG controller ka
+    // RabbitMQ block exactly same yahan use hoga.
+    //
+    // action: "DELETE_NRGP_APPROVAL_CONFIG"
+    // data: payload
+
+  } catch (error) {
+    console.error(
+      "Delete NRGP Approval Config Controller Error:",
+      error.message,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to delete NRGP approval configuration at this time.",
+    });
+  }
+};
