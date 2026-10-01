@@ -827,6 +827,10 @@ const createRGP = async (data) => {
 // ============================================================Get RGP List
 const getRGPList = async (data) => {
   try {
+    // ==========================================================
+    // Pagination
+    // ==========================================================
+
     const page =
       Math.max(
         Number(data.page) || 1,
@@ -836,8 +840,7 @@ const getRGPList = async (data) => {
     const pageSize =
       Math.min(
         Math.max(
-          Number(data.PageSize) ||
-            10,
+          Number(data.PageSize) || 10,
           1,
         ),
         100,
@@ -893,7 +896,7 @@ const getRGPList = async (data) => {
     }
 
     // ==========================================================
-    // Department
+    // Department Filter
     // ==========================================================
 
     if (data.DepartmentID) {
@@ -972,6 +975,112 @@ const getRGPList = async (data) => {
       `);
     }
 
+    // ==========================================================
+    // Logged-In User Role
+    // ==========================================================
+
+    const approvalRole =
+      normalizeRGPApprovalRole(
+        resolveRGPApprovalRole(
+          data,
+        ),
+      );
+
+    const departmentName =
+      String(
+        data.DepartmentName || "",
+      )
+        .trim()
+        .toUpperCase();
+
+    const isSecurity =
+      departmentName ===
+      "SECURITY";
+
+    const isCEO =
+      approvalRole === "CEO";
+
+    // ==========================================================
+    // Role Wise Visibility
+    //
+    // SECURITY = All Organization RGP
+    // CEO      = All Organization RGP
+    // HOD      = Own Department RGP
+    // GM/etc   = RGP where that approval role exists
+    // ==========================================================
+
+    if (
+      !isSecurity &&
+      !isCEO
+    ) {
+      // ========================================================
+      // HOD
+      // ========================================================
+
+      if (
+        approvalRole === "HOD"
+      ) {
+        const userDepartmentID =
+          Number(
+            data.UserDepartmentID,
+          );
+
+        if (
+          !Number.isInteger(
+            userDepartmentID,
+          ) ||
+          userDepartmentID <= 0
+        ) {
+          return fail(
+            "User DepartmentID is required for HOD.",
+            400,
+          );
+        }
+
+        values.push(
+          userDepartmentID,
+        );
+
+        conditions.push(
+          `m.DepartmentID = $${values.length}`,
+        );
+      }
+
+      // ========================================================
+      // GM / Other Approval Roles
+      // ========================================================
+
+      else if (approvalRole) {
+        values.push(
+          approvalRole,
+        );
+
+        conditions.push(`
+          EXISTS (
+            SELECT 1
+            FROM Gatepass_RGP_Approval ra
+            WHERE ra.RGPID = m.RGPID
+              AND ra.IsDeleted = FALSE
+              AND UPPER(
+                    TRIM(
+                      ra.ApprovalRole
+                    )
+                  )
+                  =
+                  UPPER(
+                    TRIM(
+                      $${values.length}
+                    )
+                  )
+          )
+        `);
+      }
+    }
+
+    // ==========================================================
+    // Where Clause
+    // ==========================================================
+
     const whereClause =
       conditions.join(
         " AND ",
@@ -1002,7 +1111,7 @@ const getRGPList = async (data) => {
       );
 
     // ==========================================================
-    // Pagination
+    // Pagination Values
     // ==========================================================
 
     const listValues = [
@@ -1077,56 +1186,331 @@ const getRGPList = async (data) => {
         listValues,
       );
 
-    const approvalsByRGP = new Map();
-    if (result.rows.length) {
-      const approvals = await pool.query(
-        `SELECT RGPApprovalID, RGPID, OrganizationID,
-                RGPApprovalConfigID, ApprovalLevel, ApprovalRole,
-                ApprovalOrder, Status, StatusDateTime, ActionBy, Remarks
-         FROM Gatepass_RGP_Approval
-         WHERE RGPID = ANY($1::BIGINT[])
-           AND IsDeleted = FALSE
-         ORDER BY ApprovalOrder ASC, ApprovalLevel ASC, RGPApprovalID ASC;`,
-        [result.rows.map((row) => row.rgpid)],
-      );
-      for (const approval of approvals.rows) {
-        const id = String(approval.rgpid);
-        if (!approvalsByRGP.has(id)) approvalsByRGP.set(id, []);
-        approvalsByRGP.get(id).push(approval);
+    // ==========================================================
+    // Get Approvals For Current Page
+    // ==========================================================
+
+    const approvalsByRGP =
+      new Map();
+
+    if (
+      result.rows.length > 0
+    ) {
+      const rgpIDs =
+        result.rows.map(
+          (row) =>
+            row.rgpid,
+        );
+
+      const approvalResult =
+        await pool.query(
+          `
+          SELECT
+            RGPApprovalID,
+            RGPID,
+            OrganizationID,
+            RGPApprovalConfigID,
+            ApprovalLevel,
+            ApprovalRole,
+            ApprovalOrder,
+            Status,
+            StatusDateTime,
+            ActionBy,
+            Remarks
+
+          FROM Gatepass_RGP_Approval
+
+          WHERE RGPID =
+            ANY($1::BIGINT[])
+
+            AND IsDeleted =
+              FALSE
+
+          ORDER BY
+            RGPID ASC,
+            ApprovalOrder ASC,
+            ApprovalLevel ASC,
+            RGPApprovalID ASC;
+          `,
+          [rgpIDs],
+        );
+
+      for (
+        const approval
+        of approvalResult.rows
+      ) {
+        const rgpID =
+          String(
+            approval.rgpid,
+          );
+
+        if (
+          !approvalsByRGP.has(
+            rgpID,
+          )
+        ) {
+          approvalsByRGP.set(
+            rgpID,
+            [],
+          );
+        }
+
+        approvalsByRGP
+          .get(rgpID)
+          .push(approval);
       }
     }
 
-    const approvalRole = resolveRGPApprovalRole(data);
-    const isSecurity = String(data.DepartmentName || "").trim().toUpperCase() === "SECURITY";
-    const normalizeStatus = (status) => String(status || "Pending").trim().toUpperCase();
-    const mappedData = result.rows.map((row) => {
-      const approvals = approvalsByRGP.get(String(row.rgpid)) || [];
-      const currentStage = approvals.find((approval) => normalizeStatus(approval.status) !== "APPROVED");
-      const alreadyApproved = approvals.some((approval) =>
-        normalizeStatus(approval.status) === "APPROVED" &&
-        data.UserID != null && approval.actionby != null &&
-        String(approval.actionby) === String(data.UserID),
-      );
-      const status = normalizeStatus(row.status);
+    // ==========================================================
+    // Helpers
+    // ==========================================================
 
-      return {
-        ...mapRGP(row),
-        Approvals: approvals.map(mapRGPApproval),
-        canappprove: Boolean(
-          status === "PENDING" && approvalRole && currentStage &&
-          normalizeStatus(currentStage.status) === "PENDING" &&
-          normalizeRGPApprovalRole(currentStage.approvalrole) === approvalRole &&
-          !alreadyApproved &&
-          (approvalRole !== "HOD" ||
-            (Number(data.UserDepartmentID) > 0 &&
-              Number(data.UserDepartmentID) === Number(row.departmentid)))
-        ),
-        cancheckout: Boolean(
-          isSecurity && status === "APPROVED" &&
-          approvals.length > 0 && !currentStage
-        ),
-      };
-    });
+    const normalizeStatus = (
+      status,
+    ) =>
+      String(
+        status || "Pending",
+      )
+        .trim()
+        .toUpperCase();
+
+    // ==========================================================
+    // Map Result
+    // ==========================================================
+
+    const mappedData =
+      result.rows.map(
+        (row) => {
+          const approvals =
+            approvalsByRGP.get(
+              String(
+                row.rgpid,
+              ),
+            ) || [];
+
+          const masterStatus =
+            normalizeStatus(
+              row.status,
+            );
+
+          // ====================================================
+          // Current Sequential Approval Stage
+          // ====================================================
+
+          const currentStage =
+            approvals.find(
+              (approval) =>
+                normalizeStatus(
+                  approval.status,
+                ) !==
+                "APPROVED",
+            );
+
+          // ====================================================
+          // Already Approved By Current User
+          // ====================================================
+
+          const alreadyApproved =
+            approvals.some(
+              (approval) =>
+                normalizeStatus(
+                  approval.status,
+                ) ===
+                  "APPROVED" &&
+
+                data.UserID !=
+                  null &&
+
+                approval.actionby !=
+                  null &&
+
+                String(
+                  approval.actionby,
+                ) ===
+                  String(
+                    data.UserID,
+                  ),
+            );
+
+          // ====================================================
+          // Approval Status
+          // ====================================================
+
+          let approvalStatus =
+            "PENDING";
+
+          // ====================================================
+          // SECURITY / CEO
+          //
+          // Any Rejected  => REJECTED
+          // All Approved  => APPROVED
+          // Otherwise     => PENDING
+          // ====================================================
+
+          if (
+            isSecurity ||
+            isCEO
+          ) {
+            const hasRejected =
+              approvals.some(
+                (approval) =>
+                  normalizeStatus(
+                    approval.status,
+                  ) ===
+                  "REJECTED",
+              );
+
+            const allApproved =
+              approvals.length >
+                0 &&
+              approvals.every(
+                (approval) =>
+                  normalizeStatus(
+                    approval.status,
+                  ) ===
+                  "APPROVED",
+              );
+
+            if (hasRejected) {
+              approvalStatus =
+                "REJECTED";
+            } else if (
+              allApproved
+            ) {
+              approvalStatus =
+                "APPROVED";
+            } else {
+              approvalStatus =
+                "PENDING";
+            }
+          }
+
+          // ====================================================
+          // HOD / GM / Other Approver
+          //
+          // Show own approval status
+          // ====================================================
+
+          else if (
+            approvalRole
+          ) {
+            const myApproval =
+              approvals.find(
+                (approval) =>
+                  normalizeRGPApprovalRole(
+                    approval.approvalrole,
+                  ) ===
+                  approvalRole,
+              );
+
+            if (myApproval) {
+              approvalStatus =
+                normalizeStatus(
+                  myApproval.status,
+                );
+            } else {
+              approvalStatus =
+                "PENDING";
+            }
+          }
+
+          // ====================================================
+          // Can Approve
+          // ====================================================
+
+          const canApprove =
+            Boolean(
+              masterStatus ===
+                "PENDING" &&
+
+              approvalRole &&
+
+              currentStage &&
+
+              normalizeStatus(
+                currentStage.status,
+              ) ===
+                "PENDING" &&
+
+              normalizeRGPApprovalRole(
+                currentStage.approvalrole,
+              ) ===
+                approvalRole &&
+
+              !alreadyApproved &&
+
+              (
+                approvalRole !==
+                  "HOD" ||
+
+                (
+                  Number(
+                    data.UserDepartmentID,
+                  ) > 0 &&
+
+                  Number(
+                    data.UserDepartmentID,
+                  ) ===
+                    Number(
+                      row.departmentid,
+                    )
+                )
+              )
+            );
+
+          // ====================================================
+          // Can Checkout
+          //
+          // Only Security
+          // All Approvals must be Approved
+          // ====================================================
+
+          const canCheckout =
+            Boolean(
+              isSecurity &&
+
+              masterStatus ===
+                "APPROVED" &&
+
+              approvals.length >
+                0 &&
+
+              approvals.every(
+                (approval) =>
+                  normalizeStatus(
+                    approval.status,
+                  ) ===
+                  "APPROVED",
+              )
+            );
+
+          // ====================================================
+          // Response
+          // ====================================================
+
+          return {
+            ...mapRGP(row),
+
+            Approvals:
+              approvals.map(
+                mapRGPApproval,
+              ),
+
+            ApprovalStatus:
+              approvalStatus,
+
+            canappprove:
+              canApprove,
+
+            cancheckout:
+              canCheckout,
+          };
+        },
+      );
+
+    // ==========================================================
+    // Response
+    // ==========================================================
 
     return ok(
       "RGP list fetched successfully.",
@@ -1147,6 +1531,7 @@ const getRGPList = async (data) => {
           ),
       },
     );
+
   } catch (error) {
     return databaseFailure(
       error,
@@ -8768,21 +9153,15 @@ const mapNRGPMaster = (row) => ({
   Status:
     row.status,
 
-  CreatedBy:
-    row.createdby
-      ? Number(row.createdby)
-      : null,
 
-  CreatedDate:
-    row.createddate,
+CreatedDate:
+    row.createddate
+      ? formatDate(
+          row.createddate,
+        )
+      : null
 
-  ModifiedBy:
-    row.modifiedby
-      ? Number(row.modifiedby)
-      : null,
-
-  ModifiedDate:
-    row.modifieddate,
+ 
 });
 // ========================NRGP Item Mapping
 const mapNRGPItem = (row) => ({
@@ -8815,29 +9194,20 @@ const mapNRGPItem = (row) => ({
   SerialNumber:
     row.serialnumber,
 
-  CreatedBy:
-    row.createdby
-      ? Number(row.createdby)
-      : null,
+CreatedDate:
+    row.createddate
+      ? formatDate(
+          row.createddate,
+        )
+      : null
 
-  CreatedDate:
-    row.createddate,
+  
 
-  ModifiedBy:
-    row.modifiedby
-      ? Number(row.modifiedby)
-      : null,
-
-  ModifiedDate:
-    row.modifieddate,
+ 
 });
 // ========================NRGP Approval Mapping
 const mapNRGPApproval = (row) => ({
-  NRGPApprovalID:
-    Number(row.nrgpapprovalid),
-
-  NRGPID:
-    Number(row.nrgpid),
+ 
 
   NRGPApprovalConfigID:
     row.nrgpapprovalconfigid
@@ -8850,19 +9220,12 @@ const mapNRGPApproval = (row) => ({
   ApprovalRole:
     row.approvalrole,
 
-  ApprovalOrder:
-    Number(row.approvalorder),
+
 
   Status:
     row.status,
 
-  StatusDateTime:
-    row.statusdatetime,
-
-  ActionBy:
-    row.actionby
-      ? Number(row.actionby)
-      : null,
+ 
 
   Remarks:
     row.remarks,
@@ -8948,11 +9311,6 @@ const attachNRGPRelatedData = async (rows) => {
       mapNRGPItem,
     );
 
-  const approvals =
-    approvalResult.rows.map(
-      mapNRGPApproval,
-    );
-
   // ============================================================
   // Attach
   // ============================================================
@@ -8968,12 +9326,9 @@ const attachNRGPRelatedData = async (rows) => {
           record.NRGPID,
       );
 
-    record.Approvals =
-      approvals.filter(
-        (approval) =>
-          approval.NRGPID ===
-          record.NRGPID,
-      );
+    record.Approvals = approvalResult.rows
+      .filter((approval) => String(approval.nrgpid) === String(row.nrgpid))
+      .map(mapNRGPApproval);
 
     return record;
   });
@@ -9342,12 +9697,7 @@ const createNRGP = async (data) => {
     await client.query("COMMIT");
 
     return ok(
-      "NRGP created successfully.",
-      {
-        NRGPID,
-        NRGPNumber,
-        Status: "PENDING",
-      },
+      "NRGP created successfully."
     );
 
   } catch (error) {
@@ -9643,10 +9993,29 @@ const getNRGPList = async (data) => {
     // Mapping
     // ============================================================
 
-    const records =
-      result.rows.map(
-        mapNRGPMaster,
+    const approvalsByNRGP = new Map();
+    if (result.rows.length) {
+      const approvalResult = await pool.query(
+        `SELECT NRGPApprovalID, NRGPID, NRGPApprovalConfigID,
+                ApprovalLevel, ApprovalRole, ApprovalOrder, Status,
+                StatusDateTime, ActionBy, Remarks
+         FROM Gatepass_NRGP_Approval
+         WHERE NRGPID = ANY($1::BIGINT[])
+           AND IsDeleted = FALSE
+         ORDER BY ApprovalOrder ASC, ApprovalLevel ASC, NRGPApprovalID ASC;`,
+        [result.rows.map((row) => row.nrgpid)],
       );
+      for (const approval of approvalResult.rows) {
+        const id = String(approval.nrgpid);
+        if (!approvalsByNRGP.has(id)) approvalsByNRGP.set(id, []);
+        approvalsByNRGP.get(id).push(mapNRGPApproval(approval));
+      }
+    }
+
+    const records = result.rows.map((row) => ({
+      ...mapNRGPMaster(row),
+      Approvals: approvalsByNRGP.get(String(row.nrgpid)) || [],
+    }));
 
 
     return {
@@ -9773,6 +10142,81 @@ const getNRGPById = async (data) => {
     return databaseFailure(
       error,
       "Fetch NRGP record",
+    );
+  }
+};
+// ============================================================ Vender Names
+const getNRGPVendorNames = async (data) => {
+  try {
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    const organizationID = Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Query
+    // ============================================================
+
+    const result = await pool.query(
+      `
+      SELECT DISTINCT
+        TRIM(VendorName) AS VendorName
+
+      FROM Gatepass_NRGP_Entry_Master
+
+      WHERE OrganizationID = $1
+        AND IsDeleted = FALSE
+        AND VendorName IS NOT NULL
+        AND TRIM(VendorName) <> ''
+
+      ORDER BY VendorName ASC;
+      `,
+      [organizationID],
+    );
+
+
+    // ============================================================
+    // Mapping
+    // ============================================================
+
+    const vendors = result.rows.map((row) => ({
+      VendorName: row.vendorname,
+    }));
+
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return {
+      success: true,
+      message:
+        "NRGP vendor names fetched successfully.",
+      Count: vendors.length,
+      data: vendors,
+    };
+
+  } catch (error) {
+    console.error(
+      "Get NRGP Vendor Names By Organization Error:",
+      error.message,
+    );
+
+    return databaseFailure(
+      error,
+      "Fetch NRGP vendor names",
     );
   }
 };
@@ -10204,10 +10648,7 @@ const updateNRGP = async (data) => {
     await client.query("COMMIT");
 
     return ok(
-      "NRGP updated successfully.",
-      {
-        NRGPID,
-      },
+      "NRGP updated successfully."
     );
   } catch (error) {
     try {
@@ -10801,10 +11242,7 @@ const getNRGPApprovalConfig = async (data) => {
         NRGPApprovalConfigID:
           Number(row.nrgpapprovalconfigid),
 
-        OrganizationID:
-          Number(row.organizationid),
-
-        ApprovalLevel:
+ApprovalLevel:
           Number(row.approvallevel),
 
         ApprovalRole:
@@ -10816,26 +11254,22 @@ const getNRGPApprovalConfig = async (data) => {
         IsMandatory:
           row.ismandatory,
 
-        CreatedBy:
-          row.createdby
-            ? Number(row.createdby)
-            : null,
+      
 
-        CreatedDate:
-          row.createddate,
+        
 
-        ModifiedBy:
-          row.modifiedby
-            ? Number(row.modifiedby)
-            : null,
 
-        ModifiedDate:
-          row.modifieddate,
       }));
 
     return ok(
       "NRGP approval config fetched successfully.",
-      records,
+      {
+        OrganizationID: organizationID,
+        CreatedDate: result.rows[0]?.createddate
+          ? formatDate(result.rows[0].createddate)
+          : null,
+        Approvals: records,
+      },
     );
 
   } catch (error) {
@@ -10846,6 +11280,73 @@ const getNRGPApprovalConfig = async (data) => {
   }
 };
 // ============================================================ Save NRGP Approval Config
+const syncPendingNRGPApprovals = async (client, organizationID, approvals, userID) => {
+  const masters = await client.query(
+    `SELECT NRGPID FROM Gatepass_NRGP_Entry_Master
+     WHERE OrganizationID = $1 AND IsDeleted = FALSE
+       AND UPPER(TRIM(Status)) = 'PENDING'
+     ORDER BY NRGPID FOR UPDATE;`,
+    [organizationID],
+  );
+  let syncedCount = 0;
+  for (const master of masters.rows) {
+    const existing = await client.query(
+      `SELECT * FROM Gatepass_NRGP_Approval WHERE NRGPID = $1
+       ORDER BY IsDeleted ASC, NRGPApprovalID DESC FOR UPDATE;`,
+      [master.nrgpid],
+    );
+    // Never reset approval history, including previously deleted actioned rows.
+    if (existing.rows.some((row) =>
+      String(row.status || "").trim().toUpperCase() !== "PENDING" ||
+      row.actionby != null || row.statusdatetime != null
+    )) continue;
+
+    const byOrder = new Map();
+    for (const row of existing.rows) {
+      const order = Number(row.approvalorder);
+      if (!byOrder.has(order)) byOrder.set(order, row);
+    }
+    const keepIDs = [];
+    for (const approval of approvals) {
+      const row = byOrder.get(approval.ApprovalOrder);
+      if (row) {
+        await client.query(
+          `UPDATE Gatepass_NRGP_Approval
+           SET NRGPApprovalConfigID = $1, ApprovalLevel = $2,
+               ApprovalRole = $3, ApprovalOrder = $4,
+               IsDeleted = FALSE, DeletedBy = NULL, DeletedDateTime = NULL,
+               ModifiedBy = $5, ModifiedDate = CURRENT_TIMESTAMP
+           WHERE NRGPApprovalID = $6;`,
+          [approval.NRGPApprovalConfigID, approval.ApprovalLevel,
+            approval.ApprovalRole, approval.ApprovalOrder, userID || null,
+            row.nrgpapprovalid],
+        );
+        keepIDs.push(row.nrgpapprovalid);
+      } else {
+        const inserted = await client.query(
+          `INSERT INTO Gatepass_NRGP_Approval
+           (NRGPID, NRGPApprovalConfigID, ApprovalLevel, ApprovalRole,
+            ApprovalOrder, Status, CreatedBy, CreatedDate)
+           VALUES ($1, $2, $3, $4, $5, 'Pending', $6, CURRENT_TIMESTAMP)
+           RETURNING NRGPApprovalID;`,
+          [master.nrgpid, approval.NRGPApprovalConfigID, approval.ApprovalLevel,
+            approval.ApprovalRole, approval.ApprovalOrder, userID || null],
+        );
+        keepIDs.push(inserted.rows[0].nrgpapprovalid);
+      }
+    }
+    await client.query(
+      `UPDATE Gatepass_NRGP_Approval
+       SET IsDeleted = TRUE, DeletedBy = $1, DeletedDateTime = CURRENT_TIMESTAMP,
+           ModifiedBy = $1, ModifiedDate = CURRENT_TIMESTAMP
+       WHERE NRGPID = $2 AND IsDeleted = FALSE
+         AND NOT (NRGPApprovalID = ANY($3::BIGINT[]));`,
+      [userID || null, master.nrgpid, keepIDs],
+    );
+    syncedCount += 1;
+  }
+  return syncedCount;
+};
 const saveNRGPApprovalConfig = async (data) => {
   const client = await pool.connect();
 
@@ -10953,7 +11454,24 @@ const saveNRGPApprovalConfig = async (data) => {
     );
 
     // ============================================================
-    // Soft Delete Existing Config
+    // Serialize saves for the organization, including its first configuration.
+    const organization = await client.query(
+      `SELECT OrganizationID FROM Organization_Master WHERE OrganizationID = $1 FOR UPDATE;`,
+      [organizationID],
+    );
+    if (!organization.rows.length) {
+      await client.query("ROLLBACK");
+      return fail("Organization not found.", 404);
+    }
+    const existingConfig = await client.query(
+      `SELECT NRGPApprovalConfigID, ApprovalOrder
+       FROM Gatepass_NRGP_Approval_Config
+       WHERE OrganizationID = $1 FOR UPDATE;`,
+      [organizationID],
+    );
+    const existingByOrder = new Map(existingConfig.rows.map((row) => [Number(row.approvalorder), row]));
+
+    // Soft-delete only orders omitted from the incoming flow.
     // ============================================================
 
     await client.query(
@@ -10966,11 +11484,13 @@ const saveNRGPApprovalConfig = async (data) => {
         ModifiedBy = $1,
         ModifiedDate = CURRENT_TIMESTAMP
       WHERE OrganizationID = $2
-        AND IsDeleted = FALSE;
+        AND IsDeleted = FALSE
+        AND NOT (ApprovalOrder = ANY($3::INT[]));
       `,
       [
         data.UserID || null,
         organizationID,
+        [...approvalOrders],
       ],
     );
 
@@ -10991,8 +11511,21 @@ const saveNRGPApprovalConfig = async (data) => {
       const approval
       of sortedApprovals
     ) {
-      const result =
-        await client.query(
+      const existing = existingByOrder.get(Number(approval.ApprovalOrder));
+      const result = existing
+        ? await client.query(
+            `UPDATE Gatepass_NRGP_Approval_Config
+             SET ApprovalLevel = $1, ApprovalRole = $2, IsMandatory = $3,
+                 IsDeleted = FALSE, DeletedBy = NULL, DeletedDateTime = NULL,
+                 ModifiedBy = $4, ModifiedDate = CURRENT_TIMESTAMP
+             WHERE NRGPApprovalConfigID = $5 AND OrganizationID = $6
+             RETURNING NRGPApprovalConfigID, OrganizationID, ApprovalLevel,
+                       ApprovalRole, ApprovalOrder, IsMandatory;`,
+            [Number(approval.ApprovalLevel), String(approval.ApprovalRole).trim(),
+             approval.IsMandatory !== false, data.UserID || null,
+             existing.nrgpapprovalconfigid, organizationID],
+          )
+        : await client.query(
           `
           INSERT INTO Gatepass_NRGP_Approval_Config
           (
@@ -11075,6 +11608,8 @@ const saveNRGPApprovalConfig = async (data) => {
       });
     }
 
+    await syncPendingNRGPApprovals(client, organizationID, savedApprovals, data.UserID);
+
     // ============================================================
     // Commit
     // ============================================================
@@ -11085,7 +11620,6 @@ const saveNRGPApprovalConfig = async (data) => {
 
     return ok(
       "NRGP approval configuration saved successfully.",
-      savedApprovals,
     );
 
   } catch (error) {
@@ -11193,6 +11727,3711 @@ const deleteNRGPApprovalConfig = async (data) => {
     );
   }
 };
+// ========================================================================Reports
+// ============================================================ NRGP List Report
+const getNRGPListReport = async (data) => {
+  try {
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const page = Number(data.page) || 1;
+
+    const pageSize = Math.min(
+      Number(data.PageSize) || 10,
+      100,
+    );
+
+    const offset = (page - 1) * pageSize;
+
+
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    const organizationID = Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Conditions
+    // ============================================================
+
+    const values = [
+      organizationID,
+    ];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+      `m.OrganizationID = $${values.length}`,
+    ];
+
+
+    // ============================================================
+    // From Date
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(data.FromDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // To Date
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(data.ToDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // Department
+    // ============================================================
+
+    if (data.DepartmentID) {
+      const departmentID = Number(data.DepartmentID);
+
+      if (
+        !Number.isInteger(departmentID) ||
+        departmentID <= 0
+      ) {
+        return fail(
+          "Invalid DepartmentID.",
+          400,
+        );
+      }
+
+      values.push(departmentID);
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // Report Type / Status
+    // ============================================================
+
+    if (data.ReportType) {
+      const reportType = String(data.ReportType)
+        .trim()
+        .toUpperCase();
+
+      switch (reportType) {
+        // ========================================================
+        // Open
+        // ========================================================
+
+        case "ALL NRGP OPEN":
+          conditions.push(
+            `UPPER(m.Status) = 'PENDING'`,
+          );
+          break;
+
+
+        // ========================================================
+        // Closed
+        // ========================================================
+
+        case "ALL NRGP CLOSED":
+          conditions.push(
+            `UPPER(m.Status) = 'APPROVED'`,
+          );
+          break;
+
+
+        // ========================================================
+        // Cancelled / Rejected
+        // ========================================================
+
+        case "ALL NRGP CANCELLED":
+          conditions.push(
+            `UPPER(m.Status) IN ('CANCELLED', 'REJECTED')`,
+          );
+          break;
+
+
+        default:
+          return fail(
+            "Invalid ReportType.",
+            400,
+          );
+      }
+    }
+
+
+    // ============================================================
+    // Where Clause
+    // ============================================================
+
+    const whereClause =
+      conditions.join(" AND ");
+
+
+    // ============================================================
+    // Count Query
+    // ============================================================
+
+    const countResult = await pool.query(
+      `
+      SELECT
+        COUNT(*)::INT AS TotalCount
+
+      FROM Gatepass_NRGP_Entry_Master m
+
+      LEFT JOIN department_master d
+        ON d.DepartmentID = m.DepartmentID
+
+      WHERE ${whereClause};
+      `,
+      values,
+    );
+
+
+    // ============================================================
+    // Pagination Query Values
+    // ============================================================
+
+    const queryValues = [
+      ...values,
+      pageSize,
+      offset,
+    ];
+
+    const limitPosition =
+      queryValues.length - 1;
+
+    const offsetPosition =
+      queryValues.length;
+
+
+    // ============================================================
+    // Master Report Query
+    // ============================================================
+
+    const result = await pool.query(
+      `
+      SELECT
+        m.NRGPID,
+        m.NRGPNumber,
+        m.OrganizationID,
+
+        m.VendorName,
+        m.ContactNumber,
+        m.Company,
+        m.SendTo,
+
+        m.DepartmentID,
+        d.DepartmentName,
+
+        m.Address,
+        m.TakenBy,
+
+        m.Status,
+
+        m.CreatedBy,
+        m.CreatedDate
+
+      FROM Gatepass_NRGP_Entry_Master m
+
+      LEFT JOIN department_master d
+        ON d.DepartmentID = m.DepartmentID
+
+      WHERE ${whereClause}
+
+      ORDER BY
+        m.CreatedDate DESC,
+        m.NRGPID DESC
+
+      LIMIT $${limitPosition}
+      OFFSET $${offsetPosition};
+      `,
+      queryValues,
+    );
+
+
+    // ============================================================
+    // Get NRGP IDs
+    // ============================================================
+
+    const NRGPIDs = result.rows.map(
+      (row) => Number(row.nrgpid),
+    );
+
+
+    // ============================================================
+    // Get Items
+    // ============================================================
+
+    let itemRows = [];
+
+    if (NRGPIDs.length > 0) {
+      const itemResult = await pool.query(
+        `
+        SELECT
+          NRGPItemID,
+          NRGPID,
+          ItemName,
+          Quantity
+
+        FROM Gatepass_NRGP_Entry_Item_Details
+
+        WHERE NRGPID = ANY($1::BIGINT[])
+          AND IsDeleted = FALSE
+
+        ORDER BY
+          NRGPID ASC,
+          NRGPItemID ASC;
+        `,
+        [NRGPIDs],
+      );
+
+      itemRows = itemResult.rows;
+    }
+
+
+    // ============================================================
+    // Mapping
+    // ============================================================
+
+    const reportData = result.rows.map((row) => {
+      const NRGPID =
+        Number(row.nrgpid);
+
+      const Items = itemRows
+        .filter(
+          (item) =>
+            Number(item.nrgpid) === NRGPID,
+        )
+        .map((item) => ({
+          NRGPItemID:
+            Number(item.nrgpitemid),
+
+          ItemName:
+            item.itemname,
+
+          Quantity:
+            item.quantity !== null
+              ? Number(item.quantity)
+              : 0,
+        }));
+
+
+      return {
+        NRGPID:
+          NRGPID,
+
+        NRGPNumber:
+          Number(row.nrgpnumber),
+
+        OrganizationID:
+          Number(row.organizationid),
+
+        VendorName:
+          row.vendorname,
+
+        ContactNumber:
+          row.contactnumber,
+
+        Company:
+          row.company,
+
+        SendTo:
+          row.sendto,
+
+        DepartmentID:
+          row.departmentid !== null
+            ? Number(row.departmentid)
+            : null,
+
+        DepartmentName:
+          row.departmentname,
+
+        Address:
+          row.address,
+
+        TakenBy:
+          row.takenby,
+
+        Status:
+          row.status,
+
+        CreatedDate:
+          row.createddate
+            ? formatDate(
+                row.createddate,
+              )
+            : null,
+
+        Items:
+          Items,
+      };
+    });
+
+
+    // ============================================================
+    // Total Count
+    // ============================================================
+
+    const totalCount = Number(
+      countResult.rows[0]?.totalcount || 0,
+    );
+
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return {
+      success: true,
+      message:
+        "NRGP list report fetched successfully.",
+
+      page: page,
+      PageSize: pageSize,
+      TotalCount: totalCount,
+      TotalPages:
+        Math.ceil(
+          totalCount / pageSize,
+        ),
+
+      data:
+        reportData,
+    };
+
+  } catch (error) {
+    console.error(
+      "Get NRGP List Report Error:",
+      error.message,
+    );
+
+    return databaseFailure(
+      error,
+      "Fetch NRGP list report",
+    );
+  }
+};
+// ============================================================ Department Wise NRGP Report
+const getNRGPDepartmentWiseReport = async (data) => {
+  try {
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const page =
+      Number(data.page) || 1;
+
+    const pageSize =
+      Math.min(
+        Number(data.PageSize) || 10,
+        100,
+      );
+
+    const offset =
+      (page - 1) * pageSize;
+
+
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    const organizationID =
+      Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Conditions
+    // ============================================================
+
+    const values = [
+      organizationID,
+    ];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+      `m.OrganizationID = $${values.length}`,
+    ];
+
+
+    // ============================================================
+    // From Date
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(data.FromDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // To Date
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(data.ToDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+
+    // Optional department filter applies to both totals and report rows.
+    if (data.DepartmentID !== undefined && data.DepartmentID !== null && data.DepartmentID !== "") {
+      const departmentID = Number(data.DepartmentID);
+      if (!Number.isSafeInteger(departmentID) || departmentID <= 0) {
+        return fail("Valid DepartmentID is required.", 400);
+      }
+      values.push(departmentID);
+      conditions.push(`m.DepartmentID = $${values.length}`);
+    }
+    const whereClause =
+      conditions.join(" AND ");
+
+
+    // ============================================================
+    // Total Department Count
+    // ============================================================
+
+    const countResult =
+      await pool.query(
+        `
+        SELECT
+          COUNT(DISTINCT m.DepartmentID)::INT
+            AS TotalCount
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        WHERE ${whereClause};
+        `,
+        values,
+      );
+
+
+    // ============================================================
+    // Pagination Values
+    // ============================================================
+
+    const queryValues = [
+      ...values,
+      pageSize,
+      offset,
+    ];
+
+    const limitPosition =
+      queryValues.length - 1;
+
+    const offsetPosition =
+      queryValues.length;
+
+
+    // ============================================================
+    // Department Wise Query
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.DepartmentID,
+          d.DepartmentName,
+
+          COUNT(*)::INT
+            AS TotalNRGP,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'PENDING'
+          )::INT
+            AS PendingCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'APPROVED'
+          )::INT
+            AS ApprovedCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'REJECTED'
+          )::INT
+            AS RejectedCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'CANCELLED'
+          )::INT
+            AS CancelledCount
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID = m.DepartmentID
+
+        WHERE ${whereClause}
+
+        GROUP BY
+          m.DepartmentID,
+          d.DepartmentName
+
+        ORDER BY
+          d.DepartmentName ASC
+
+        LIMIT $${limitPosition}
+        OFFSET $${offsetPosition};
+        `,
+        queryValues,
+      );
+
+
+    // ============================================================
+    // Mapping
+    // ============================================================
+
+    const reportData =
+      result.rows.map((row) => ({
+        DepartmentID:
+          row.departmentid
+            ? Number(row.departmentid)
+            : null,
+
+        DepartmentName:
+          row.departmentname,
+
+        TotalNRGP:
+          Number(row.totalnrgp || 0),
+
+        PendingCount:
+          Number(row.pendingcount || 0),
+
+        ApprovedCount:
+          Number(row.approvedcount || 0),
+
+        RejectedCount:
+          Number(row.rejectedcount || 0),
+
+        CancelledCount:
+          Number(row.cancelledcount || 0),
+      }));
+
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    const totalCount =
+      Number(
+        countResult.rows[0]
+          ?.totalcount || 0,
+      );
+
+    return {
+      success: true,
+      message:
+        "NRGP department wise report fetched successfully.",
+
+      page,
+      PageSize: pageSize,
+      TotalCount: totalCount,
+      TotalPages: Math.ceil(totalCount / pageSize),
+
+      data: reportData,
+    };
+
+  } catch (error) {
+    console.error(
+      "Get NRGP Department Wise Report Error:",
+      error.message,
+    );
+
+    return databaseFailure(
+      error,
+      "Fetch NRGP department wise report",
+    );
+  }
+};
+// ============================================================ Vendor Wise NRGP Report
+const getNRGPVendorWiseReport = async (data) => {
+  try {
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const page =
+      Number(data.page) || 1;
+
+    const pageSize =
+      Math.min(
+        Number(data.PageSize) || 10,
+        100,
+      );
+
+    const offset =
+      (page - 1) * pageSize;
+
+
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    const organizationID =
+      Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Conditions
+    // ============================================================
+
+    const values = [
+      organizationID,
+    ];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+      `m.OrganizationID = $${values.length}`,
+    ];
+
+
+    // ============================================================
+    // From Date
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(data.FromDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // To Date
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(data.ToDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+
+    // Optional case-insensitive vendor name filter.
+    const vendorName = String(data.VendorName || "").trim();
+    if (vendorName) {
+      values.push(`%${vendorName}%`);
+      conditions.push(`m.VendorName ILIKE $${values.length}`);
+    }
+    const whereClause =
+      conditions.join(" AND ");
+
+
+    // ============================================================
+    // Total Vendor Count
+    // ============================================================
+
+    const countResult =
+      await pool.query(
+        `
+        SELECT
+          COUNT(
+            DISTINCT TRIM(m.VendorName)
+          )::INT AS TotalCount
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        WHERE ${whereClause}
+          AND m.VendorName IS NOT NULL
+          AND TRIM(m.VendorName) <> '';
+        `,
+        values,
+      );
+
+
+    // ============================================================
+    // Pagination Values
+    // ============================================================
+
+    const queryValues = [
+      ...values,
+      pageSize,
+      offset,
+    ];
+
+    const limitPosition =
+      queryValues.length - 1;
+
+    const offsetPosition =
+      queryValues.length;
+
+
+    // ============================================================
+    // Vendor Wise Query
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          TRIM(m.VendorName)
+            AS VendorName,
+
+          COUNT(
+            DISTINCT m.NRGPID
+          )::INT
+            AS TotalNRGP,
+
+          COUNT(i.NRGPItemID)::INT
+            AS TotalItems,
+
+          COALESCE(
+            SUM(i.Quantity),
+            0
+          )
+            AS TotalQuantity,
+
+          COALESCE(
+            SUM(
+              i.Quantity *
+              COALESCE(i.Rate, 0)
+            ),
+            0
+          )
+            AS TotalValue
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN Gatepass_NRGP_Entry_Item_Details i
+          ON i.NRGPID = m.NRGPID
+          AND i.IsDeleted = FALSE
+
+        WHERE ${whereClause}
+          AND m.VendorName IS NOT NULL
+          AND TRIM(m.VendorName) <> ''
+
+        GROUP BY
+          TRIM(m.VendorName)
+
+        ORDER BY
+          TRIM(m.VendorName) ASC
+
+        LIMIT $${limitPosition}
+        OFFSET $${offsetPosition};
+        `,
+        queryValues,
+      );
+
+
+    // ============================================================
+    // Mapping
+    // ============================================================
+
+    const reportData =
+      result.rows.map((row) => ({
+        VendorName:
+          row.vendorname,
+
+        TotalNRGP:
+          Number(row.totalnrgp || 0),
+
+        TotalItems:
+          Number(row.totalitems || 0),
+
+        TotalQuantity:
+          Number(row.totalquantity || 0),
+
+        TotalValue:
+          Number(row.totalvalue || 0),
+      }));
+
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    const totalCount =
+      Number(
+        countResult.rows[0]
+          ?.totalcount || 0,
+      );
+
+    return {
+      success: true,
+      message:
+        "NRGP vendor wise report fetched successfully.",
+
+      page,
+      PageSize: pageSize,
+      TotalCount: totalCount,
+      TotalPages: Math.ceil(totalCount / pageSize),
+
+      data: reportData,
+    };
+
+  } catch (error) {
+    console.error(
+      "Get NRGP Vendor Wise Report Error:",
+      error.message,
+    );
+
+    return databaseFailure(
+      error,
+      "Fetch NRGP vendor wise report",
+    );
+  }
+};
+// ============================================================ Approval Status Report
+const getNRGPApprovalStatusReport = async (data) => {
+  try {
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const page =
+      Number(data.page) || 1;
+
+    const pageSize =
+      Math.min(
+        Number(data.PageSize) || 10,
+        100,
+      );
+
+    const offset =
+      (page - 1) * pageSize;
+
+
+    // ============================================================
+    // Conditions
+    // ============================================================
+
+    const values = [];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+    ];
+
+
+    // ============================================================
+    // Organization Filter
+    // ============================================================
+
+    if (data.OrganizationID) {
+      const organizationID =
+        Number(data.OrganizationID);
+
+      if (
+        !Number.isInteger(organizationID) ||
+        organizationID <= 0
+      ) {
+        return fail(
+          "Invalid OrganizationID.",
+          400,
+        );
+      }
+
+      values.push(organizationID);
+
+      conditions.push(
+        `m.OrganizationID = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // From Date
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(data.FromDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // To Date
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(data.ToDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+
+    const whereClause =
+      conditions.join(" AND ");
+
+
+    // ============================================================
+    // Total Organization Count
+    // ============================================================
+
+    const countResult =
+      await pool.query(
+        `
+        SELECT
+          COUNT(
+            DISTINCT m.OrganizationID
+          )::INT AS TotalCount
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        WHERE ${whereClause};
+        `,
+        values,
+      );
+
+
+    // ============================================================
+    // Pagination Values
+    // ============================================================
+
+    const queryValues = [
+      ...values,
+      pageSize,
+      offset,
+    ];
+
+    const limitPosition =
+      queryValues.length - 1;
+
+    const offsetPosition =
+      queryValues.length;
+
+
+    // ============================================================
+    // Approval Status Query
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.OrganizationID,
+          o.ShortName AS OrganizationName,
+
+          COUNT(*)::INT
+            AS TotalNRGP,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'PENDING'
+          )::INT
+            AS PendingCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'APPROVED'
+          )::INT
+            AS ApprovedCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'REJECTED'
+          )::INT
+            AS RejectedCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'CANCELLED'
+          )::INT
+            AS CancelledCount
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN Organization_Master o
+          ON o.OrganizationID = m.OrganizationID
+
+        WHERE ${whereClause}
+
+        GROUP BY
+          m.OrganizationID,
+          o.ShortName
+
+        ORDER BY
+          o.ShortName ASC
+
+        LIMIT $${limitPosition}
+        OFFSET $${offsetPosition};
+        `,
+        queryValues,
+      );
+
+
+    // ============================================================
+    // Mapping
+    // ============================================================
+
+    const reportData =
+      result.rows.map((row) => ({
+        OrganizationID:
+          Number(row.organizationid),
+
+        OrganizationName:
+          row.organizationname,
+
+        TotalNRGP:
+          Number(row.totalnrgp || 0),
+
+        PendingCount:
+          Number(row.pendingcount || 0),
+
+        ApprovedCount:
+          Number(row.approvedcount || 0),
+
+        RejectedCount:
+          Number(row.rejectedcount || 0),
+
+        CancelledCount:
+          Number(row.cancelledcount || 0),
+      }));
+
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    const totalCount =
+      Number(
+        countResult.rows[0]
+          ?.totalcount || 0,
+      );
+
+    return {
+      success: true,
+      message:
+        "NRGP approval status report fetched successfully.",
+
+      page,
+      PageSize: pageSize,
+      TotalCount: totalCount,
+      TotalPages: Math.ceil(totalCount / pageSize),
+
+      data: reportData,
+    };
+
+  } catch (error) {
+    console.error(
+      "Get NRGP Approval Status Report Error:",
+      error.message,
+    );
+
+    return databaseFailure(
+      error,
+      "Fetch NRGP approval status report",
+    );
+  }
+};
+// ========================================================================PDFs
+// ============================================================ NRGP List Report PDF
+const generateNRGPListReportPdf = async (data) => {
+  try {
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    const organizationID =
+      Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Conditions
+    // SAME AS GET API
+    // ============================================================
+
+    const values = [
+      organizationID,
+    ];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+      `m.OrganizationID = $${values.length}`,
+    ];
+
+
+    // ============================================================
+    // From Date
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(data.FromDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // To Date
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(data.ToDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // Department
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.DepartmentID) {
+      const departmentID =
+        Number(data.DepartmentID);
+
+      if (
+        !Number.isInteger(departmentID) ||
+        departmentID <= 0
+      ) {
+        return fail(
+          "Invalid DepartmentID.",
+          400,
+        );
+      }
+
+      values.push(departmentID);
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // Report Type / Status
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.ReportType) {
+      const reportType =
+        String(data.ReportType)
+          .trim()
+          .toUpperCase();
+
+      switch (reportType) {
+        // ========================================================
+        // Open
+        // ========================================================
+
+        case "ALL NRGP OPEN":
+          conditions.push(
+            `UPPER(m.Status) = 'PENDING'`,
+          );
+          break;
+
+
+        // ========================================================
+        // Closed
+        // ========================================================
+
+        case "ALL NRGP CLOSED":
+          conditions.push(
+            `UPPER(m.Status) = 'APPROVED'`,
+          );
+          break;
+
+
+        // ========================================================
+        // Cancelled / Rejected
+        // ========================================================
+
+        case "ALL NRGP CANCELLED":
+          conditions.push(
+            `UPPER(m.Status) IN ('CANCELLED', 'REJECTED')`,
+          );
+          break;
+
+
+        default:
+          return fail(
+            "Invalid ReportType.",
+            400,
+          );
+      }
+    }
+
+
+    // ============================================================
+    // Where Clause
+    // ============================================================
+
+    const whereClause =
+      conditions.join(" AND ");
+
+
+    // ============================================================
+    // Master Query
+    // SAME AS GET API
+    // ONLY PAGINATION REMOVED
+    // ============================================================
+
+    const result = await pool.query(
+      `
+      SELECT
+        m.NRGPID,
+        m.NRGPNumber,
+        m.OrganizationID,
+
+        m.VendorName,
+        m.ContactNumber,
+        m.Company,
+        m.SendTo,
+
+        m.DepartmentID,
+        d.DepartmentName,
+
+        m.Address,
+        m.TakenBy,
+
+        m.Status,
+
+        m.CreatedBy,
+        m.CreatedDate
+
+      FROM Gatepass_NRGP_Entry_Master m
+
+      LEFT JOIN department_master d
+        ON d.DepartmentID = m.DepartmentID
+
+      WHERE ${whereClause}
+
+      ORDER BY
+        m.CreatedDate DESC,
+        m.NRGPID DESC;
+      `,
+      values,
+    );
+
+
+    // ============================================================
+    // Get NRGP IDs
+    // SAME ITEM LOGIC AS GET API
+    // ============================================================
+
+    const NRGPIDs =
+      result.rows.map(
+        (row) => Number(row.nrgpid),
+      );
+
+
+    // ============================================================
+    // Get Items
+    // ============================================================
+
+    let itemRows = [];
+
+    if (NRGPIDs.length > 0) {
+      const itemResult =
+        await pool.query(
+          `
+          SELECT
+            NRGPItemID,
+            NRGPID,
+            ItemName,
+            Quantity
+
+          FROM Gatepass_NRGP_Entry_Item_Details
+
+          WHERE NRGPID = ANY($1::BIGINT[])
+            AND IsDeleted = FALSE
+
+          ORDER BY
+            NRGPID ASC,
+            NRGPItemID ASC;
+          `,
+          [NRGPIDs],
+        );
+
+      itemRows =
+        itemResult.rows;
+    }
+
+
+    // ============================================================
+    // PDF Rows
+    //
+    // One NRGP can contain multiple items.
+    // Therefore one PDF row is created for each item.
+    // ============================================================
+
+    const pdfRows = [];
+    for (const row of result.rows) {
+      const items = itemRows.filter((item) => String(item.nrgpid) === String(row.nrgpid));
+      const displayItems = items.length ? items : [{}];
+      displayItems.forEach((item, index) => {
+        pdfRows.push({
+          NRGPNumber: index === 0 ? (row.nrgpnumber != null ? Number(row.nrgpnumber) : "-") : "-",
+          Name: index === 0 ? row.vendorname || "-" : "-",
+          Company: index === 0 ? row.company || "-" : "-",
+          Department: index === 0 ? row.departmentname || "-" : "-",
+          CreatedDate: index === 0 && row.createddate ? formatDate(row.createddate) : "-",
+          ItemName: item.itemname || "-",
+          Quantity: item.quantity != null ? Number(item.quantity) : 0,
+        });
+      });
+    }
+    // PDF Metadata
+    // ============================================================
+
+    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const metadata = [
+      { label: "Organization", value: organizationName },
+      {
+        label: "From Date",
+        value:
+          data.FromDate
+            ? formatDate(data.FromDate)
+            : "All",
+      },
+      {
+        label: "To Date",
+        value:
+          data.ToDate
+            ? formatDate(data.ToDate)
+            : "All",
+      },
+      {
+        label: "Report Type",
+        value:
+          data.ReportType || "All",
+      },
+      {
+        label: "Department",
+        value:
+          data.DepartmentID
+            ? (
+                result.rows[0]
+                  ?.departmentname ||
+                "-"
+              )
+            : "All Department",
+      },
+    ];
+
+
+    // ============================================================
+    // Generate PDF
+    // ============================================================
+
+    const pdfBuffer =
+      await generatePdf({
+        title:
+          "NRGP List Report",
+
+        organizationId:
+          organizationID,
+
+        orientation:
+          "landscape",
+
+        metadata,
+
+        columns: [
+          {
+            header: "NRGP No.",
+            key: "NRGPNumber",
+            width: 65,
+          },
+          {
+            header: "Name",
+            key: "Name",
+            width: "*",
+          },
+          {
+            header: "Company",
+            key: "Company",
+            width: "*",
+          },
+          {
+            header: "Department",
+            key: "Department",
+            width: "*",
+          },
+          {
+            header: "Created Date",
+            key: "CreatedDate",
+            width: 80,
+          },
+          {
+            header: "Item Name",
+            key: "ItemName",
+            width: "*",
+          },
+          {
+            header: "Qty.",
+            key: "Quantity",
+            width: 45,
+            alignment: "right",
+          },
+        ],
+
+        rows:
+          pdfRows,
+      });
+
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return {
+      success: true,
+      message:
+        "NRGP list report PDF generated successfully.",
+      data:
+        pdfBuffer,
+    };
+
+  } catch (error) {
+    console.error(
+      "Generate NRGP List Report PDF Error:",
+      error.message,
+    );
+
+    return databaseFailure(
+      error,
+      "Generate NRGP list report PDF",
+    );
+  }
+};
+// ============================================================ Department Wise NRGP Report PDF
+const generateNRGPDepartmentWiseReportPdf = async (data) => {
+  try {
+    // ============================================================
+    // Validation
+    // SAME AS GET API
+    // ============================================================
+
+    const organizationID =
+      Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Conditions
+    // SAME AS GET API
+    // ============================================================
+
+    const values = [
+      organizationID,
+    ];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+      `m.OrganizationID = $${values.length}`,
+    ];
+
+
+    // ============================================================
+    // From Date
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(data.FromDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // To Date
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(data.ToDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // Department Filter
+    // SAME AS GET API
+    // ============================================================
+
+    if (
+      data.DepartmentID !== undefined &&
+      data.DepartmentID !== null &&
+      data.DepartmentID !== ""
+    ) {
+      const departmentID =
+        Number(data.DepartmentID);
+
+      if (
+        !Number.isSafeInteger(departmentID) ||
+        departmentID <= 0
+      ) {
+        return fail(
+          "Valid DepartmentID is required.",
+          400,
+        );
+      }
+
+      values.push(departmentID);
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // Where Clause
+    // SAME AS GET API
+    // ============================================================
+
+    const whereClause =
+      conditions.join(" AND ");
+
+
+    // ============================================================
+    // Department Wise Query
+    // EXACT SAME QUERY AS GET API
+    // ONLY LIMIT / OFFSET REMOVED
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.DepartmentID,
+          d.DepartmentName,
+
+          COUNT(*)::INT
+            AS TotalNRGP,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'PENDING'
+          )::INT
+            AS PendingCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'APPROVED'
+          )::INT
+            AS ApprovedCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'REJECTED'
+          )::INT
+            AS RejectedCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'CANCELLED'
+          )::INT
+            AS CancelledCount
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID = m.DepartmentID
+
+        WHERE ${whereClause}
+
+        GROUP BY
+          m.DepartmentID,
+          d.DepartmentName
+
+        ORDER BY
+          d.DepartmentName ASC;
+        `,
+        values,
+      );
+
+
+    // ============================================================
+    // Mapping
+    // SAME DATA AS GET API
+    // ============================================================
+
+    const reportData =
+      result.rows.map((row) => ({
+        DepartmentID:
+          row.departmentid
+            ? Number(row.departmentid)
+            : null,
+
+        DepartmentName:
+          row.departmentname,
+
+        TotalNRGP:
+          Number(
+            row.totalnrgp || 0,
+          ),
+
+        PendingCount:
+          Number(
+            row.pendingcount || 0,
+          ),
+
+        ApprovedCount:
+          Number(
+            row.approvedcount || 0,
+          ),
+
+        RejectedCount:
+          Number(
+            row.rejectedcount || 0,
+          ),
+
+        CancelledCount:
+          Number(
+            row.cancelledcount || 0,
+          ),
+      }));
+
+
+    // ============================================================
+    // PDF Rows
+    // ============================================================
+
+    const pdfRows =
+      reportData.map((row) => ({
+        DepartmentName:
+          row.DepartmentName || "-",
+
+        TotalNRGP:
+          row.TotalNRGP,
+
+        PendingCount:
+          row.PendingCount,
+
+        ApprovedCount:
+          row.ApprovedCount,
+
+        RejectedCount:
+          row.RejectedCount,
+
+        CancelledCount:
+          row.CancelledCount,
+      }));
+
+
+    // ============================================================
+    // Metadata
+    // ============================================================
+
+    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const metadata = [
+      { label: "Organization", value: organizationName },
+      {
+        label: "From Date",
+        value:
+          data.FromDate
+            ? formatDate(data.FromDate)
+            : "All",
+      },
+      {
+        label: "To Date",
+        value:
+          data.ToDate
+            ? formatDate(data.ToDate)
+            : "All",
+      },
+      {
+        label: "Department",
+        value:
+          data.DepartmentID
+            ? (
+                reportData[0]
+                  ?.DepartmentName || "-"
+              )
+            : "All Department",
+      },
+    ];
+
+
+    // ============================================================
+    // Generate PDF
+    // ============================================================
+
+    const pdfBuffer =
+      await generatePdf({
+        title:
+          "NRGP Department Wise Report",
+
+        organizationId:
+          organizationID,
+
+        orientation:
+          "landscape",
+
+        metadata,
+
+        columns: [
+          {
+            header: "Department",
+            key: "DepartmentName",
+            width: "*",
+          },
+          {
+            header: "Total NRGP",
+            key: "TotalNRGP",
+            width: 80,
+            alignment: "center",
+          },
+          {
+            header: "Pending",
+            key: "PendingCount",
+            width: 75,
+            alignment: "center",
+          },
+          {
+            header: "Approved",
+            key: "ApprovedCount",
+            width: 75,
+            alignment: "center",
+          },
+          {
+            header: "Rejected",
+            key: "RejectedCount",
+            width: 75,
+            alignment: "center",
+          },
+          {
+            header: "Cancelled",
+            key: "CancelledCount",
+            width: 75,
+            alignment: "center",
+          },
+        ],
+
+        rows:
+          pdfRows,
+      });
+
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return {
+      success: true,
+      message:
+        "NRGP department wise report PDF generated successfully.",
+      data:
+        pdfBuffer,
+    };
+
+  } catch (error) {
+    console.error(
+      "Generate NRGP Department Wise Report PDF Error:",
+      error.message,
+    );
+
+    return databaseFailure(
+      error,
+      "Generate NRGP department wise report PDF",
+    );
+  }
+};
+// ============================================================ Vendor Wise NRGP Report PDF
+const generateNRGPVendorWiseReportPdf = async (data) => {
+  try {
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    const organizationID =
+      Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Conditions
+    // SAME AS GET API
+    // ============================================================
+
+    const values = [
+      organizationID,
+    ];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+      `m.OrganizationID = $${values.length}`,
+    ];
+
+
+    // ============================================================
+    // From Date
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(data.FromDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // To Date
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(data.ToDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // Vendor Name
+    // SAME AS GET API
+    // ============================================================
+
+    const vendorName =
+      String(
+        data.VendorName || "",
+      ).trim();
+
+    if (vendorName) {
+      values.push(
+        `%${vendorName}%`,
+      );
+
+      conditions.push(
+        `m.VendorName ILIKE $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // Where Clause
+    // SAME AS GET API
+    // ============================================================
+
+    const whereClause =
+      conditions.join(" AND ");
+
+
+    // ============================================================
+    // Vendor Wise Query
+    // SAME AS GET API
+    // ONLY LIMIT / OFFSET REMOVED
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          TRIM(m.VendorName)
+            AS VendorName,
+
+          COUNT(
+            DISTINCT m.NRGPID
+          )::INT
+            AS TotalNRGP,
+
+          COUNT(i.NRGPItemID)::INT
+            AS TotalItems,
+
+          COALESCE(
+            SUM(i.Quantity),
+            0
+          )
+            AS TotalQuantity,
+
+          COALESCE(
+            SUM(
+              i.Quantity *
+              COALESCE(i.Rate, 0)
+            ),
+            0
+          )
+            AS TotalValue
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN Gatepass_NRGP_Entry_Item_Details i
+          ON i.NRGPID = m.NRGPID
+          AND i.IsDeleted = FALSE
+
+        WHERE ${whereClause}
+          AND m.VendorName IS NOT NULL
+          AND TRIM(m.VendorName) <> ''
+
+        GROUP BY
+          TRIM(m.VendorName)
+
+        ORDER BY
+          TRIM(m.VendorName) ASC;
+        `,
+        values,
+      );
+
+
+    // ============================================================
+    // Mapping
+    // SAME AS GET API
+    // ============================================================
+
+    const reportData =
+      result.rows.map((row) => ({
+        VendorName:
+          row.vendorname,
+
+        TotalNRGP:
+          Number(
+            row.totalnrgp || 0,
+          ),
+
+        TotalItems:
+          Number(
+            row.totalitems || 0,
+          ),
+
+        TotalQuantity:
+          Number(
+            row.totalquantity || 0,
+          ),
+
+        TotalValue:
+          Number(
+            row.totalvalue || 0,
+          ),
+      }));
+
+
+    // ============================================================
+    // PDF Rows
+    // ============================================================
+
+    const pdfRows =
+      reportData.map((row) => ({
+        VendorName:
+          row.VendorName || "-",
+
+        TotalNRGP:
+          row.TotalNRGP,
+
+        TotalItems:
+          row.TotalItems,
+
+        TotalQuantity:
+          row.TotalQuantity,
+
+        TotalValue:
+          row.TotalValue,
+      }));
+
+
+    // ============================================================
+    // Metadata
+    // ============================================================
+
+    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const metadata = [
+      { label: "Organization", value: organizationName },
+      {
+        label: "From Date",
+        value:
+          data.FromDate
+            ? formatDate(
+                data.FromDate,
+              )
+            : "All",
+      },
+      {
+        label: "To Date",
+        value:
+          data.ToDate
+            ? formatDate(
+                data.ToDate,
+              )
+            : "All",
+      },
+      {
+        label: "Vendor",
+        value:
+          vendorName ||
+          "All Vendor",
+      },
+    ];
+
+
+    // ============================================================
+    // Generate PDF
+    // ============================================================
+
+    const pdfBuffer =
+      await generatePdf({
+        title:
+          "NRGP Vendor Wise Report",
+
+        organizationId:
+          organizationID,
+
+        orientation:
+          "landscape",
+
+        metadata,
+
+        columns: [
+          {
+            header: "Vendor Name",
+            key: "VendorName",
+            width: "*",
+          },
+          {
+            header: "Total NRGP",
+            key: "TotalNRGP",
+            width: 85,
+            alignment: "center",
+          },
+          {
+            header: "Total Items",
+            key: "TotalItems",
+            width: 85,
+            alignment: "center",
+          },
+          {
+            header: "Total Quantity",
+            key: "TotalQuantity",
+            width: 95,
+            alignment: "right",
+          },
+          {
+            header: "Total Value",
+            key: "TotalValue",
+            width: 100,
+            alignment: "right",
+          },
+        ],
+
+        rows:
+          pdfRows,
+      });
+
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return {
+      success: true,
+      message:
+        "NRGP vendor wise report PDF generated successfully.",
+      data:
+        pdfBuffer,
+    };
+
+  } catch (error) {
+    console.error(
+      "Generate NRGP Vendor Wise Report PDF Error:",
+      error.message,
+    );
+
+    return databaseFailure(
+      error,
+      "Generate NRGP vendor wise report PDF",
+    );
+  }
+};
+// ============================================================ Approval Status Report PDF
+const generateNRGPApprovalStatusReportPdf = async (data) => {
+  try {
+    // ============================================================
+    // Conditions
+    // SAME AS GET API
+    // ============================================================
+
+    const values = [];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+    ];
+
+
+    // ============================================================
+    // Organization Filter
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.OrganizationID) {
+      const organizationID =
+        Number(data.OrganizationID);
+
+      if (
+        !Number.isInteger(organizationID) ||
+        organizationID <= 0
+      ) {
+        return fail(
+          "Invalid OrganizationID.",
+          400,
+        );
+      }
+
+      values.push(organizationID);
+
+      conditions.push(
+        `m.OrganizationID = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // From Date
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(data.FromDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // To Date
+    // SAME AS GET API
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(data.ToDate);
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+
+    // ============================================================
+    // Where Clause
+    // SAME AS GET API
+    // ============================================================
+
+    const whereClause =
+      conditions.join(" AND ");
+
+
+    // ============================================================
+    // Approval Status Query
+    // SAME AS GET API
+    // ONLY LIMIT / OFFSET REMOVED
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.OrganizationID,
+          o.ShortName AS OrganizationName,
+
+          COUNT(*)::INT
+            AS TotalNRGP,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'PENDING'
+          )::INT
+            AS PendingCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'APPROVED'
+          )::INT
+            AS ApprovedCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'REJECTED'
+          )::INT
+            AS RejectedCount,
+
+          COUNT(*) FILTER (
+            WHERE UPPER(m.Status) = 'CANCELLED'
+          )::INT
+            AS CancelledCount
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN Organization_Master o
+          ON o.OrganizationID = m.OrganizationID
+
+        WHERE ${whereClause}
+
+        GROUP BY
+          m.OrganizationID,
+          o.ShortName
+
+        ORDER BY
+          o.ShortName ASC;
+        `,
+        values,
+      );
+
+
+    // ============================================================
+    // Mapping
+    // SAME AS GET API
+    // ============================================================
+
+    const reportData =
+      result.rows.map((row) => ({
+        OrganizationID:
+          Number(row.organizationid),
+
+        OrganizationName:
+          row.organizationname,
+
+        TotalNRGP:
+          Number(
+            row.totalnrgp || 0,
+          ),
+
+        PendingCount:
+          Number(
+            row.pendingcount || 0,
+          ),
+
+        ApprovedCount:
+          Number(
+            row.approvedcount || 0,
+          ),
+
+        RejectedCount:
+          Number(
+            row.rejectedcount || 0,
+          ),
+
+        CancelledCount:
+          Number(
+            row.cancelledcount || 0,
+          ),
+      }));
+
+
+    // ============================================================
+    // PDF Rows
+    // ============================================================
+
+    const pdfRows =
+      reportData.map((row) => ({
+        OrganizationName:
+          row.OrganizationName || "-",
+
+        TotalNRGP:
+          row.TotalNRGP,
+
+        PendingCount:
+          row.PendingCount,
+
+        ApprovedCount:
+          row.ApprovedCount,
+
+        RejectedCount:
+          row.RejectedCount,
+
+        CancelledCount:
+          row.CancelledCount,
+      }));
+
+
+    // ============================================================
+    // PDF Metadata
+    // ============================================================
+
+    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const metadata = [
+      { label: "Organization", value: organizationName },
+      {
+        label: "From Date",
+        value:
+          data.FromDate
+            ? formatDate(
+                data.FromDate,
+              )
+            : "All",
+      },
+      {
+        label: "To Date",
+        value:
+          data.ToDate
+            ? formatDate(
+                data.ToDate,
+              )
+            : "All",
+      },
+
+    ];
+
+
+    // ============================================================
+    // Generate PDF
+    // ============================================================
+
+    const pdfBuffer =
+      await generatePdf({
+        title:
+          "NRGP Approval Status Report",
+
+        organizationId:
+          data.OrganizationID
+            ? Number(
+                data.OrganizationID,
+              )
+            : null,
+
+        orientation:
+          "landscape",
+
+        metadata,
+
+        columns: [
+          {
+            header: "Organization",
+            key: "OrganizationName",
+            width: "*",
+          },
+          {
+            header: "Total NRGP",
+            key: "TotalNRGP",
+            width: 80,
+            alignment: "center",
+          },
+          {
+            header: "Pending",
+            key: "PendingCount",
+            width: 75,
+            alignment: "center",
+          },
+          {
+            header: "Approved",
+            key: "ApprovedCount",
+            width: 75,
+            alignment: "center",
+          },
+          {
+            header: "Rejected",
+            key: "RejectedCount",
+            width: 75,
+            alignment: "center",
+          },
+          {
+            header: "Cancelled",
+            key: "CancelledCount",
+            width: 75,
+            alignment: "center",
+          },
+        ],
+
+        rows:
+          pdfRows,
+      });
+
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return {
+      success: true,
+      message:
+        "NRGP approval status report PDF generated successfully.",
+      data:
+        pdfBuffer,
+    };
+
+  } catch (error) {
+    console.error(
+      "Generate NRGP Approval Status Report PDF Error:",
+      error.message,
+    );
+
+    return databaseFailure(
+      error,
+      "Generate NRGP approval status report PDF",
+    );
+  }
+};
+// ============================================================ NRGP Details PDF
+const generateNRGPDetailPdf = async (data) => {
+  try {
+    // ============================================================
+    // Validate
+    // ============================================================
+
+    const nrgpID =
+      Number(data.NRGPID);
+
+    if (
+      !Number.isInteger(nrgpID) ||
+      nrgpID <= 0
+    ) {
+      return fail(
+        "Valid NRGPID is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // SAME GET BY ID API
+    // No Duplicate SQL
+    // ============================================================
+
+    const nrgpResult =
+      await getNRGPById({
+        NRGPID: nrgpID,
+      });
+
+    if (!nrgpResult.success) {
+      return nrgpResult;
+    }
+
+    const detail =
+      nrgpResult.data;
+
+    // ============================================================
+    // PDF Design
+    // ============================================================
+
+    const COLORS = {
+      navy: "#082B5C",
+      label: "#082B5C",
+      text: "#172033",
+      muted: "#64748B",
+      border: "#CFD7E3",
+      labelBackground: "#F4F6F9",
+    };
+
+    const displayValue = (value) =>
+      value === null ||
+      value === undefined ||
+      String(value).trim() === ""
+        ? "-"
+        : String(value);
+
+    // ============================================================
+    // Canvas Helpers
+    // ============================================================
+
+    const line = (
+      x1,
+      y1,
+      x2,
+      y2,
+      lineWidth = 1.1,
+    ) => ({
+      type: "line",
+      x1,
+      y1,
+      x2,
+      y2,
+      lineWidth,
+      lineColor: COLORS.navy,
+    });
+
+    const rect = (
+      x,
+      y,
+      w,
+      h,
+      r = 0,
+    ) => ({
+      type: "rect",
+      x,
+      y,
+      w,
+      h,
+      r,
+      lineWidth: 1.1,
+      lineColor: COLORS.navy,
+    });
+
+    const ellipse = (
+      x,
+      y,
+      r1,
+      r2 = r1,
+    ) => ({
+      type: "ellipse",
+      x,
+      y,
+      r1,
+      r2,
+      lineWidth: 1.1,
+      lineColor: COLORS.navy,
+    });
+
+    // ============================================================
+    // Icons
+    // ============================================================
+
+    const fieldIcon = (type) => {
+      const icons = {
+        number: [
+          rect(2, 3, 14, 12, 1),
+          line(5, 7, 13, 7),
+          line(5, 11, 13, 11),
+        ],
+
+        organization: [
+          rect(4, 2, 10, 15, 1),
+          line(1, 17, 17, 17),
+          line(7, 6, 7, 8),
+          line(11, 6, 11, 8),
+          line(7, 11, 7, 13),
+          line(11, 11, 11, 13),
+        ],
+
+        vendor: [
+          ellipse(9, 6, 4),
+          line(3, 17, 15, 17),
+          line(5, 17, 5, 13),
+          line(13, 17, 13, 13),
+        ],
+
+        phone: [
+          rect(3, 1, 12, 17, 2),
+          line(7, 15, 11, 15),
+        ],
+
+        department: [
+          rect(2, 4, 14, 13, 1),
+          line(6, 1, 12, 1),
+          line(9, 1, 9, 4),
+        ],
+
+        location: [
+          ellipse(9, 7, 5),
+          ellipse(9, 7, 1.5),
+          {
+            type: "polyline",
+            points: [
+              { x: 5, y: 10 },
+              { x: 9, y: 18 },
+              { x: 13, y: 10 },
+            ],
+            lineWidth: 1.1,
+            lineColor: COLORS.navy,
+          },
+        ],
+
+        status: [
+          ellipse(9, 9, 7),
+          line(5, 9, 8, 12),
+          line(8, 12, 13, 6),
+        ],
+
+        quantity: [
+          rect(2, 3, 14, 12, 1),
+          line(5, 7, 13, 7),
+          line(5, 11, 13, 11),
+        ],
+      };
+
+      const iconScale = 0.82;
+
+      return (
+        icons[type] ||
+        icons.quantity
+      ).map((shape) => {
+        const scaledShape = {
+          ...shape,
+          lineWidth:
+            (shape.lineWidth || 1) *
+            iconScale,
+        };
+
+        for (
+          const coordinate of [
+            "x",
+            "y",
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "w",
+            "h",
+            "r",
+            "r1",
+            "r2",
+          ]
+        ) {
+          if (
+            typeof scaledShape[
+              coordinate
+            ] === "number"
+          ) {
+            scaledShape[
+              coordinate
+            ] *= iconScale;
+          }
+        }
+
+        if (
+          Array.isArray(
+            scaledShape.points,
+          )
+        ) {
+          scaledShape.points =
+            scaledShape.points.map(
+              (point) => ({
+                x:
+                  point.x *
+                  iconScale,
+                y:
+                  point.y *
+                  iconScale,
+              }),
+            );
+        }
+
+        return scaledShape;
+      });
+    };
+
+    // ============================================================
+    // Cell Helpers
+    // ============================================================
+
+    const labelCell = (
+      label,
+      icon,
+    ) => ({
+      columns: [
+        {
+          width: 22,
+          canvas:
+            fieldIcon(icon),
+          margin: [
+            0,
+            0,
+            0,
+            0,
+          ],
+        },
+        {
+          width: "*",
+          text: label,
+          style:
+            "fieldLabel",
+          margin: [
+            2,
+            3,
+            0,
+            0,
+          ],
+        },
+      ],
+
+      fillColor:
+        COLORS.labelBackground,
+
+      margin: [
+        8,
+        6,
+        5,
+        6,
+      ],
+    });
+
+    const valueCell = (
+      value,
+    ) => ({
+      text:
+        displayValue(value),
+
+      style:
+        "fieldValue",
+
+      margin: [
+        9,
+        8,
+        7,
+        7,
+      ],
+    });
+
+    const tableLayout = {
+      hLineColor: () =>
+        COLORS.border,
+
+      vLineColor: () =>
+        COLORS.border,
+
+      hLineWidth: () =>
+        0.7,
+
+      vLineWidth: () =>
+        0.7,
+
+      paddingLeft: () =>
+        0,
+
+      paddingRight: () =>
+        0,
+
+      paddingTop: () =>
+        0,
+
+      paddingBottom: () =>
+        0,
+    };
+
+    const sectionHeading = (
+      title,
+    ) => ({
+      text: title,
+      fontSize: 11,
+      bold: true,
+      color:
+        COLORS.navy,
+      margin: [
+        0,
+        4,
+        0,
+        7,
+      ],
+    });
+
+    // ============================================================
+    // Logo
+    // ============================================================
+
+    const logo =
+      await loadLogo(
+        detail.OrganizationID,
+        data.logoUrl,
+      );
+
+    const generatedOn =
+      formatDate(
+        new Date(),
+        "DD MMM YYYY hh:mm A",
+      );
+
+    // ============================================================
+    // NRGP Item Details
+    // ============================================================
+
+    const itemDetailsBody = [
+      [
+        {
+          text: "Sr.No.",
+          style: "tableHeader",
+          alignment: "center",
+        },
+        {
+          text: "Item Name",
+          style: "tableHeader",
+        },
+        {
+          text: "Specification",
+          style: "tableHeader",
+        },
+        {
+          text: "Qty.",
+          style: "tableHeader",
+          alignment: "center",
+        },
+        {
+          text: "Rate",
+          style: "tableHeader",
+          alignment: "center",
+        },
+        {
+          text: "Make / Model",
+          style: "tableHeader",
+        },
+        {
+          text: "Serial No.",
+          style: "tableHeader",
+        },
+      ],
+    ];
+
+    if (
+      Array.isArray(detail.Items) &&
+      detail.Items.length > 0
+    ) {
+      detail.Items.forEach(
+        (item, index) => {
+          itemDetailsBody.push([
+            {
+              text:
+                index + 1,
+              style:
+                "tableValue",
+              alignment:
+                "center",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.ItemName,
+                ),
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.Specification,
+                ),
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.Quantity,
+                ),
+              style:
+                "tableValue",
+              alignment:
+                "center",
+            },
+
+            {
+              text:
+                item.Rate !==
+                  null &&
+                item.Rate !==
+                  undefined
+                  ? Number(
+                      item.Rate,
+                    ).toFixed(2)
+                  : "-",
+              style:
+                "tableValue",
+              alignment:
+                "center",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.MakeModel,
+                ),
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  item.SerialNumber,
+                ),
+              style:
+                "tableValue",
+            },
+          ]);
+        },
+      );
+    } else {
+      itemDetailsBody.push([
+        {
+          text:
+            "No NRGP item details found.",
+          colSpan: 7,
+          alignment:
+            "center",
+          color:
+            COLORS.muted,
+          margin: [
+            0,
+            8,
+            0,
+            8,
+          ],
+        },
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+      ]);
+    }
+
+    // ============================================================
+    // Approval Details
+    // ============================================================
+
+    const approvalDetailsBody = [
+      [
+        {
+          text: "Level",
+          style:
+            "tableHeader",
+          alignment:
+            "center",
+        },
+        {
+          text: "Role",
+          style:
+            "tableHeader",
+        },
+        {
+          text: "Status",
+          style:
+            "tableHeader",
+        },
+        {
+          text: "Action By",
+          style:
+            "tableHeader",
+        },
+        {
+          text: "Remarks",
+          style:
+            "tableHeader",
+        },
+      ],
+    ];
+
+    if (
+      Array.isArray(
+        detail.Approvals,
+      ) &&
+      detail.Approvals.length >
+        0
+    ) {
+      detail.Approvals.forEach(
+        (approval) => {
+          approvalDetailsBody.push([
+            {
+              text:
+                displayValue(
+                  approval.ApprovalLevel,
+                ),
+              style:
+                "tableValue",
+              alignment:
+                "center",
+            },
+
+            {
+              text:
+                displayValue(
+                  approval.ApprovalRole,
+                ),
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  approval.Status,
+                ),
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  approval.ActionBy,
+                ),
+              style:
+                "tableValue",
+            },
+
+            {
+              text:
+                displayValue(
+                  approval.Remarks,
+                ),
+              style:
+                "tableValue",
+            },
+          ]);
+        },
+      );
+    } else {
+      approvalDetailsBody.push([
+        {
+          text:
+            "No approval details found.",
+          colSpan: 5,
+          alignment:
+            "center",
+          color:
+            COLORS.muted,
+          margin: [
+            0,
+            8,
+            0,
+            8,
+          ],
+        },
+        {},
+        {},
+        {},
+        {},
+      ]);
+    }
+
+    // ============================================================
+    // Document Definition
+    // ============================================================
+
+    const documentDefinition = {
+      pageSize: "A4",
+
+      pageOrientation:
+        "portrait",
+
+      pageMargins: [
+        22,
+        26,
+        22,
+        72,
+      ],
+
+      defaultStyle: {
+        font: "Roboto",
+        fontSize: 9,
+        color:
+          COLORS.text,
+      },
+
+      content: [
+        // ========================================================
+        // Header
+        // ========================================================
+
+        {
+          table: {
+            widths: [
+              130,
+              "*",
+              80,
+            ],
+
+            body: [
+              [
+                logo
+                  ? {
+                      image:
+                        logo,
+                      fit: [
+                        88,
+                        50,
+                      ],
+                      border: [
+                        false,
+                        false,
+                        false,
+                        false,
+                      ],
+                    }
+                  : {
+                      text: "",
+                      border: [
+                        false,
+                        false,
+                        false,
+                        false,
+                      ],
+                    },
+
+                {
+                  text:
+                    "NRGP Detail Report",
+                  style:
+                    "title",
+                  alignment:
+                    "center",
+                  margin: [
+                    0,
+                    18,
+                    0,
+                    0,
+                  ],
+                  border: [
+                    false,
+                    false,
+                    false,
+                    false,
+                  ],
+                },
+
+                {
+                  text: "",
+                  border: [
+                    false,
+                    false,
+                    false,
+                    false,
+                  ],
+                },
+              ],
+            ],
+          },
+
+          layout:
+            "noBorders",
+        },
+
+        // ========================================================
+        // Header Line
+        // ========================================================
+
+        {
+          canvas: [
+            {
+              type: "line",
+              x1: 0,
+              y1: 0,
+              x2: 551,
+              y2: 0,
+              lineWidth: 0.8,
+              lineColor:
+                COLORS.navy,
+            },
+          ],
+
+          margin: [
+            0,
+            7,
+            0,
+            14,
+          ],
+        },
+
+        // ========================================================
+        // NRGP Details
+        // ========================================================
+
+        sectionHeading(
+          "NRGP Details",
+        ),
+
+        {
+          table: {
+            widths: [
+              105,
+              "*",
+              105,
+              "*",
+            ],
+
+            body: [
+              // Row 1
+              [
+                labelCell(
+                  "NRGP No.",
+                  "number",
+                ),
+
+                valueCell(
+                  detail.NRGPNumber,
+                ),
+
+                labelCell(
+                  "Department",
+                  "department",
+                ),
+
+                valueCell(
+                  detail.DepartmentName,
+                ),
+              ],
+
+              // Row 2
+              [
+                labelCell(
+                  "Vendor Name",
+                  "vendor",
+                ),
+
+                valueCell(
+                  detail.VendorName,
+                ),
+
+                labelCell(
+                  "Contact No.",
+                  "phone",
+                ),
+
+                valueCell(
+                  detail.ContactNumber,
+                ),
+              ],
+
+              // Row 3
+              [
+                labelCell(
+                  "Company",
+                  "organization",
+                ),
+
+                valueCell(
+                  detail.Company,
+                ),
+
+                labelCell(
+                  "Send To",
+                  "location",
+                ),
+
+                valueCell(
+                  detail.SendTo,
+                ),
+              ],
+
+              // Row 4
+              [
+                labelCell(
+                  "Taken By",
+                  "vendor",
+                ),
+
+                valueCell(
+                  detail.TakenBy,
+                ),
+
+                labelCell(
+                  "Status",
+                  "status",
+                ),
+
+                valueCell(
+                  detail.Status,
+                ),
+              ],
+
+              // Row 5
+              [
+                labelCell(
+                  "Address",
+                  "location",
+                ),
+
+                {
+                  ...valueCell(
+                    detail.Address,
+                  ),
+                  colSpan: 3,
+                },
+
+                {},
+                {},
+              ],
+            ],
+          },
+
+          layout:
+            tableLayout,
+
+          margin: [
+            0,
+            0,
+            0,
+            15,
+          ],
+        },
+
+        // ========================================================
+        // NRGP Item Details
+        // ========================================================
+
+        sectionHeading(
+          "NRGP Item Details",
+        ),
+
+        {
+          table: {
+            headerRows: 1,
+            dontBreakRows: true,
+
+            widths: [
+              30,
+              80,
+              95,
+              42,
+              55,
+              90,
+              "*",
+            ],
+
+            body:
+              itemDetailsBody,
+          },
+
+          layout: {
+            hLineColor: () =>
+              COLORS.border,
+
+            vLineColor: () =>
+              COLORS.border,
+
+            hLineWidth: () =>
+              0.7,
+
+            vLineWidth: () =>
+              0.7,
+
+            paddingLeft: () =>
+              4,
+
+            paddingRight: () =>
+              4,
+
+            paddingTop: () =>
+              6,
+
+            paddingBottom: () =>
+              6,
+          },
+
+          margin: [
+            0,
+            0,
+            0,
+            15,
+          ],
+        },
+
+        // ========================================================
+        // Approval Details
+        // ========================================================
+
+        sectionHeading(
+          "Approval Details",
+        ),
+
+        {
+          table: {
+            headerRows: 1,
+            dontBreakRows: true,
+
+            widths: [
+              45,
+              70,
+              65,
+              95,
+              "*",
+            ],
+
+            body:
+              approvalDetailsBody,
+          },
+
+          layout: {
+            hLineColor: () =>
+              COLORS.border,
+
+            vLineColor: () =>
+              COLORS.border,
+
+            hLineWidth: () =>
+              0.7,
+
+            vLineWidth: () =>
+              0.7,
+
+            paddingLeft: () =>
+              6,
+
+            paddingRight: () =>
+              6,
+
+            paddingTop: () =>
+              6,
+
+            paddingBottom: () =>
+              6,
+          },
+        },
+      ],
+
+      // ==========================================================
+      // Footer
+      // ==========================================================
+
+      footer: () => ({
+        margin: [
+          22,
+          8,
+          22,
+          0,
+        ],
+
+        stack: [
+          {
+            canvas: [
+              {
+                type: "line",
+                x1: 0,
+                y1: 0,
+                x2: 551,
+                y2: 0,
+                lineWidth: 0.7,
+                lineColor:
+                  COLORS.navy,
+              },
+            ],
+
+            margin: [
+              0,
+              0,
+              0,
+              8,
+            ],
+          },
+
+          {
+            columns: [
+              {
+                stack: [
+                  {
+                    text:
+                      "Powered by HotelOps",
+                    bold: true,
+                    color:
+                      COLORS.navy,
+                    fontSize: 8,
+                  },
+                ],
+              },
+
+              {
+                width: 130,
+
+                stack: [
+                  {
+                    text:
+                      `Generated On   :  ${generatedOn}`,
+                    fontSize: 7,
+                    color:
+                      COLORS.label,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+
+      // ==========================================================
+      // Styles
+      // ==========================================================
+
+      styles: {
+        title: {
+          fontSize: 18,
+          bold: true,
+          color:
+            COLORS.navy,
+        },
+
+        fieldLabel: {
+          fontSize: 8.5,
+          bold: true,
+          color:
+            COLORS.label,
+        },
+
+        fieldValue: {
+          fontSize: 9,
+          color:
+            COLORS.text,
+        },
+
+        tableHeader: {
+          fontSize: 7,
+          bold: true,
+          color:
+            COLORS.navy,
+          fillColor:
+            COLORS.labelBackground,
+          margin: [
+            0,
+            2,
+            0,
+            2,
+          ],
+        },
+
+        tableValue: {
+          fontSize: 7,
+          color:
+            COLORS.text,
+          margin: [
+            0,
+            2,
+            0,
+            2,
+          ],
+        },
+      },
+    };
+
+    // ============================================================
+    // Generate PDF Buffer
+    // ============================================================
+
+    const pdfBuffer =
+      await new Promise(
+        (
+          resolve,
+          reject,
+        ) => {
+          try {
+            const pdfDocument =
+              new PdfPrinter(
+                RGP_DETAIL_PDF_FONTS,
+              ).createPdfKitDocument(
+                documentDefinition,
+              );
+
+            const chunks = [];
+
+            pdfDocument.on(
+              "data",
+              (chunk) =>
+                chunks.push(
+                  chunk,
+                ),
+            );
+
+            pdfDocument.on(
+              "end",
+              () =>
+                resolve(
+                  Buffer.concat(
+                    chunks,
+                  ),
+                ),
+            );
+
+            pdfDocument.on(
+              "error",
+              reject,
+            );
+
+            pdfDocument.end();
+          } catch (error) {
+            reject(error);
+          }
+        },
+      );
+
+    // ============================================================
+    // Return
+    // ============================================================
+
+    return {
+      success: true,
+
+      message:
+        "NRGP detail PDF generated successfully.",
+
+      data:
+        pdfBuffer,
+
+      fileName:
+        `NRGP-Detail-${detail.NRGPNumber || nrgpID}.pdf`,
+
+      contentType:
+        "application/pdf",
+    };
+
+  } catch (error) {
+    console.error(
+      "Generate NRGP detail PDF error:",
+      error,
+    );
+
+    return databaseFailure(
+      error,
+      "Generate NRGP detail PDF",
+    );
+  }
+};
 // ============================================================
 // Exports
 // ============================================================
@@ -11225,10 +15464,20 @@ module.exports = {
   createNRGP,
   getNRGPList,
   getNRGPById,
+  getNRGPVendorNames,
   updateNRGP,
   deleteNRGP,
   processNRGPApproval,
   getNRGPApprovalConfig,
   saveNRGPApprovalConfig,
   deleteNRGPApprovalConfig,
+  getNRGPListReport,
+  getNRGPDepartmentWiseReport,
+  getNRGPVendorWiseReport,
+  getNRGPApprovalStatusReport,
+  generateNRGPListReportPdf,
+  generateNRGPDepartmentWiseReportPdf,
+  generateNRGPVendorWiseReportPdf,
+  generateNRGPApprovalStatusReportPdf,
+  generateNRGPDetailPdf,
 };

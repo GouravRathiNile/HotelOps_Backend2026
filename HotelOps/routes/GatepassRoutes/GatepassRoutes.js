@@ -28,12 +28,22 @@ const {
   createNRGP,
   getNRGPList,
   getNRGPById,
+  getNRGPVendorNames,
   updateNRGP,
   deleteNRGP,
   processNRGPApproval,
   getNRGPApprovalConfig,
   saveNRGPApprovalConfig,
   deleteNRGPApprovalConfig,
+  getNRGPListReport,
+  getNRGPDepartmentWiseReport,
+  getNRGPVendorWiseReport,
+  getNRGPApprovalStatusReport,
+  generateNRGPListReportPdf,
+  generateNRGPDepartmentWiseReportPdf,
+  generateNRGPVendorWiseReportPdf,
+  generateNRGPApprovalStatusReportPdf,
+  generateNRGPDetailPdf,
 } = require(
   "../../controllers/GatepassController/GatepassController",
 )
@@ -63,17 +73,29 @@ router.get("/RGPListReportspdf",authenticateToken,getRGPListReportPdf,);
 router.get("/DepartmentWiseReportspdf",authenticateToken,getRGPDepartmentWiseReportPdf,);
 router.get("/VendorWiseReportspdf",authenticateToken,getRGPVendorWiseReportPdf,);
 router.get("/PendingReturnReportspdf",authenticateToken,getRGPPendingReturnReportPdf,);
-router.get("/RGPById/:id",authenticateToken,getRGPById,);
 router.get("/RGPDetailPdf",authenticateToken,generateRGPDetailPdf,);
 
 // ==================================================================================NRGP
 router.post("/CreateNRGP",authenticateToken,createNRGP,);
 router.get("/NRGPList",authenticateToken,getNRGPList,);
 router.get("/NRGPById",authenticateToken,getNRGPById,);
+router.get("/NRGPVendorNames",authenticateToken,getNRGPVendorNames,);
 router.put("/UpdateNRGP",authenticateToken,updateNRGP,);
 router.delete("/DeleteNRGP",authenticateToken,deleteNRGP,);
 router.put("/ApproveNRGP",authenticateToken,processNRGPApproval,);
 router.get("/NRGPApprovalConfigList",authenticateToken,getNRGPApprovalConfig,);
 router.post("/CreateApprovalConfigNRGP",authenticateToken,saveNRGPApprovalConfig,);
 router.delete("/DeleteNRGPApprovalConfig",authenticateToken,deleteNRGPApprovalConfig,);
+// =============================================================Reports
+router.get("/NRGPListReports",authenticateToken,getNRGPListReport,);
+router.get("/NRGPDepartmentWiseReports",authenticateToken,getNRGPDepartmentWiseReport,);
+router.get("/NRGPVendorWiseReports",authenticateToken,getNRGPVendorWiseReport,);
+router.get("/NRGPApprovalStatusReports",authenticateToken,getNRGPApprovalStatusReport,);
+// =============================================================PDF
+router.get("/NRGPListReportsPdf",authenticateToken,generateNRGPListReportPdf,);
+router.get("/NRGPDepartmentWiseReportsPdf",authenticateToken,generateNRGPDepartmentWiseReportPdf,);
+router.get("/NRGPVendorWiseReportsPdf",authenticateToken,generateNRGPVendorWiseReportPdf,);
+router.get("/NRGPApprovalStatusReportsPdf",authenticateToken,generateNRGPApprovalStatusReportPdf,);
+router.get("/NRGPDetailPdf",authenticateToken,generateNRGPDetailPdf,);
+
 module.exports = router;
