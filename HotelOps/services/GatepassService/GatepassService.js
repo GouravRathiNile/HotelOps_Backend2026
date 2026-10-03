@@ -66,14 +66,21 @@ const DEFAULT_RGP_APPROVALS = Object.freeze([
   { LevelNo: 3, ApprovalRole: "GM" },
 ]);
 // ======================== Normalize RGP Approval Role
-const normalizeRGPApprovalRole = (value) => {
-  const role = String(value || "")
-    .trim()
-    .toUpperCase();
+const normalizeRGPApprovalRole = (role) => {
+  const normalizedRole =
+    String(role || "")
+      .trim()
+      .toUpperCase();
 
-  return role === "FINANCE"
-    ? "FC"
-    : role;
+  // FC and DOF are treated as the same approval role
+  if (
+    normalizedRole === "FC" ||
+    normalizedRole === "DOF"
+  ) {
+    return "FC";
+  }
+
+  return normalizedRole;
 };
 // ======================= Approval Role Condition Helper
 const resolveRGPApprovalRole = ({
@@ -882,20 +889,6 @@ const getRGPList = async (data) => {
     }
 
     // ==========================================================
-    // Status
-    // ==========================================================
-
-    if (data.Status) {
-      values.push(
-        data.Status,
-      );
-
-      conditions.push(
-        `UPPER(m.Status) = UPPER($${values.length})`,
-      );
-    }
-
-    // ==========================================================
     // Department Filter
     // ==========================================================
 
@@ -998,82 +991,429 @@ const getRGPList = async (data) => {
       "SECURITY";
 
     const isCEO =
-      approvalRole === "CEO";
+      approvalRole ===
+      "CEO";
 
     // ==========================================================
     // Role Wise Visibility
     //
-    // SECURITY = All Organization RGP
-    // CEO      = All Organization RGP
-    // HOD      = Own Department RGP
-    // GM/etc   = RGP where that approval role exists
+    // SECURITY / CEO
+    //   -> All records
+    //
+    // HOD
+    //   -> Own department
+    //
+    // FC / DOF
+    //   -> Both treated as same role
+    //
+    // GM / Other
+    //   -> Own approval stage
+    //
+    // Previous stages must be APPROVED.
     // ==========================================================
 
     if (
       !isSecurity &&
       !isCEO
     ) {
-      // ========================================================
-      // HOD
-      // ========================================================
-
-      if (
-        approvalRole === "HOD"
-      ) {
-        const userDepartmentID =
-          Number(
-            data.UserDepartmentID,
-          );
+      if (!approvalRole) {
+        conditions.push(
+          "1 = 0",
+        );
+      } else {
+        // ======================================================
+        // HOD Department Restriction
+        // ======================================================
 
         if (
-          !Number.isInteger(
-            userDepartmentID,
-          ) ||
-          userDepartmentID <= 0
+          approvalRole === "HOD"
         ) {
-          return fail(
-            "User DepartmentID is required for HOD.",
-            400,
+          const userDepartmentID =
+            Number(
+              data.UserDepartmentID,
+            );
+
+          if (
+            !Number.isInteger(
+              userDepartmentID,
+            ) ||
+            userDepartmentID <= 0
+          ) {
+            return fail(
+              "User DepartmentID is required for HOD.",
+              400,
+            );
+          }
+
+          values.push(
+            userDepartmentID,
+          );
+
+          conditions.push(
+            `m.DepartmentID = $${values.length}`,
           );
         }
 
-        values.push(
-          userDepartmentID,
-        );
+        // ======================================================
+        // Current Approval Role
+        // ======================================================
 
-        conditions.push(
-          `m.DepartmentID = $${values.length}`,
-        );
-      }
-
-      // ========================================================
-      // GM / Other Approval Roles
-      // ========================================================
-
-      else if (approvalRole) {
         values.push(
           approvalRole,
         );
 
+        const roleIndex =
+          values.length;
+
+        // ======================================================
+        // Sequential Visibility
+        // ======================================================
+
         conditions.push(`
           EXISTS (
             SELECT 1
-            FROM Gatepass_RGP_Approval ra
-            WHERE ra.RGPID = m.RGPID
-              AND ra.IsDeleted = FALSE
-              AND UPPER(
+
+            FROM Gatepass_RGP_Approval myApproval
+
+            WHERE myApproval.RGPID =
+                    m.RGPID
+
+              AND myApproval.IsDeleted =
+                    FALSE
+
+              AND (
+                CASE
+                  WHEN UPPER(
                     TRIM(
-                      ra.ApprovalRole
+                      myApproval.ApprovalRole
+                    )
+                  ) IN ('FC', 'DOF')
+                    THEN 'FC'
+
+                  ELSE UPPER(
+                    TRIM(
+                      myApproval.ApprovalRole
                     )
                   )
-                  =
-                  UPPER(
+                END
+              )
+              =
+              (
+                CASE
+                  WHEN UPPER(
                     TRIM(
-                      $${values.length}
+                      $${roleIndex}
+                    )
+                  ) IN ('FC', 'DOF')
+                    THEN 'FC'
+
+                  ELSE UPPER(
+                    TRIM(
+                      $${roleIndex}
                     )
                   )
+                END
+              )
+
+              AND NOT EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval previousApproval
+
+                WHERE previousApproval.RGPID =
+                        myApproval.RGPID
+
+                  AND previousApproval.IsDeleted =
+                        FALSE
+
+                  AND previousApproval.ApprovalOrder <
+                        myApproval.ApprovalOrder
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        previousApproval.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) <> 'APPROVED'
+              )
           )
         `);
+      }
+    }
+
+    // ==========================================================
+    // Status Filter
+    //
+    // SECURITY / CEO
+    //   -> Overall approval status
+    //
+    // HOD / FC / DOF / GM
+    //   -> Own approval status
+    // ==========================================================
+
+    if (data.Status) {
+      const filterStatus =
+        String(
+          data.Status,
+        )
+          .trim()
+          .toUpperCase();
+
+      // ========================================================
+      // SECURITY / CEO
+      // ========================================================
+
+      if (
+        isSecurity ||
+        isCEO
+      ) {
+        // ======================================================
+        // APPROVED
+        // ======================================================
+
+        if (
+          filterStatus ===
+          "APPROVED"
+        ) {
+          conditions.push(`
+            EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval a
+
+              WHERE a.RGPID =
+                      m.RGPID
+
+                AND a.IsDeleted =
+                      FALSE
+            )
+
+            AND NOT EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval a
+
+              WHERE a.RGPID =
+                      m.RGPID
+
+                AND a.IsDeleted =
+                      FALSE
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      a.Status,
+                      'PENDING'
+                    )
+                  )
+                ) <> 'APPROVED'
+            )
+          `);
+        }
+
+        // ======================================================
+        // REJECTED
+        // ======================================================
+
+        else if (
+          filterStatus ===
+          "REJECTED"
+        ) {
+          conditions.push(`
+            EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval a
+
+              WHERE a.RGPID =
+                      m.RGPID
+
+                AND a.IsDeleted =
+                      FALSE
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      a.Status,
+                      'PENDING'
+                    )
+                  )
+                ) = 'REJECTED'
+            )
+          `);
+        }
+
+        // ======================================================
+        // PENDING
+        // ======================================================
+
+        else if (
+          filterStatus ===
+          "PENDING"
+        ) {
+          conditions.push(`
+            EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval a
+
+              WHERE a.RGPID =
+                      m.RGPID
+
+                AND a.IsDeleted =
+                      FALSE
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      a.Status,
+                      'PENDING'
+                    )
+                  )
+                ) = 'PENDING'
+            )
+
+            AND NOT EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval a
+
+              WHERE a.RGPID =
+                      m.RGPID
+
+                AND a.IsDeleted =
+                      FALSE
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      a.Status,
+                      'PENDING'
+                    )
+                  )
+                ) = 'REJECTED'
+            )
+          `);
+        }
+
+        // ======================================================
+        // Other RGP Lifecycle Status
+        // ======================================================
+
+        else {
+          values.push(
+            filterStatus,
+          );
+
+          conditions.push(
+            `UPPER(m.Status) = $${values.length}`,
+          );
+        }
+      }
+
+      // ========================================================
+      // HOD / FC / DOF / GM / Other Approver
+      // ========================================================
+
+      else if (
+        approvalRole
+      ) {
+        if (
+          [
+            "PENDING",
+            "APPROVED",
+            "REJECTED",
+          ].includes(
+            filterStatus,
+          )
+        ) {
+          values.push(
+            approvalRole,
+          );
+
+          const filterRoleIndex =
+            values.length;
+
+          values.push(
+            filterStatus,
+          );
+
+          const filterStatusIndex =
+            values.length;
+
+          conditions.push(`
+            EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval filterApproval
+
+              WHERE filterApproval.RGPID =
+                      m.RGPID
+
+                AND filterApproval.IsDeleted =
+                      FALSE
+
+                AND (
+                  CASE
+                    WHEN UPPER(
+                      TRIM(
+                        filterApproval.ApprovalRole
+                      )
+                    ) IN ('FC', 'DOF')
+                      THEN 'FC'
+
+                    ELSE UPPER(
+                      TRIM(
+                        filterApproval.ApprovalRole
+                      )
+                    )
+                  END
+                )
+                =
+                (
+                  CASE
+                    WHEN UPPER(
+                      TRIM(
+                        $${filterRoleIndex}
+                      )
+                    ) IN ('FC', 'DOF')
+                      THEN 'FC'
+
+                    ELSE UPPER(
+                      TRIM(
+                        $${filterRoleIndex}
+                      )
+                    )
+                  END
+                )
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      filterApproval.Status,
+                      'PENDING'
+                    )
+                  )
+                ) = $${filterStatusIndex}
+            )
+          `);
+        }
+
+        // ======================================================
+        // Other Lifecycle Status
+        // ======================================================
+
+        else {
+          values.push(
+            filterStatus,
+          );
+
+          conditions.push(
+            `UPPER(m.Status) = $${values.length}`,
+          );
+        }
       }
     }
 
@@ -1094,8 +1434,7 @@ const getRGPList = async (data) => {
       await pool.query(
         `
         SELECT
-          COUNT(*)::BIGINT
-            AS TotalCount
+          COUNT(*)::BIGINT AS TotalCount
 
         FROM Gatepass_RGP_Entry_Master m
 
@@ -1111,7 +1450,7 @@ const getRGPList = async (data) => {
       );
 
     // ==========================================================
-    // Pagination Values
+    // Pagination
     // ==========================================================
 
     const listValues = [
@@ -1187,7 +1526,7 @@ const getRGPList = async (data) => {
       );
 
     // ==========================================================
-    // Get Approvals For Current Page
+    // Get Approvals
     // ==========================================================
 
     const approvalsByRGP =
@@ -1262,7 +1601,7 @@ const getRGPList = async (data) => {
     }
 
     // ==========================================================
-    // Helpers
+    // Status Helper
     // ==========================================================
 
     const normalizeStatus = (
@@ -1294,7 +1633,7 @@ const getRGPList = async (data) => {
             );
 
           // ====================================================
-          // Current Sequential Approval Stage
+          // Current Sequential Stage
           // ====================================================
 
           const currentStage =
@@ -1307,7 +1646,7 @@ const getRGPList = async (data) => {
             );
 
           // ====================================================
-          // Already Approved By Current User
+          // Current User Already Approved
           // ====================================================
 
           const alreadyApproved =
@@ -1341,10 +1680,7 @@ const getRGPList = async (data) => {
 
           // ====================================================
           // SECURITY / CEO
-          //
-          // Any Rejected  => REJECTED
-          // All Approved  => APPROVED
-          // Otherwise     => PENDING
+          // Overall Approval Status
           // ====================================================
 
           if (
@@ -1386,9 +1722,8 @@ const getRGPList = async (data) => {
           }
 
           // ====================================================
-          // HOD / GM / Other Approver
-          //
-          // Show own approval status
+          // HOD / FC / DOF / GM / Other
+          // Own Approval Status
           // ====================================================
 
           else if (
@@ -1460,9 +1795,7 @@ const getRGPList = async (data) => {
 
           // ====================================================
           // Can Checkout
-          //
-          // Only Security
-          // All Approvals must be Approved
+          // Security Only + All Approvals Approved
           // ====================================================
 
           const canCheckout =
@@ -1485,6 +1818,29 @@ const getRGPList = async (data) => {
             );
 
           // ====================================================
+          // Can Action
+          //
+          // TRUE only when:
+          // RGP CreatedBy === Logged-In UserID
+          // ====================================================
+
+          const canAction =
+            Boolean(
+              row.createdby !=
+                null &&
+
+              data.UserID !=
+                null &&
+
+              String(
+                row.createdby,
+              ) ===
+                String(
+                  data.UserID,
+                )
+            );
+
+          // ====================================================
           // Response
           // ====================================================
 
@@ -1504,6 +1860,9 @@ const getRGPList = async (data) => {
 
             cancheckout:
               canCheckout,
+
+            canaction:
+              canAction,
           };
         },
       );
@@ -1542,6 +1901,27 @@ const getRGPList = async (data) => {
 // ============================================================Get RGP By ID
 const getRGPById = async (data) => {
   try {
+    // ============================================================
+    // Validate
+    // ============================================================
+
+    const RGPID =
+      Number(data.RGPID);
+
+    if (
+      !Number.isInteger(RGPID) ||
+      RGPID <= 0
+    ) {
+      return fail(
+        "Valid RGPID is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Get Master
+    // ============================================================
+
     const masterResult =
       await pool.query(
         `
@@ -1577,7 +1957,9 @@ const getRGPById = async (data) => {
           m.ReturnRemarks,
 
           m.CreatedBy,
+          createdUser.FullName AS CreatedByName,
           m.CreatedDate,
+
           m.ModifiedBy,
           m.ModifiedDate
 
@@ -1587,16 +1969,24 @@ const getRGPById = async (data) => {
           ON d.DepartmentID =
             m.DepartmentID
 
+        LEFT JOIN user_master createdUser
+          ON createdUser.UserID =
+            m.CreatedBy
+
         WHERE m.RGPID = $1
           AND m.IsDeleted = FALSE
 
         LIMIT 1;
         `,
-        [data.RGPID],
+        [RGPID],
       );
 
+    // ============================================================
+    // Not Found
+    // ============================================================
+
     if (
-      !masterResult.rows.length
+      masterResult.rows.length === 0
     ) {
       return fail(
         "RGP record not found.",
@@ -1604,20 +1994,213 @@ const getRGPById = async (data) => {
       );
     }
 
+    // ============================================================
+    // Keep Created By Data
+    //
+    // attachRGPRelatedData / mapRGP may not currently map
+    // CreatedBy and CreatedByName.
+    // ============================================================
+
+    const masterRow =
+      masterResult.rows[0];
+
+    const createdBy =
+      masterRow.createdby;
+
+    const createdByName =
+      masterRow.createdbyname;
+
+    // ============================================================
+    // Attach Existing Related Data
+    //
+    // Items
+    // Documents
+    // Approvals
+    // ============================================================
+
     const [rgp] =
       await attachRGPRelatedData(
         masterResult.rows,
       );
 
-    rgp.Documents = rgp.Documents.map((document) => ({
-      ...document,
-      FilePath: document.FilePath ? generateUrl(document.FilePath) : null,
-    }));
+    // ============================================================
+    // Explicitly Attach Created By
+    // ============================================================
+
+    rgp.CreatedBy =
+      createdBy !== null &&
+      createdBy !== undefined
+        ? Number(createdBy)
+        : null;
+
+    rgp.CreatedByName =
+      createdByName || null;
+
+    // ============================================================
+    // Get Approval User Names
+    //
+    // HOD
+    // FC / DOF -> Same Approval Stage
+    // GM
+    // ============================================================
+
+    const approvalNameResult =
+      await pool.query(
+        `
+        SELECT
+          a.RGPApprovalID,
+          a.ApprovalRole,
+          a.ApprovalOrder,
+          a.Status,
+          a.ActionBy,
+
+          u.FullName AS ActionByName
+
+        FROM Gatepass_RGP_Approval a
+
+        LEFT JOIN user_master u
+          ON u.UserID =
+            a.ActionBy
+
+        WHERE a.RGPID = $1
+          AND a.IsDeleted = FALSE
+
+        ORDER BY
+          a.ApprovalOrder ASC,
+          a.RGPApprovalID ASC;
+        `,
+        [RGPID],
+      );
+
+    // ============================================================
+    // Approval Names
+    //
+    // Name is returned only when that stage is APPROVED.
+    // ============================================================
+
+    let HODName =
+      null;
+
+    let FC_DOFName =
+      null;
+
+    let GMName =
+      null;
+
+    for (
+      const approval
+      of approvalNameResult.rows
+    ) {
+      const role =
+        String(
+          approval.approvalrole ||
+            "",
+        )
+          .trim()
+          .toUpperCase();
+
+      const status =
+        String(
+          approval.status ||
+            "",
+        )
+          .trim()
+          .toUpperCase();
+
+      // ==========================================================
+      // Only Approved Stage
+      // ==========================================================
+
+      if (
+        status !==
+        "APPROVED"
+      ) {
+        continue;
+      }
+
+      const actionByName =
+        approval.actionbyname ||
+        null;
+
+      // ==========================================================
+      // HOD
+      // ==========================================================
+
+      if (
+        role ===
+        "HOD"
+      ) {
+        HODName =
+          actionByName;
+      }
+
+      // ==========================================================
+      // FC / DOF
+      // Both treated as same approval stage
+      // ==========================================================
+
+      else if (
+        role === "FC" ||
+        role === "DOF"
+      ) {
+        FC_DOFName =
+          actionByName;
+      }
+
+      // ==========================================================
+      // GM
+      // ==========================================================
+
+      else if (
+        role ===
+        "GM"
+      ) {
+        GMName =
+          actionByName;
+      }
+    }
+
+    // ============================================================
+    // Attach Approval Names
+    // ============================================================
+
+    rgp.ApprovalNames = {
+      HODName,
+      FC_DOFName,
+      GMName,
+    };
+
+    // ============================================================
+    // Documents URL
+    // ============================================================
+
+    rgp.Documents =
+      Array.isArray(
+        rgp.Documents,
+      )
+        ? rgp.Documents.map(
+            (document) => ({
+              ...document,
+
+              FilePath:
+                document.FilePath
+                  ? generateUrl(
+                      document.FilePath,
+                    )
+                  : null,
+            }),
+          )
+        : [];
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return ok(
       "RGP record fetched successfully.",
       rgp,
     );
+
   } catch (error) {
     return databaseFailure(
       error,
@@ -7358,7 +7941,6 @@ const getRGPPendingReturnReportPdf = async (data) => {
 // ============================================================RGP Details PDF
 const generateRGPDetailPdf = async (data) => {
   try {
-
     // ============================================================
     // Validate
     // ============================================================
@@ -7375,7 +7957,6 @@ const generateRGPDetailPdf = async (data) => {
         400,
       );
     }
-
 
     // ============================================================
     // SAME GET BY ID API
@@ -7394,31 +7975,18 @@ const generateRGPDetailPdf = async (data) => {
     const detail =
       rgpResult.data;
 
-
     // ============================================================
     // PDF Design
     // ============================================================
 
     const COLORS = {
-      navy:
-        "#082B5C",
-
-      label:
-        "#082B5C",
-
-      text:
-        "#172033",
-
-      muted:
-        "#64748B",
-
-      border:
-        "#CFD7E3",
-
-      labelBackground:
-        "#F4F6F9",
+      navy: "#082B5C",
+      label: "#082B5C",
+      text: "#172033",
+      muted: "#64748B",
+      border: "#CFD7E3",
+      labelBackground: "#F4F6F9",
     };
-
 
     const displayValue = (
       value,
@@ -7429,14 +7997,17 @@ const generateRGPDetailPdf = async (data) => {
         ? "-"
         : String(value);
 
-
     const displayDate = (
       value,
+      format =
+        "DD MMM YYYY",
     ) =>
       value
-        ? formatDate(value)
+        ? formatDate(
+            value,
+            format,
+          )
         : "-";
-
 
     // ============================================================
     // Canvas Helpers
@@ -7459,7 +8030,6 @@ const generateRGPDetailPdf = async (data) => {
         COLORS.navy,
     });
 
-
     const rect = (
       x,
       y,
@@ -7478,7 +8048,6 @@ const generateRGPDetailPdf = async (data) => {
         COLORS.navy,
     });
 
-
     const ellipse = (
       x,
       y,
@@ -7495,7 +8064,6 @@ const generateRGPDetailPdf = async (data) => {
         COLORS.navy,
     });
 
-
     // ============================================================
     // Icons
     // ============================================================
@@ -7503,9 +8071,7 @@ const generateRGPDetailPdf = async (data) => {
     const fieldIcon = (
       type,
     ) => {
-
       const icons = {
-
         number: [
           rect(
             2,
@@ -7514,14 +8080,12 @@ const generateRGPDetailPdf = async (data) => {
             12,
             1,
           ),
-
           line(
             5,
             7,
             13,
             7,
           ),
-
           line(
             5,
             11,
@@ -7529,7 +8093,6 @@ const generateRGPDetailPdf = async (data) => {
             11,
           ),
         ],
-
 
         organization: [
           rect(
@@ -7539,35 +8102,30 @@ const generateRGPDetailPdf = async (data) => {
             15,
             1,
           ),
-
           line(
             1,
             17,
             17,
             17,
           ),
-
           line(
             7,
             6,
             7,
             8,
           ),
-
           line(
             11,
             6,
             11,
             8,
           ),
-
           line(
             7,
             11,
             7,
             13,
           ),
-
           line(
             11,
             11,
@@ -7575,7 +8133,6 @@ const generateRGPDetailPdf = async (data) => {
             13,
           ),
         ],
-
 
         calendar: [
           rect(
@@ -7585,21 +8142,18 @@ const generateRGPDetailPdf = async (data) => {
             13,
             1,
           ),
-
           line(
             1,
             8,
             17,
             8,
           ),
-
           line(
             5,
             2,
             5,
             6,
           ),
-
           line(
             13,
             2,
@@ -7607,7 +8161,6 @@ const generateRGPDetailPdf = async (data) => {
             6,
           ),
         ],
-
 
         vendor: [
           ellipse(
@@ -7615,21 +8168,18 @@ const generateRGPDetailPdf = async (data) => {
             6,
             4,
           ),
-
           line(
             3,
             17,
             15,
             17,
           ),
-
           line(
             5,
             17,
             5,
             13,
           ),
-
           line(
             13,
             17,
@@ -7637,7 +8187,6 @@ const generateRGPDetailPdf = async (data) => {
             13,
           ),
         ],
-
 
         phone: [
           rect(
@@ -7647,7 +8196,6 @@ const generateRGPDetailPdf = async (data) => {
             17,
             2,
           ),
-
           line(
             7,
             15,
@@ -7655,7 +8203,6 @@ const generateRGPDetailPdf = async (data) => {
             15,
           ),
         ],
-
 
         department: [
           rect(
@@ -7665,14 +8212,12 @@ const generateRGPDetailPdf = async (data) => {
             13,
             1,
           ),
-
           line(
             6,
             1,
             12,
             1,
           ),
-
           line(
             9,
             1,
@@ -7681,20 +8226,17 @@ const generateRGPDetailPdf = async (data) => {
           ),
         ],
 
-
         location: [
           ellipse(
             9,
             7,
             5,
           ),
-
           ellipse(
             9,
             7,
             1.5,
           ),
-
           {
             type:
               "polyline",
@@ -7722,21 +8264,18 @@ const generateRGPDetailPdf = async (data) => {
           },
         ],
 
-
         status: [
           ellipse(
             9,
             9,
             7,
           ),
-
           line(
             5,
             9,
             8,
             12,
           ),
-
           line(
             8,
             12,
@@ -7744,7 +8283,6 @@ const generateRGPDetailPdf = async (data) => {
             6,
           ),
         ],
-
 
         quantity: [
           rect(
@@ -7754,14 +8292,12 @@ const generateRGPDetailPdf = async (data) => {
             12,
             1,
           ),
-
           line(
             5,
             7,
             13,
             7,
           ),
-
           line(
             5,
             11,
@@ -7771,17 +8307,14 @@ const generateRGPDetailPdf = async (data) => {
         ],
       };
 
-
       const iconScale =
         0.82;
-
 
       return (
         icons[type] ||
         icons.quantity
       ).map(
         (shape) => {
-
           const scaledShape = {
             ...shape,
 
@@ -7792,7 +8325,6 @@ const generateRGPDetailPdf = async (data) => {
               ) *
               iconScale,
           };
-
 
           for (
             const coordinate
@@ -7810,7 +8342,6 @@ const generateRGPDetailPdf = async (data) => {
               "r2",
             ]
           ) {
-
             if (
               typeof scaledShape[
                 coordinate
@@ -7823,7 +8354,6 @@ const generateRGPDetailPdf = async (data) => {
                 iconScale;
             }
           }
-
 
           if (
             Array.isArray(
@@ -7844,12 +8374,10 @@ const generateRGPDetailPdf = async (data) => {
               );
           }
 
-
           return scaledShape;
         },
       );
     };
-
 
     // ============================================================
     // Cell Helpers
@@ -7861,26 +8389,23 @@ const generateRGPDetailPdf = async (data) => {
     ) => ({
       columns: [
         {
-          width:
-            22,
+          width: 22,
 
           canvas:
             fieldIcon(
               icon,
             ),
 
-          margin:
-            [
-              0,
-              0,
-              0,
-              0,
-            ],
+          margin: [
+            0,
+            0,
+            0,
+            0,
+          ],
         },
 
         {
-          width:
-            "*",
+          width: "*",
 
           text:
             label,
@@ -7888,28 +8413,25 @@ const generateRGPDetailPdf = async (data) => {
           style:
             "fieldLabel",
 
-          margin:
-            [
-              2,
-              3,
-              0,
-              0,
-            ],
+          margin: [
+            2,
+            3,
+            0,
+            0,
+          ],
         },
       ],
 
       fillColor:
         COLORS.labelBackground,
 
-      margin:
-        [
-          8,
-          6,
-          5,
-          6,
-        ],
+      margin: [
+        8,
+        6,
+        5,
+        6,
+      ],
     });
-
 
     const valueCell = (
       value,
@@ -7922,15 +8444,13 @@ const generateRGPDetailPdf = async (data) => {
       style:
         "fieldValue",
 
-      margin:
-        [
-          9,
-          8,
-          7,
-          7,
-        ],
+      margin: [
+        9,
+        8,
+        7,
+        7,
+      ],
     });
-
 
     const tableLayout = {
       hLineColor:
@@ -7966,7 +8486,6 @@ const generateRGPDetailPdf = async (data) => {
           0,
     };
 
-
     const sectionHeading = (
       title,
     ) => ({
@@ -7982,15 +8501,13 @@ const generateRGPDetailPdf = async (data) => {
       color:
         COLORS.navy,
 
-      margin:
-        [
-          0,
-          4,
-          0,
-          7,
-        ],
+      margin: [
+        0,
+        4,
+        0,
+        7,
+      ],
     });
-
 
     // ============================================================
     // Logo
@@ -8002,78 +8519,107 @@ const generateRGPDetailPdf = async (data) => {
         data.logoUrl,
       );
 
-
     const generatedOn =
       formatDate(
         new Date(),
         "DD MMM YYYY hh:mm A",
       );
 
-
     // ============================================================
-    // RGP Item Details Table
+    // RGP Item Details
     // ============================================================
 
     const itemDetailsBody = [
       [
         {
-          text: "Sr.No.",
-          style: "tableHeader",
-          alignment: "center",
+          text:
+            "Sr.No.",
+
+          style:
+            "tableHeader",
+
+          alignment:
+            "center",
         },
+
         {
-          text: "Item Name",
-          style: "tableHeader",
+          text:
+            "Item Name",
+
+          style:
+            "tableHeader",
         },
+
         {
-          text: "Specification",
-          style: "tableHeader",
+          text:
+            "Specification",
+
+          style:
+            "tableHeader",
         },
+
         {
-          text: "Qty.",
-          style: "tableHeader",
-          alignment: "center",
+          text:
+            "Qty.",
+
+          style:
+            "tableHeader",
+
+          alignment:
+            "center",
         },
+
         {
-          text: "Unit",
-          style: "tableHeader",
-          alignment: "center",
+          text:
+            "Unit",
+
+          style:
+            "tableHeader",
+
+          alignment:
+            "center",
         },
+
         {
-          text: "Rate",
-          style: "tableHeader",
-          alignment: "center",
+          text:
+            "Rate",
+
+          style:
+            "tableHeader",
+
+          alignment:
+            "center",
         },
+
         {
-          text: "Make / Model",
-          style: "tableHeader",
+          text:
+            "Make / Model",
+
+          style:
+            "tableHeader",
         },
+
         {
-          text: "Serial No.",
-          style: "tableHeader",
-        },
-        {
-          text: "Returned",
-          style: "tableHeader",
-          alignment: "center",
-        },
-        {
-          text: "Remaining",
-          style: "tableHeader",
-          alignment: "center",
+          text:
+            "Serial No.",
+
+          style:
+            "tableHeader",
         },
       ],
     ];
 
-
     if (
-      Array.isArray(detail.Items) &&
+      Array.isArray(
+        detail.Items,
+      ) &&
       detail.Items.length > 0
     ) {
-
       detail.Items.forEach(
-        (item, index) => {
-
+        (
+          item,
+          index,
+        ) => {
           itemDetailsBody.push([
             {
               text:
@@ -8134,11 +8680,15 @@ const generateRGPDetailPdf = async (data) => {
 
             {
               text:
-                item.Rate !== null &&
-                item.Rate !== undefined
+                item.Rate !==
+                  null &&
+                item.Rate !==
+                  undefined
                   ? Number(
                       item.Rate,
-                    ).toFixed(2)
+                    ).toFixed(
+                      2,
+                    )
                   : "-",
 
               style:
@@ -8167,45 +8717,17 @@ const generateRGPDetailPdf = async (data) => {
               style:
                 "tableValue",
             },
-
-            {
-              text:
-                displayValue(
-                  item.ReturnedQuantity,
-                ),
-
-              style:
-                "tableValue",
-
-              alignment:
-                "center",
-            },
-
-            {
-              text:
-                displayValue(
-                  item.RemainingQuantity,
-                ),
-
-              style:
-                "tableValue",
-
-              alignment:
-                "center",
-            },
           ]);
         },
       );
-
     } else {
-
       itemDetailsBody.push([
         {
           text:
             "No RGP item details found.",
 
           colSpan:
-            10,
+            8,
 
           alignment:
             "center",
@@ -8213,17 +8735,14 @@ const generateRGPDetailPdf = async (data) => {
           color:
             COLORS.muted,
 
-          margin:
-            [
-              0,
-              8,
-              0,
-              8,
-            ],
+          margin: [
+            0,
+            8,
+            0,
+            8,
+          ],
         },
 
-        {},
-        {},
         {},
         {},
         {},
@@ -8234,156 +8753,199 @@ const generateRGPDetailPdf = async (data) => {
       ]);
     }
 
+    // ============================================================
+    // Approval Names
+    // ============================================================
+
+    const approvalNames =
+      detail.ApprovalNames ||
+      {};
+
+    const approvedByStack =
+      [];
 
     // ============================================================
-    // Approval Details Table
+    // HOD
     // ============================================================
-
-    const approvalDetailsBody = [
-      [
-        {
-          text: "Level",
-          style: "tableHeader",
-          alignment: "center",
-        },
-        {
-          text: "Role",
-          style: "tableHeader",
-        },
-        {
-          text: "Status",
-          style: "tableHeader",
-        },
-        {
-          text: "Action By",
-          style: "tableHeader",
-        },
-        {
-          text: "Remarks",
-          style: "tableHeader",
-        },
-      ],
-    ];
-
 
     if (
-      Array.isArray(detail.Approvals) &&
-      detail.Approvals.length > 0
+      approvalNames.HODName
     ) {
+      approvedByStack.push({
+        text: [
+          {
+            text:
+              "Approved by HOD: ",
 
-      detail.Approvals.forEach(
-        (approval) => {
+            bold:
+              true,
+          },
 
-          approvalDetailsBody.push([
-            {
-              text:
-                displayValue(
-                  approval.ApprovalLevel,
-                ),
+          {
+            text:
+              displayValue(
+                approvalNames.HODName,
+              ),
+          },
+        ],
 
-              style:
-                "tableValue",
+        fontSize:
+          9,
 
-              alignment:
-                "center",
-            },
-
-            {
-              text:
-                displayValue(
-                  approval.ApprovalRole,
-                ),
-
-              style:
-                "tableValue",
-            },
-
-            {
-              text:
-                displayValue(
-                  approval.Status,
-                ),
-
-              style:
-                "tableValue",
-            },
-
-            {
-              text:
-                displayValue(
-                  approval.ActionBy,
-                ),
-
-              style:
-                "tableValue",
-            },
-
-            {
-              text:
-                displayValue(
-                  approval.Remarks,
-                ),
-
-              style:
-                "tableValue",
-            },
-          ]);
-        },
-      );
-
-    } else {
-
-      approvalDetailsBody.push([
-        {
-          text:
-            "No approval details found.",
-
-          colSpan:
-            5,
-
-          alignment:
-            "center",
-
-          color:
-            COLORS.muted,
-
-          margin:
-            [
-              0,
-              8,
-              0,
-              8,
-            ],
-        },
-
-        {},
-        {},
-        {},
-        {},
-      ]);
+        margin: [
+          0,
+          0,
+          0,
+          5,
+        ],
+      });
     }
 
+    // ============================================================
+    // FC / DOF
+    // ============================================================
+
+    if (
+      approvalNames.FC_DOFName
+    ) {
+      const financeApproval =
+        Array.isArray(
+          detail.Approvals,
+        )
+          ? detail.Approvals.find(
+              (approval) => {
+                const role =
+                  String(
+                    approval.ApprovalRole ||
+                      "",
+                  )
+                    .trim()
+                    .toUpperCase();
+
+                return (
+                  role === "FC" ||
+                  role === "DOF"
+                );
+              },
+            )
+          : null;
+
+      const financeRole =
+        financeApproval
+          ?.ApprovalRole ||
+        "FC/DOF";
+
+      approvedByStack.push({
+        text: [
+          {
+            text:
+              `Approved by ${financeRole}: `,
+
+            bold:
+              true,
+          },
+
+          {
+            text:
+              displayValue(
+                approvalNames.FC_DOFName,
+              ),
+          },
+        ],
+
+        fontSize:
+          9,
+
+        margin: [
+          0,
+          0,
+          0,
+          5,
+        ],
+      });
+    }
+
+    // ============================================================
+    // GM
+    // ============================================================
+
+    if (
+      approvalNames.GMName
+    ) {
+      approvedByStack.push({
+        text: [
+          {
+            text:
+              "Approved by GM: ",
+
+            bold:
+              true,
+          },
+
+          {
+            text:
+              displayValue(
+                approvalNames.GMName,
+              ),
+          },
+        ],
+
+        fontSize:
+          9,
+
+        margin: [
+          0,
+          0,
+          0,
+          5,
+        ],
+      });
+    }
+
+    // ============================================================
+    // No Approved User
+    // ============================================================
+
+    if (
+      approvedByStack.length ===
+      0
+    ) {
+      approvedByStack.push({
+        text:
+          "-",
+
+        fontSize:
+          9,
+      });
+    }
+
+    // ============================================================
+    // Prepare By
+    // ============================================================
+
+    const preparedBy =
+      displayValue(
+        detail.CreatedByName ||
+          detail.CreatedBy,
+      );
 
     // ============================================================
     // Document Definition
     // ============================================================
 
     const documentDefinition = {
-
       pageSize:
         "A4",
 
       pageOrientation:
         "portrait",
 
-      pageMargins:
-        [
-          22,
-          26,
-          22,
-          72,
-        ],
-
+      pageMargins: [
+        22,
+        26,
+        22,
+        72,
+      ],
 
       defaultStyle: {
         font:
@@ -8396,9 +8958,7 @@ const generateRGPDetailPdf = async (data) => {
           COLORS.text,
       },
 
-
       content: [
-
         // ========================================================
         // Header
         // ========================================================
@@ -8418,37 +8978,33 @@ const generateRGPDetailPdf = async (data) => {
                       image:
                         logo,
 
-                      fit:
-                        [
-                          88,
-                          50,
-                        ],
+                      fit: [
+                        88,
+                        50,
+                      ],
 
-                      border:
-                        [
-                          false,
-                          false,
-                          false,
-                          false,
-                        ],
+                      border: [
+                        false,
+                        false,
+                        false,
+                        false,
+                      ],
                     }
                   : {
                       text:
                         "",
 
-                      border:
-                        [
-                          false,
-                          false,
-                          false,
-                          false,
-                        ],
+                      border: [
+                        false,
+                        false,
+                        false,
+                        false,
+                      ],
                     },
-
 
                 {
                   text:
-                    "RGP Detail Report",
+                    "RETURNABLE GATE PASS",
 
                   style:
                     "title",
@@ -8456,35 +9012,31 @@ const generateRGPDetailPdf = async (data) => {
                   alignment:
                     "center",
 
-                  margin:
-                    [
-                      0,
-                      18,
-                      0,
-                      0,
-                    ],
+                  margin: [
+                    0,
+                    18,
+                    0,
+                    0,
+                  ],
 
-                  border:
-                    [
-                      false,
-                      false,
-                      false,
-                      false,
-                    ],
+                  border: [
+                    false,
+                    false,
+                    false,
+                    false,
+                  ],
                 },
-
 
                 {
                   text:
                     "",
 
-                  border:
-                    [
-                      false,
-                      false,
-                      false,
-                      false,
-                    ],
+                  border: [
+                    false,
+                    false,
+                    false,
+                    false,
+                  ],
                 },
               ],
             ],
@@ -8493,7 +9045,6 @@ const generateRGPDetailPdf = async (data) => {
           layout:
             "noBorders",
         },
-
 
         // ========================================================
         // Header Line
@@ -8525,15 +9076,13 @@ const generateRGPDetailPdf = async (data) => {
             },
           ],
 
-          margin:
-            [
-              0,
-              7,
-              0,
-              14,
-            ],
+          margin: [
+            0,
+            7,
+            0,
+            14,
+          ],
         },
-
 
         // ========================================================
         // RGP Details
@@ -8542,7 +9091,6 @@ const generateRGPDetailPdf = async (data) => {
         sectionHeading(
           "RGP Details",
         ),
-
 
         {
           table: {
@@ -8554,8 +9102,10 @@ const generateRGPDetailPdf = async (data) => {
             ],
 
             body: [
-
+              // ==================================================
               // Row 1
+              // ==================================================
+
               [
                 labelCell(
                   "RGP No.",
@@ -8578,8 +9128,10 @@ const generateRGPDetailPdf = async (data) => {
                 ),
               ],
 
-
+              // ==================================================
               // Row 2
+              // ==================================================
+
               [
                 labelCell(
                   "Department",
@@ -8600,8 +9152,10 @@ const generateRGPDetailPdf = async (data) => {
                 ),
               ],
 
-
+              // ==================================================
               // Row 3
+              // ==================================================
+
               [
                 labelCell(
                   "Vendor Name",
@@ -8622,8 +9176,10 @@ const generateRGPDetailPdf = async (data) => {
                 ),
               ],
 
-
+              // ==================================================
               // Row 4
+              // ==================================================
+
               [
                 labelCell(
                   "Company",
@@ -8644,8 +9200,38 @@ const generateRGPDetailPdf = async (data) => {
                 ),
               ],
 
+              // ==================================================
+              // Row 5 - Checkout Date
+              // ==================================================
 
-              // Row 5
+              [
+                labelCell(
+                  "Checkout Date",
+                  "calendar",
+                ),
+
+                {
+                  ...valueCell(
+                    detail.CheckoutDateTime
+                      ? displayDate(
+                          detail.CheckoutDateTime,
+                          "DD MMM YYYY hh:mm A",
+                        )
+                      : "-",
+                  ),
+
+                  colSpan:
+                    3,
+                },
+
+                {},
+                {},
+              ],
+
+              // ==================================================
+              // Row 6 - Address
+              // ==================================================
+
               [
                 labelCell(
                   "Address",
@@ -8670,15 +9256,13 @@ const generateRGPDetailPdf = async (data) => {
           layout:
             tableLayout,
 
-          margin:
-            [
-              0,
-              0,
-              0,
-              15,
-            ],
+          margin: [
+            0,
+            0,
+            0,
+            15,
+          ],
         },
-
 
         // ========================================================
         // RGP Item Details
@@ -8688,7 +9272,6 @@ const generateRGPDetailPdf = async (data) => {
           "RGP Item Details",
         ),
 
-
         {
           table: {
             headerRows:
@@ -8697,17 +9280,20 @@ const generateRGPDetailPdf = async (data) => {
             dontBreakRows:
               true,
 
+            // ====================================================
+            // Item Name increased
+            // Serial No decreased
+            // ====================================================
+
             widths: [
-              28,
-              58,
-              62,
-              32,
-              32,
-              40,
-              55,
-              55,
-              45,
-              50,
+              28,  // Sr.No.
+              120, // Item Name
+              105, // Specification
+              32,  // Qty.
+              35,  // Unit
+              42,  // Rate
+              75,  // Make / Model
+              45,  // Serial No.
             ],
 
             body:
@@ -8748,81 +9334,211 @@ const generateRGPDetailPdf = async (data) => {
                 6,
           },
 
-          margin:
-            [
-              0,
-              0,
-              0,
-              15,
-            ],
+          margin: [
+            0,
+            0,
+            0,
+            10,
+          ],
         },
 
-
         // ========================================================
-        // Approval Details
+        // Signature / Approval Section
         // ========================================================
-
-        sectionHeading(
-          "Approval Details",
-        ),
-
 
         {
-          table: {
-            headerRows:
-              1,
+          unbreakable:
+            true,
 
-            dontBreakRows:
-              true,
+          // ======================================================
+          // More gap after Item Details
+          // ======================================================
 
-            widths: [
-              45,
-              70,
-              65,
-              95,
-              "*",
-            ],
+          margin: [
+            8,
+            38,
+            8,
+            0,
+          ],
 
-            body:
-              approvalDetailsBody,
-          },
+          columns: [
+            // ====================================================
+            // LEFT SIDE
+            // ====================================================
 
-          layout: {
-            hLineColor:
-              () =>
-                COLORS.border,
+            {
+              width:
+                "*",
 
-            vLineColor:
-              () =>
-                COLORS.border,
+              stack: [
+                // ================================================
+                // Signature
+                // ================================================
 
-            hLineWidth:
-              () =>
-                0.7,
+                {
+                  text:
+                    "Signature of Person Taking Item",
 
-            vLineWidth:
-              () =>
-                0.7,
+                  bold:
+                    true,
 
-            paddingLeft:
-              () =>
-                6,
+                  fontSize:
+                    9,
 
-            paddingRight:
-              () =>
-                6,
+                  margin: [
+                    0,
+                    0,
+                    0,
+                    18,
+                  ],
+                },
 
-            paddingTop:
-              () =>
-                6,
+                // ================================================
+                // Taken By
+                // ================================================
 
-            paddingBottom:
-              () =>
-                6,
-          },
+                {
+                  text: [
+                    {
+                      text:
+                        "Taken By: ",
+
+                      bold:
+                        true,
+                    },
+
+                    {
+                      text:
+                        displayValue(
+                          detail.TakenBy,
+                        ),
+                    },
+                  ],
+
+                  fontSize:
+                    9,
+
+                  margin: [
+                    0,
+                    0,
+                    0,
+                    38,
+                  ],
+                },
+
+                // ================================================
+                // Checked & Approved By
+                // ================================================
+
+                {
+                  text:
+                    "Checked & Approved By",
+
+                  bold:
+                    true,
+
+                  fontSize:
+                    9,
+
+                  margin: [
+                    0,
+                    0,
+                    0,
+                    10,
+                  ],
+                },
+
+                // ================================================
+                // Approval Names
+                // ================================================
+
+                {
+                  stack:
+                    approvedByStack,
+                },
+              ],
+            },
+
+            // ====================================================
+            // RIGHT SIDE
+            // ====================================================
+
+            {
+              width:
+                200,
+
+              stack: [
+                // ================================================
+                // Prepare By
+                // ================================================
+
+                {
+                  text: [
+                    {
+                      text:
+                        "Prepare By:- ",
+
+                      bold:
+                        true,
+                    },
+
+                    {
+                      text:
+                        preparedBy,
+                    },
+                  ],
+
+                  // ==============================================
+                  // Same starting alignment
+                  // ==============================================
+
+                  alignment:
+                    "left",
+
+                  fontSize:
+                    9,
+
+                  margin: [
+                    20,
+                    18,
+                    0,
+                    100,
+                  ],
+                },
+
+                // ================================================
+                // Security Sign & Seal
+                // ================================================
+
+                {
+                  text:
+                    "Security Sign & Seal",
+
+                  bold:
+                    true,
+
+                  // ==============================================
+                  // Same as Prepare By
+                  // ==============================================
+
+                  alignment:
+                    "left",
+
+                  fontSize:
+                    9,
+
+                  margin: [
+                    20,
+                    0,
+                    0,
+                    0,
+                  ],
+                },
+              ],
+            },
+          ],
         },
       ],
-
 
       // ==========================================================
       // Footer
@@ -8830,13 +9546,12 @@ const generateRGPDetailPdf = async (data) => {
 
       footer:
         () => ({
-          margin:
-            [
-              22,
-              8,
-              22,
-              0,
-            ],
+          margin: [
+            22,
+            8,
+            22,
+            0,
+          ],
 
           stack: [
             {
@@ -8865,15 +9580,13 @@ const generateRGPDetailPdf = async (data) => {
                 },
               ],
 
-              margin:
-                [
-                  0,
-                  0,
-                  0,
-                  8,
-                ],
+              margin: [
+                0,
+                0,
+                0,
+                8,
+              ],
             },
-
 
             {
               columns: [
@@ -8894,7 +9607,6 @@ const generateRGPDetailPdf = async (data) => {
                     },
                   ],
                 },
-
 
                 {
                   width:
@@ -8918,13 +9630,11 @@ const generateRGPDetailPdf = async (data) => {
           ],
         }),
 
-
       // ==========================================================
       // Styles
       // ==========================================================
 
       styles: {
-
         title: {
           fontSize:
             18,
@@ -8935,7 +9645,6 @@ const generateRGPDetailPdf = async (data) => {
           color:
             COLORS.navy,
         },
-
 
         fieldLabel: {
           fontSize:
@@ -8948,7 +9657,6 @@ const generateRGPDetailPdf = async (data) => {
             COLORS.label,
         },
 
-
         fieldValue: {
           fontSize:
             9,
@@ -8957,10 +9665,9 @@ const generateRGPDetailPdf = async (data) => {
             COLORS.text,
         },
 
-
         tableHeader: {
           fontSize:
-            7,
+            8,
 
           bold:
             true,
@@ -8971,34 +9678,30 @@ const generateRGPDetailPdf = async (data) => {
           fillColor:
             COLORS.labelBackground,
 
-          margin:
-            [
-              0,
-              2,
-              0,
-              2,
-            ],
+          margin: [
+            0,
+            2,
+            0,
+            2,
+          ],
         },
-
 
         tableValue: {
           fontSize:
-            7,
+            8,
 
           color:
             COLORS.text,
 
-          margin:
-            [
-              0,
-              2,
-              0,
-              2,
-            ],
+          margin: [
+            0,
+            2,
+            0,
+            2,
+          ],
         },
       },
     };
-
 
     // ============================================================
     // Generate PDF Buffer
@@ -9011,7 +9714,6 @@ const generateRGPDetailPdf = async (data) => {
           reject,
         ) => {
           try {
-
             const pdfDocument =
               new PdfPrinter(
                 RGP_DETAIL_PDF_FONTS,
@@ -9020,9 +9722,8 @@ const generateRGPDetailPdf = async (data) => {
                   documentDefinition,
                 );
 
-
-            const chunks = [];
-
+            const chunks =
+              [];
 
             pdfDocument.on(
               "data",
@@ -9031,7 +9732,6 @@ const generateRGPDetailPdf = async (data) => {
                   chunk,
                 ),
             );
-
 
             pdfDocument.on(
               "end",
@@ -9043,12 +9743,10 @@ const generateRGPDetailPdf = async (data) => {
                 ),
             );
 
-
             pdfDocument.on(
               "error",
               reject,
             );
-
 
             pdfDocument.end();
 
@@ -9057,7 +9755,6 @@ const generateRGPDetailPdf = async (data) => {
           }
         },
       );
-
 
     // ============================================================
     // Return
@@ -9081,12 +9778,10 @@ const generateRGPDetailPdf = async (data) => {
     };
 
   } catch (error) {
-
     console.error(
       "Generate RGP detail PDF error:",
       error,
     );
-
 
     return databaseFailure(
       error,
