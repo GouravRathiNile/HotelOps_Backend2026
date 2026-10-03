@@ -1285,8 +1285,7 @@ exports.processRGPGateAction = async (req, res) => {
 
     if (
       action === "CHECKOUT" &&
-      documentRemarks.length >
-        files.length
+      documentRemarks.slice(files.length).some((remark) => remark !== null)
     ) {
       throw new AppError(
         "Document remarks count cannot be greater than uploaded documents count",
@@ -1297,14 +1296,6 @@ exports.processRGPGateAction = async (req, res) => {
     // ============================================================
     // Prepare Documents
     //
-    // NOTE:
-    // Yahan req.files me Azure middleware se uploaded file
-    // information available honi chahiye.
-    //
-    // FilePath ki property tumhare existing Azure middleware ke
-    // according honi chahiye.
-    // ============================================================
-
     const Documents = [];
 
     if (
@@ -1319,23 +1310,8 @@ exports.processRGPGateAction = async (req, res) => {
         const file =
           files[index];
 
-        // ========================================================
-        // Resolve Uploaded Azure File Path
-        //
-        // Existing middleware ke according commonly:
-        // file.blobName
-        // file.path
-        // file.filename
-        //
-        // Isko apne existing createRGP upload structure se match
-        // karna hai.
-        // ========================================================
-
-        const filePath =
-          file.blobName ||
-          file.path ||
-          file.filename ||
-          null;
+        // Multer provides an in-memory buffer; upload it to obtain the blob path.
+        const filePath = await uploadToAzure(file);
 
         if (!filePath) {
           throw new AppError(

@@ -253,6 +253,7 @@ const mapRGPItem = (row) => ({
 });
 // ==========================Map RGP Document
 const mapRGPDocument = (row) => ({
+  Remarks: row.remarks ?? null,
   RGPDocumentID:
     Number(row.rgpdocumentid),
 
@@ -360,6 +361,8 @@ const attachRGPRelatedData = async (
         FilePath,
         FileType,
         FileSize,
+
+        Remarks,
 
         CreatedBy,
         CreatedDate
@@ -1946,6 +1949,7 @@ const getRGPById = async (data) => {
 
           m.CheckoutDateTime,
           m.CheckoutBy,
+          checkoutUser.FullName AS CheckoutByName,
           m.CheckoutRemarks,
 
           m.CancelledBy,
@@ -1973,6 +1977,10 @@ const getRGPById = async (data) => {
           ON createdUser.UserID =
             m.CreatedBy
 
+        LEFT JOIN user_master checkoutUser
+          ON checkoutUser.UserID =
+            m.CheckoutBy
+
         WHERE m.RGPID = $1
           AND m.IsDeleted = FALSE
 
@@ -1995,20 +2003,37 @@ const getRGPById = async (data) => {
     }
 
     // ============================================================
-    // Keep Created By Data
-    //
-    // attachRGPRelatedData / mapRGP may not currently map
-    // CreatedBy and CreatedByName.
+    // Keep Master Data
     // ============================================================
 
     const masterRow =
       masterResult.rows[0];
+
+    // ============================================================
+    // Created By
+    // ============================================================
 
     const createdBy =
       masterRow.createdby;
 
     const createdByName =
       masterRow.createdbyname;
+
+    // ============================================================
+    // Checkout Details
+    // ============================================================
+
+    const checkoutDateTime =
+      masterRow.checkoutdatetime;
+
+    const checkoutBy =
+      masterRow.checkoutby;
+
+    const checkoutByName =
+      masterRow.checkoutbyname;
+
+    const checkoutRemarks =
+      masterRow.checkoutremarks;
 
     // ============================================================
     // Attach Existing Related Data
@@ -2024,24 +2049,374 @@ const getRGPById = async (data) => {
       );
 
     // ============================================================
+    // Get Return Details
+    //
+    // Every return transaction remains a separate row.
+    // Example:
+    //
+    // Original Qty = 994
+    //
+    // Return 1 = 100
+    // Return 2 = 194
+    //
+    // Output:
+    // 100 Returned
+    // 194 Returned
+    // 700 Pending
+    // ============================================================
+
+    const returnResult =
+      await pool.query(
+        `
+        SELECT
+          RGPReturnDetailID,
+          RGPItemID,
+          QuantityReceived,
+          RemainingQuantity,
+          ReturnDateTime,
+          ReturnBy,
+          ActualDate,
+          IsReturn,
+          Remarks
+
+        FROM Gatepass_RGP_Item_Return_Details
+
+        WHERE RGPID = $1
+          AND IsDeleted = FALSE
+
+        ORDER BY
+          ReturnDateTime ASC,
+          RGPReturnDetailID ASC;
+        `,
+        [RGPID],
+      );
+
+    // ============================================================
+    // Group Return Transactions By Item
+    // ============================================================
+
+    const returnsByItem =
+      new Map();
+
+    for (
+      const row
+      of returnResult.rows
+    ) {
+      const itemID =
+        Number(
+          row.rgpitemid,
+        );
+
+      if (
+        !returnsByItem.has(
+          itemID,
+        )
+      ) {
+        returnsByItem.set(
+          itemID,
+          [],
+        );
+      }
+
+      returnsByItem
+        .get(itemID)
+        .push({
+          RGPReturnDetailID:
+            Number(
+              row.rgpreturndetailid,
+            ),
+
+          QuantityReceived:
+            Number(
+              row.quantityreceived,
+            ) || 0,
+
+          RemainingQuantity:
+            Number(
+              row.remainingquantity,
+            ) || 0,
+
+          ReturnDateTime:
+            row.returndatetime
+              ? formatDate(
+                  row.returndatetime,
+                  "DD MMM YYYY HH:mm:ss",
+                )
+              : null,
+
+          ReturnBy:
+            row.returnby === null ||
+            row.returnby === undefined
+              ? null
+              : Number(
+                  row.returnby,
+                ),
+
+          ActualDate:
+            row.actualdate
+              ? formatDate(
+                  row.actualdate,
+                )
+              : null,
+
+          IsReturn:
+            row.isreturn === true,
+
+          Remarks:
+            row.remarks ?? null,
+        });
+    }
+
+    // ============================================================
+    // Build Item Rows
+    //
+    // Each saved return = separate Returned row
+    // Remaining quantity = one last Pending row
+    // ============================================================
+
+    rgp.Items =
+      Array.isArray(rgp.Items)
+        ? rgp.Items.flatMap(
+            (item) => {
+              const itemID =
+                Number(
+                  item.RGPItemID,
+                );
+
+              const originalQuantity =
+                Number(
+                  item.Quantity,
+                ) || 0;
+
+              const returns =
+                returnsByItem.get(
+                  itemID,
+                ) || [];
+
+              // ==================================================
+              // Total Quantity Already Returned
+              // ==================================================
+
+              const totalReturned =
+                returns.reduce(
+                  (
+                    total,
+                    detail,
+                  ) =>
+                    total +
+                    Number(
+                      detail.QuantityReceived ||
+                        0,
+                    ),
+                  0,
+                );
+
+              // ==================================================
+              // Calculate Remaining From Original Quantity
+              //
+              // Example:
+              // 994 - (100 + 194) = 700
+              // ==================================================
+
+              const remainingQuantity =
+                Math.max(
+                  originalQuantity -
+                    totalReturned,
+                  0,
+                );
+
+              const itemRows = [];
+
+              // ==================================================
+              // Returned Rows
+              // ==================================================
+
+              for (
+                const detail
+                of returns
+              ) {
+                itemRows.push({
+                  ...item,
+
+                  RGPReturnDetailID:
+                    detail.RGPReturnDetailID,
+
+                  Quantity:
+                    detail.QuantityReceived,
+
+                  ReturnedQuantity:
+                    detail.QuantityReceived,
+
+                  RemainingQuantity:
+                    0,
+
+                  IsReturned:
+                    true,
+
+                  QuantityReceived:
+                    detail.QuantityReceived,
+
+                  ReturnDateTime:
+                    detail.ReturnDateTime,
+
+                  ReturnBy:
+                    detail.ReturnBy,
+
+                  ActualDate:
+                    detail.ActualDate,
+
+                  IsReturn:
+                    detail.IsReturn,
+
+                  Remarks:
+                    detail.Remarks,
+                });
+              }
+
+              // ==================================================
+              // Pending / Remaining Row
+              //
+              // Always last.
+              // Only add when some quantity is still pending.
+              // ==================================================
+
+              if (
+                remainingQuantity > 0
+              ) {
+                itemRows.push({
+                  ...item,
+
+                  Quantity:
+                    remainingQuantity,
+
+                  ReturnedQuantity:
+                    0,
+
+                  RemainingQuantity:
+                    remainingQuantity,
+
+                  IsReturned:
+                    false,
+
+                  RGPReturnDetailID:
+                    null,
+
+                  QuantityReceived:
+                    0,
+
+                  ReturnDateTime:
+                    null,
+
+                  ReturnBy:
+                    null,
+
+                  ActualDate:
+                    null,
+
+                  IsReturn:
+                    false,
+
+                  Remarks:
+                    null,
+                });
+              }
+
+              // ==================================================
+              // Safety
+              //
+              // If original quantity itself is 0 and there are
+              // no returns, preserve original item.
+              // ==================================================
+
+              if (
+                itemRows.length === 0
+              ) {
+                itemRows.push({
+                  ...item,
+
+                  Quantity:
+                    originalQuantity,
+
+                  ReturnedQuantity:
+                    0,
+
+                  RemainingQuantity:
+                    originalQuantity,
+
+                  IsReturned:
+                    false,
+
+                  RGPReturnDetailID:
+                    null,
+
+                  QuantityReceived:
+                    0,
+
+                  ReturnDateTime:
+                    null,
+
+                  ReturnBy:
+                    null,
+
+                  ActualDate:
+                    null,
+
+                  IsReturn:
+                    false,
+
+                  Remarks:
+                    null,
+                });
+              }
+
+              return itemRows;
+            },
+          )
+        : [];
+
+    // ============================================================
     // Explicitly Attach Created By
     // ============================================================
 
     rgp.CreatedBy =
       createdBy !== null &&
       createdBy !== undefined
-        ? Number(createdBy)
+        ? Number(
+            createdBy,
+          )
         : null;
 
     rgp.CreatedByName =
       createdByName || null;
 
     // ============================================================
+    // Explicitly Attach Checkout Details
+    // ============================================================
+
+    rgp.CheckoutDateTime =
+      checkoutDateTime
+        ? formatDate(
+            checkoutDateTime,
+            "DD MMM YYYY",
+          )
+        : null;
+
+    rgp.CheckoutBy =
+      checkoutBy !== null &&
+      checkoutBy !== undefined
+        ? Number(
+            checkoutBy,
+          )
+        : null;
+
+    rgp.CheckoutByName =
+      checkoutByName || null;
+
+    rgp.CheckoutRemarks =
+      checkoutRemarks || null;
+
+    // ============================================================
     // Get Approval User Names
-    //
-    // HOD
-    // FC / DOF -> Same Approval Stage
-    // GM
     // ============================================================
 
     const approvalNameResult =
@@ -2074,8 +2449,6 @@ const getRGPById = async (data) => {
 
     // ============================================================
     // Approval Names
-    //
-    // Name is returned only when that stage is APPROVED.
     // ============================================================
 
     let HODName =
@@ -2107,10 +2480,6 @@ const getRGPById = async (data) => {
           .trim()
           .toUpperCase();
 
-      // ==========================================================
-      // Only Approved Stage
-      // ==========================================================
-
       if (
         status !==
         "APPROVED"
@@ -2127,8 +2496,7 @@ const getRGPById = async (data) => {
       // ==========================================================
 
       if (
-        role ===
-        "HOD"
+        role === "HOD"
       ) {
         HODName =
           actionByName;
@@ -2136,7 +2504,6 @@ const getRGPById = async (data) => {
 
       // ==========================================================
       // FC / DOF
-      // Both treated as same approval stage
       // ==========================================================
 
       else if (
@@ -2152,8 +2519,7 @@ const getRGPById = async (data) => {
       // ==========================================================
 
       else if (
-        role ===
-        "GM"
+        role === "GM"
       ) {
         GMName =
           actionByName;
@@ -2208,20 +2574,31 @@ const getRGPById = async (data) => {
     );
   }
 };
-// ============================================================Get RGP By RGP Number
+// ============================================================Get RGP By Number
 const getRGPByNumber = async (data) => {
   try {
+    // ============================================================
+    // RGP Number
+    // ============================================================
+
     const RGPNumber = String(
       data.RGPNumber || "",
     ).trim();
 
-    // RGP Number nahi diya to empty response
+    // ============================================================
+    // Empty Search
+    // ============================================================
+
     if (!RGPNumber) {
       return ok(
         "Enter RGP number to search.",
         null,
       );
     }
+
+    // ============================================================
+    // Get Master
+    // ============================================================
 
     const masterResult =
       await pool.query(
@@ -2247,6 +2624,7 @@ const getRGPByNumber = async (data) => {
 
           m.CheckoutDateTime,
           m.CheckoutBy,
+          checkoutUser.FullName AS CheckoutByName,
           m.CheckoutRemarks,
 
           m.CancelledBy,
@@ -2258,7 +2636,9 @@ const getRGPByNumber = async (data) => {
           m.ReturnRemarks,
 
           m.CreatedBy,
+          createdUser.FullName AS CreatedByName,
           m.CreatedDate,
+
           m.ModifiedBy,
           m.ModifiedDate
 
@@ -2268,21 +2648,48 @@ const getRGPByNumber = async (data) => {
           ON d.DepartmentID =
             m.DepartmentID
 
+        LEFT JOIN user_master createdUser
+          ON createdUser.UserID =
+            m.CreatedBy
+
+        LEFT JOIN user_master checkoutUser
+          ON checkoutUser.UserID =
+            m.CheckoutBy
+
         WHERE m.RGPNumber = $1
           AND m.IsDeleted = FALSE
+
           AND EXISTS (
-            SELECT 1 FROM Gatepass_RGP_Approval a
-            WHERE a.RGPID = m.RGPID AND a.IsDeleted = FALSE
+            SELECT 1
+            FROM Gatepass_RGP_Approval a
+            WHERE a.RGPID = m.RGPID
+              AND a.IsDeleted = FALSE
           )
+
           AND NOT EXISTS (
-            SELECT 1 FROM Gatepass_RGP_Approval a
-            WHERE a.RGPID = m.RGPID AND a.IsDeleted = FALSE
-              AND UPPER(TRIM(COALESCE(a.Status, 'Pending'))) <> 'APPROVED'
+            SELECT 1
+            FROM Gatepass_RGP_Approval a
+            WHERE a.RGPID = m.RGPID
+              AND a.IsDeleted = FALSE
+              AND UPPER(
+                TRIM(
+                  COALESCE(
+                    a.Status,
+                    'Pending'
+                  )
+                )
+              ) <> 'APPROVED'
           )
+
           AND EXISTS (
-            SELECT 1 FROM Gatepass_RGP_Entry_Item_Details i
-            WHERE i.RGPID = m.RGPID AND i.IsDeleted = FALSE
-              AND COALESCE(i.RemainingQuantity, 0) > 0
+            SELECT 1
+            FROM Gatepass_RGP_Entry_Item_Details i
+            WHERE i.RGPID = m.RGPID
+              AND i.IsDeleted = FALSE
+              AND COALESCE(
+                i.RemainingQuantity,
+                0
+              ) > 0
           )
 
         LIMIT 1;
@@ -2290,38 +2697,568 @@ const getRGPByNumber = async (data) => {
         [RGPNumber],
       );
 
-    // RGP Number mila nahi
-    if (!masterResult.rows.length) {
+    // ============================================================
+    // Not Found
+    // ============================================================
+
+    if (
+      !masterResult.rows.length
+    ) {
       return ok(
         "RGP record not found.",
         null,
       );
     }
 
-    // Same related data as Get By ID
+    // ============================================================
+    // Keep Master Data
+    // ============================================================
+
+    const masterRow =
+      masterResult.rows[0];
+
+    const RGPID =
+      Number(
+        masterRow.rgpid,
+      );
+
+    // ============================================================
+    // Created By
+    // ============================================================
+
+    const createdBy =
+      masterRow.createdby;
+
+    const createdByName =
+      masterRow.createdbyname;
+
+    // ============================================================
+    // Checkout Details
+    // ============================================================
+
+    const checkoutDateTime =
+      masterRow.checkoutdatetime;
+
+    const checkoutBy =
+      masterRow.checkoutby;
+
+    const checkoutByName =
+      masterRow.checkoutbyname;
+
+    const checkoutRemarks =
+      masterRow.checkoutremarks;
+
+    // ============================================================
+    // Attach Related Data
+    //
+    // Items
+    // Documents
+    // Approvals
+    // ============================================================
+
     const [rgp] =
       await attachRGPRelatedData(
         masterResult.rows,
       );
 
-    // Generate document URLs
-    rgp.Documents =
-      rgp.Documents.map(
-        (document) => ({
-          ...document,
-          FilePath:
-            document.FilePath
-              ? generateUrl(
-                  document.FilePath,
+    // ============================================================
+    // Get Item Return Details
+    // ============================================================
+
+    const returnResult =
+      await pool.query(
+        `
+        SELECT
+          RGPReturnDetailID,
+          RGPItemID,
+          QuantityReceived,
+          RemainingQuantity,
+          ReturnDateTime,
+          ReturnBy,
+          ActualDate,
+          IsReturn,
+          Remarks
+
+        FROM Gatepass_RGP_Item_Return_Details
+
+        WHERE RGPID = $1
+          AND IsDeleted = FALSE
+
+        ORDER BY
+          ReturnDateTime ASC,
+          RGPReturnDetailID ASC;
+        `,
+        [RGPID],
+      );
+
+    // ============================================================
+    // Group Returns By Item
+    // ============================================================
+
+    const returnsByItem =
+      new Map();
+
+    for (
+      const row
+      of returnResult.rows
+    ) {
+      const itemID =
+        Number(
+          row.rgpitemid,
+        );
+
+      if (
+        !returnsByItem.has(
+          itemID,
+        )
+      ) {
+        returnsByItem.set(
+          itemID,
+          [],
+        );
+      }
+
+      returnsByItem
+        .get(itemID)
+        .push({
+          RGPReturnDetailID:
+            Number(
+              row.rgpreturndetailid,
+            ),
+
+          QuantityReceived:
+            Number(
+              row.quantityreceived,
+            ) || 0,
+
+          RemainingQuantity:
+            Number(
+              row.remainingquantity,
+            ) || 0,
+
+          ReturnDateTime:
+            row.returndatetime
+              ? formatDate(
+                  row.returndatetime,
+                  "DD MMM YYYY HH:mm:ss",
                 )
               : null,
-        }),
+
+          ReturnBy:
+            row.returnby === null ||
+            row.returnby === undefined
+              ? null
+              : Number(
+                  row.returnby,
+                ),
+
+          ActualDate:
+            row.actualdate
+              ? formatDate(
+                  row.actualdate,
+                )
+              : null,
+
+          IsReturn:
+            row.isreturn === true,
+
+          Remarks:
+            row.remarks ?? null,
+        });
+    }
+
+    // ============================================================
+    // Build Item Rows
+    //
+    // Example:
+    //
+    // Original = 994
+    // Return   = 100
+    // Return   = 194
+    //
+    // Result:
+    // 100 Returned
+    // 194 Returned
+    // 700 Pending
+    // ============================================================
+
+    rgp.Items =
+      Array.isArray(rgp.Items)
+        ? rgp.Items.flatMap(
+            (item) => {
+              const itemID =
+                Number(
+                  item.RGPItemID,
+                );
+
+              // Original item quantity
+              const originalQuantity =
+                Number(
+                  item.Quantity,
+                ) || 0;
+
+              const returns =
+                returnsByItem.get(
+                  itemID,
+                ) || [];
+
+              // ================================================
+              // Total Returned
+              // ================================================
+
+              const totalReturned =
+                returns.reduce(
+                  (
+                    total,
+                    detail,
+                  ) =>
+                    total +
+                    Number(
+                      detail.QuantityReceived ||
+                        0,
+                    ),
+                  0,
+                );
+
+              // ================================================
+              // Remaining Quantity
+              // ================================================
+
+              const remainingQuantity =
+                Math.max(
+                  originalQuantity -
+                    totalReturned,
+                  0,
+                );
+
+              const itemRows = [];
+
+              // ================================================
+              // Returned Rows
+              // ================================================
+
+              for (
+                const detail
+                of returns
+              ) {
+                itemRows.push({
+                  ...item,
+
+                  RGPReturnDetailID:
+                    detail.RGPReturnDetailID,
+
+                  Quantity:
+                    detail.QuantityReceived,
+
+                  ReturnedQuantity:
+                    detail.QuantityReceived,
+
+                  RemainingQuantity:
+                    0,
+
+                  IsReturned:
+                    true,
+
+                  QuantityReceived:
+                    detail.QuantityReceived,
+
+                  ReturnDateTime:
+                    detail.ReturnDateTime,
+
+                  ReturnBy:
+                    detail.ReturnBy,
+
+                  ActualDate:
+                    detail.ActualDate,
+
+                  IsReturn:
+                    detail.IsReturn,
+
+                  Remarks:
+                    detail.Remarks,
+                });
+              }
+
+              // ================================================
+              // Remaining / Pending Row
+              // Always Last
+              // ================================================
+
+              if (
+                remainingQuantity > 0
+              ) {
+                itemRows.push({
+                  ...item,
+
+                  RGPReturnDetailID:
+                    null,
+
+                  Quantity:
+                    remainingQuantity,
+
+                  ReturnedQuantity:
+                    0,
+
+                  RemainingQuantity:
+                    remainingQuantity,
+
+                  IsReturned:
+                    false,
+
+                  QuantityReceived:
+                    0,
+
+                  ReturnDateTime:
+                    null,
+
+                  ReturnBy:
+                    null,
+
+                  ActualDate:
+                    null,
+
+                  IsReturn:
+                    false,
+
+                  Remarks:
+                    null,
+                });
+              }
+
+              // ================================================
+              // Safety
+              // ================================================
+
+              if (
+                itemRows.length === 0
+              ) {
+                itemRows.push({
+                  ...item,
+
+                  RGPReturnDetailID:
+                    null,
+
+                  Quantity:
+                    originalQuantity,
+
+                  ReturnedQuantity:
+                    0,
+
+                  RemainingQuantity:
+                    originalQuantity,
+
+                  IsReturned:
+                    false,
+
+                  QuantityReceived:
+                    0,
+
+                  ReturnDateTime:
+                    null,
+
+                  ReturnBy:
+                    null,
+
+                  ActualDate:
+                    null,
+
+                  IsReturn:
+                    false,
+
+                  Remarks:
+                    null,
+                });
+              }
+
+              return itemRows;
+            },
+          )
+        : [];
+
+    // ============================================================
+    // Created By
+    // ============================================================
+
+    rgp.CreatedBy =
+      createdBy !== null &&
+      createdBy !== undefined
+        ? Number(
+            createdBy,
+          )
+        : null;
+
+    rgp.CreatedByName =
+      createdByName || null;
+
+    // ============================================================
+    // Checkout Details
+    // ============================================================
+
+    rgp.CheckoutDateTime =
+      checkoutDateTime
+        ? formatDate(
+            checkoutDateTime,
+            "DD MMM YYYY",
+          )
+        : null;
+
+    rgp.CheckoutBy =
+      checkoutBy !== null &&
+      checkoutBy !== undefined
+        ? Number(
+            checkoutBy,
+          )
+        : null;
+
+    rgp.CheckoutByName =
+      checkoutByName || null;
+
+    rgp.CheckoutRemarks =
+      checkoutRemarks || null;
+
+    // ============================================================
+    // Get Approval User Names
+    // ============================================================
+
+    const approvalNameResult =
+      await pool.query(
+        `
+        SELECT
+          a.RGPApprovalID,
+          a.ApprovalRole,
+          a.ApprovalOrder,
+          a.Status,
+          a.ActionBy,
+
+          u.FullName AS ActionByName
+
+        FROM Gatepass_RGP_Approval a
+
+        LEFT JOIN user_master u
+          ON u.UserID =
+            a.ActionBy
+
+        WHERE a.RGPID = $1
+          AND a.IsDeleted = FALSE
+
+        ORDER BY
+          a.ApprovalOrder ASC,
+          a.RGPApprovalID ASC;
+        `,
+        [RGPID],
       );
+
+    // ============================================================
+    // Approval Names
+    // ============================================================
+
+    let HODName =
+      null;
+
+    let FC_DOFName =
+      null;
+
+    let GMName =
+      null;
+
+    for (
+      const approval
+      of approvalNameResult.rows
+    ) {
+      const role =
+        String(
+          approval.approvalrole ||
+            "",
+        )
+          .trim()
+          .toUpperCase();
+
+      const status =
+        String(
+          approval.status ||
+            "",
+        )
+          .trim()
+          .toUpperCase();
+
+      if (
+        status !==
+        "APPROVED"
+      ) {
+        continue;
+      }
+
+      const actionByName =
+        approval.actionbyname ||
+        null;
+
+      // HOD
+      if (
+        role === "HOD"
+      ) {
+        HODName =
+          actionByName;
+      }
+
+      // FC / DOF
+      else if (
+        role === "FC" ||
+        role === "DOF"
+      ) {
+        FC_DOFName =
+          actionByName;
+      }
+
+      // GM
+      else if (
+        role === "GM"
+      ) {
+        GMName =
+          actionByName;
+      }
+    }
+
+    // ============================================================
+    // Attach Approval Names
+    // ============================================================
+
+    rgp.ApprovalNames = {
+      HODName,
+      FC_DOFName,
+      GMName,
+    };
+
+    // ============================================================
+    // Generate Document URLs
+    // ============================================================
+
+    rgp.Documents =
+      Array.isArray(
+        rgp.Documents,
+      )
+        ? rgp.Documents.map(
+            (document) => ({
+              ...document,
+
+              FilePath:
+                document.FilePath
+                  ? generateUrl(
+                      document.FilePath,
+                    )
+                  : null,
+            }),
+          )
+        : [];
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return ok(
       "RGP record fetched successfully.",
       rgp,
     );
+
   } catch (error) {
     return databaseFailure(
       error,
@@ -4560,22 +5497,7 @@ const processRGPItemReturn = async (data) => {
       );
 
       return ok(
-        "RGP items returned successfully. All items have been returned.",
-        {
-          RGPID:
-            rgpID,
-
-          RGPNumber:
-            Number(
-              master.rgpnumber,
-            ),
-
-          Status:
-            "RETURNED",
-
-          RemainingItemCount:
-            0,
-        },
+        "RGP items returned successfully. All items have been returned."
       );
     }
 
@@ -9496,7 +10418,7 @@ const generateRGPDetailPdf = async (data) => {
                     detail.CheckoutDateTime
                       ? displayDate(
                           detail.CheckoutDateTime,
-                          "DD MMM YYYY hh:mm A",
+                          "DD MMM YYYY",
                         )
                       : "-",
                   ),

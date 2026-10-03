@@ -58,7 +58,7 @@ router.get("/VendorNames",authenticateToken,getRGPVendorNames,);
 router.put("/UpdateRGP",authenticateToken,upload.array("Documents", 10),updateRGP,);
 router.delete("/DeleteRGP",authenticateToken,deleteRGP,);
 router.put("/ApproveRGP",authenticateToken,processRGPApproval,);
-router.put("/RGPGateAction",authenticateToken,processRGPGateAction,);
+router.put("/RGPGateAction",authenticateToken,upload.array("Documents", 10),processRGPGateAction,);
 router.put("/RGPItemReturn",authenticateToken,processRGPItemReturn,);
 router.get("/ApprovalConfigList",authenticateToken,getRGPApprovalConfig,);
 router.post("/CreateApprovalConfig",authenticateToken,saveRGPApprovalConfig,);
