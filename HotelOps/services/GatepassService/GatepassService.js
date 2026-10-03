@@ -2270,6 +2270,20 @@ const getRGPByNumber = async (data) => {
 
         WHERE m.RGPNumber = $1
           AND m.IsDeleted = FALSE
+          AND EXISTS (
+            SELECT 1 FROM Gatepass_RGP_Approval a
+            WHERE a.RGPID = m.RGPID AND a.IsDeleted = FALSE
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM Gatepass_RGP_Approval a
+            WHERE a.RGPID = m.RGPID AND a.IsDeleted = FALSE
+              AND UPPER(TRIM(COALESCE(a.Status, 'Pending'))) <> 'APPROVED'
+          )
+          AND EXISTS (
+            SELECT 1 FROM Gatepass_RGP_Entry_Item_Details i
+            WHERE i.RGPID = m.RGPID AND i.IsDeleted = FALSE
+              AND COALESCE(i.RemainingQuantity, 0) > 0
+          )
 
         LIMIT 1;
         `,
@@ -3485,6 +3499,7 @@ const processRGPGateAction = async (data) => {
       RGPID,
       Action,
       Remarks,
+      Documents = [],
       UserID,
     } = data;
 
@@ -3492,8 +3507,7 @@ const processRGPGateAction = async (data) => {
     // Validate RGP ID
     // ============================================================
 
-    const rgpID =
-      Number(RGPID);
+    const rgpID = Number(RGPID);
 
     if (
       !Number.isSafeInteger(rgpID) ||
@@ -3529,6 +3543,84 @@ const processRGPGateAction = async (data) => {
         "Action must be CHECKOUT or CANCEL.",
         400,
       );
+    }
+
+    // ============================================================
+    // Validate Documents
+    // ============================================================
+
+    if (
+      Documents !== undefined &&
+      !Array.isArray(Documents)
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Documents must be an array.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Validate Each Document
+    // Actual file upload already Controller/Azure side par hoga.
+    // Service ko uploaded file information milegi.
+    // ============================================================
+
+    if (
+      action === "CHECKOUT" &&
+      Array.isArray(Documents) &&
+      Documents.length > 0
+    ) {
+      for (
+        let i = 0;
+        i < Documents.length;
+        i++
+      ) {
+        const document =
+          Documents[i];
+
+        if (
+          !document ||
+          typeof document !==
+            "object"
+        ) {
+          await client.query(
+            "ROLLBACK",
+          );
+
+          return fail(
+            `Invalid document at index ${i}.`,
+            400,
+          );
+        }
+
+        const fileName =
+          String(
+            document.FileName ||
+              "",
+          ).trim();
+
+        const filePath =
+          String(
+            document.FilePath ||
+              "",
+          ).trim();
+
+        if (
+          !fileName ||
+          !filePath
+        ) {
+          await client.query(
+            "ROLLBACK",
+          );
+
+          return fail(
+            `FileName and FilePath are required for document ${i + 1}.`,
+            400,
+          );
+        }
+      }
     }
 
     // ============================================================
@@ -3588,7 +3680,7 @@ const processRGPGateAction = async (data) => {
         .toUpperCase();
 
     // ============================================================
-    // Already Checkout
+    // Already Checked Out
     // ============================================================
 
     if (
@@ -3643,7 +3735,9 @@ const processRGPGateAction = async (data) => {
       [
         "RETURN PENDING",
         "RETURNED",
-      ].includes(currentStatus)
+      ].includes(
+        currentStatus,
+      )
     ) {
       await client.query("ROLLBACK");
 
@@ -3671,7 +3765,6 @@ const processRGPGateAction = async (data) => {
 
     // ============================================================
     // Extra Approval Safety Check
-    //
     // Master APPROVED ke saath saari active approval rows
     // bhi Approved honi chahiye.
     // ============================================================
@@ -3679,14 +3772,19 @@ const processRGPGateAction = async (data) => {
     const pendingApprovalResult =
       await client.query(
         `
-        SELECT COUNT(*)::INT AS PendingCount
+        SELECT
+          COUNT(*)::INT AS PendingCount
 
         FROM Gatepass_RGP_Approval
 
         WHERE RGPID = $1
           AND IsDeleted = FALSE
+
           AND UPPER(
-                COALESCE(Status, 'Pending')
+                COALESCE(
+                  Status,
+                  'Pending'
+                )
               ) <> 'APPROVED';
         `,
         [
@@ -3719,6 +3817,10 @@ const processRGPGateAction = async (data) => {
     if (
       action === "CHECKOUT"
     ) {
+      // ==========================================================
+      // Update RGP Master
+      // ==========================================================
+
       await client.query(
         `
         UPDATE Gatepass_RGP_Entry_Master
@@ -3734,6 +3836,7 @@ const processRGPGateAction = async (data) => {
           CheckoutRemarks = $2,
 
           ModifiedBy = $1,
+
           ModifiedDate =
             CURRENT_TIMESTAMP
 
@@ -3742,10 +3845,159 @@ const processRGPGateAction = async (data) => {
         `,
         [
           UserID,
-          Remarks || null,
+          Remarks
+            ? String(
+                Remarks,
+              ).trim()
+            : null,
           rgpID,
         ],
       );
+
+      // ==========================================================
+      // Insert Multiple Checkout Documents
+      //
+      // Documents example after Controller/Azure upload:
+      //
+      // [
+      //   {
+      //     FileName: "invoice.pdf",
+      //     FilePath: "GatepassDocuments/abc.pdf",
+      //     FileType: "application/pdf",
+      //     FileSize: 125000,
+      //     Remarks: "Invoice copy"
+      //   },
+      //   {
+      //     FileName: "item.jpg",
+      //     FilePath: "GatepassDocuments/xyz.jpg",
+      //     FileType: "image/jpeg",
+      //     FileSize: 85000,
+      //     Remarks: "Item condition"
+      //   }
+      // ]
+      // ==========================================================
+
+      if (
+        Array.isArray(Documents) &&
+        Documents.length > 0
+      ) {
+        for (
+          const document
+          of Documents
+        ) {
+          const fileName =
+            String(
+              document.FileName ||
+                "",
+            ).trim();
+
+          const filePath =
+            String(
+              document.FilePath ||
+                "",
+            ).trim();
+
+          const fileType =
+            document.FileType
+              ? String(
+                  document.FileType,
+                ).trim()
+              : null;
+
+          // ======================================================
+          // File Size
+          // ======================================================
+
+          let fileSize =
+            null;
+
+          if (
+            document.FileSize !==
+              undefined &&
+            document.FileSize !==
+              null &&
+            document.FileSize !==
+              ""
+          ) {
+            const parsedFileSize =
+              Number(
+                document.FileSize,
+              );
+
+            if (
+              Number.isFinite(
+                parsedFileSize,
+              )
+            ) {
+              fileSize =
+                parsedFileSize;
+            }
+          }
+
+          // ======================================================
+          // Individual Document Remark
+          // ======================================================
+
+          const documentRemarks =
+            document.Remarks !==
+              undefined &&
+            document.Remarks !==
+              null &&
+            String(
+              document.Remarks,
+            ).trim() !== ""
+              ? String(
+                  document.Remarks,
+                ).trim()
+              : null;
+
+          // ======================================================
+          // Insert Document
+          // ======================================================
+
+          await client.query(
+            `
+            INSERT INTO Gatepass_RGP_Entry_Master_Document
+            (
+              RGPID,
+              FileName,
+              FilePath,
+              FileType,
+              FileSize,
+              Remarks,
+              IsDeleted,
+              CreatedBy,
+              CreatedDate
+            )
+            VALUES
+            (
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              $6,
+              FALSE,
+              $7,
+              CURRENT_TIMESTAMP
+            );
+            `,
+            [
+              rgpID,
+              fileName,
+              filePath,
+              fileType,
+              fileSize,
+              documentRemarks,
+              UserID,
+            ],
+          );
+        }
+      }
+
+      // ==========================================================
+      // Commit
+      // ==========================================================
 
       await client.query(
         "COMMIT",
@@ -3764,6 +4016,13 @@ const processRGPGateAction = async (data) => {
 
           Status:
             "CHECKED OUT",
+
+          DocumentsAdded:
+            Array.isArray(
+              Documents,
+            )
+              ? Documents.length
+              : 0,
         },
       );
     }
@@ -3787,6 +4046,7 @@ const processRGPGateAction = async (data) => {
         CancelRemarks = $2,
 
         ModifiedBy = $1,
+
         ModifiedDate =
           CURRENT_TIMESTAMP
 
@@ -3795,10 +4055,20 @@ const processRGPGateAction = async (data) => {
       `,
       [
         UserID,
-        Remarks,
+
+        Remarks
+          ? String(
+              Remarks,
+            ).trim()
+          : null,
+
         rgpID,
       ],
     );
+
+    // ============================================================
+    // Commit
+    // ============================================================
 
     await client.query(
       "COMMIT",
@@ -3819,6 +4089,7 @@ const processRGPGateAction = async (data) => {
           "CANCELLED",
       },
     );
+
   } catch (error) {
     await client.query(
       "ROLLBACK",
@@ -3828,6 +4099,7 @@ const processRGPGateAction = async (data) => {
       error,
       "Process RGP gate action",
     );
+
   } finally {
     client.release();
   }
@@ -4171,6 +4443,8 @@ const processRGPItemReturn = async (data) => {
           ReturnBy,
 
           Remarks,
+          ActualDate,
+          IsReturn,
 
           IsDeleted,
 
@@ -4190,6 +4464,8 @@ const processRGPItemReturn = async (data) => {
           $6,
 
           $7,
+          $8,
+          $9,
 
           FALSE,
 
@@ -4208,6 +4484,8 @@ const processRGPItemReturn = async (data) => {
           UserID,
 
           item.Remarks || null,
+          item.ActualDate ?? null,
+          item.IsReturn ?? false,
         ],
       );
     }
@@ -9130,6 +9408,7 @@ const generateRGPDetailPdf = async (data) => {
 
               // ==================================================
               // Row 2
+              // Department + Created Date
               // ==================================================
 
               [
@@ -9143,12 +9422,14 @@ const generateRGPDetailPdf = async (data) => {
                 ),
 
                 labelCell(
-                  "Status",
-                  "status",
+                  "Created Date",
+                  "calendar",
                 ),
 
                 valueCell(
-                  detail.Status,
+                  displayDate(
+                    detail.CreatedDate,
+                  ),
                 ),
               ],
 
@@ -9280,11 +9561,6 @@ const generateRGPDetailPdf = async (data) => {
             dontBreakRows:
               true,
 
-            // ====================================================
-            // Item Name increased
-            // Serial No decreased
-            // ====================================================
-
             widths: [
               28,  // Sr.No.
               120, // Item Name
@@ -9349,10 +9625,6 @@ const generateRGPDetailPdf = async (data) => {
         {
           unbreakable:
             true,
-
-          // ======================================================
-          // More gap after Item Details
-          // ======================================================
 
           margin: [
             8,
@@ -9488,10 +9760,6 @@ const generateRGPDetailPdf = async (data) => {
                     },
                   ],
 
-                  // ==============================================
-                  // Same starting alignment
-                  // ==============================================
-
                   alignment:
                     "left",
 
@@ -9516,10 +9784,6 @@ const generateRGPDetailPdf = async (data) => {
 
                   bold:
                     true,
-
-                  // ==============================================
-                  // Same as Prepare By
-                  // ==============================================
 
                   alignment:
                     "left",

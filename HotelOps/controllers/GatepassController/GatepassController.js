@@ -1147,6 +1147,7 @@ exports.processRGPGateAction = async (req, res) => {
       RGPID,
       Action,
       Remarks,
+      DocumentRemarks,
     } = req.body || {};
 
     // ============================================================
@@ -1206,6 +1207,177 @@ exports.processRGPGateAction = async (req, res) => {
     }
 
     // ============================================================
+    // Multipart Files
+    // ============================================================
+
+    const files =
+      Array.isArray(req.files)
+        ? req.files
+        : [];
+
+    // ============================================================
+    // Document Remarks
+    //
+    // Postman:
+    //
+    // Documents        -> file1.pdf
+    // DocumentRemarks  -> Invoice
+    //
+    // Documents        -> file2.jpg
+    // DocumentRemarks  -> Item Photo
+    //
+    // Express:
+    // Single remark   => string
+    // Multiple remark => array
+    // ============================================================
+
+    let documentRemarks = [];
+
+    if (
+      Array.isArray(DocumentRemarks)
+    ) {
+      documentRemarks =
+        DocumentRemarks;
+    } else if (
+      DocumentRemarks !== undefined &&
+      DocumentRemarks !== null
+    ) {
+      documentRemarks = [
+        DocumentRemarks,
+      ];
+    }
+
+    // ============================================================
+    // Normalize Remarks
+    // ============================================================
+
+    documentRemarks =
+      documentRemarks.map(
+        (remark) => {
+          const value =
+            String(
+              remark || "",
+            ).trim();
+
+          return value || null;
+        },
+      );
+
+    // ============================================================
+    // CANCEL
+    //
+    // Cancel action me documents accept nahi karne
+    // ============================================================
+
+    if (
+      action === "CANCEL" &&
+      files.length > 0
+    ) {
+      throw new AppError(
+        "Documents are not allowed for CANCEL action",
+        STATUS_CODES.BAD_REQUEST,
+      );
+    }
+
+    // ============================================================
+    // CHECKOUT Document Validation
+    // ============================================================
+
+    if (
+      action === "CHECKOUT" &&
+      documentRemarks.length >
+        files.length
+    ) {
+      throw new AppError(
+        "Document remarks count cannot be greater than uploaded documents count",
+        STATUS_CODES.BAD_REQUEST,
+      );
+    }
+
+    // ============================================================
+    // Prepare Documents
+    //
+    // NOTE:
+    // Yahan req.files me Azure middleware se uploaded file
+    // information available honi chahiye.
+    //
+    // FilePath ki property tumhare existing Azure middleware ke
+    // according honi chahiye.
+    // ============================================================
+
+    const Documents = [];
+
+    if (
+      action === "CHECKOUT" &&
+      files.length > 0
+    ) {
+      for (
+        let index = 0;
+        index < files.length;
+        index++
+      ) {
+        const file =
+          files[index];
+
+        // ========================================================
+        // Resolve Uploaded Azure File Path
+        //
+        // Existing middleware ke according commonly:
+        // file.blobName
+        // file.path
+        // file.filename
+        //
+        // Isko apne existing createRGP upload structure se match
+        // karna hai.
+        // ========================================================
+
+        const filePath =
+          file.blobName ||
+          file.path ||
+          file.filename ||
+          null;
+
+        if (!filePath) {
+          throw new AppError(
+            `Uploaded file path not found for document ${index + 1}`,
+            STATUS_CODES.BAD_REQUEST,
+          );
+        }
+
+        // ========================================================
+        // Map File + Same Index Remark
+        // ========================================================
+
+        Documents.push({
+          FileName:
+            file.originalname ||
+            file.filename ||
+            null,
+
+          FilePath:
+            filePath,
+
+          FileType:
+            file.mimetype ||
+            null,
+
+          FileSize:
+            file.size !==
+              undefined
+              ? Number(
+                  file.size,
+                )
+              : null,
+
+          Remarks:
+            documentRemarks[
+              index
+            ] || null,
+        });
+      }
+    }
+
+    // ============================================================
     // Queue
     // ============================================================
 
@@ -1222,8 +1394,11 @@ exports.processRGPGateAction = async (req, res) => {
 
         Remarks:
           remarks || null,
+
+        Documents,
       },
     );
+
   } catch (error) {
     return handleError(
       error,
@@ -1297,9 +1472,22 @@ exports.processRGPItemReturn = async (req, res) => {
           );
         }
 
+        const actualDate = item.ActualDate ?? null;
+        if (actualDate !== null &&
+            (typeof actualDate !== "string" ||
+             !/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?$/.test(actualDate) ||
+             !Number.isFinite(Date.parse(actualDate)))) {
+          throw new AppError("ActualDate must be YYYY-MM-DD or YYYY-MM-DD HH:mm:ss", STATUS_CODES.BAD_REQUEST);
+        }
+        if (item.IsReturn !== undefined && typeof item.IsReturn !== "boolean") {
+          throw new AppError("IsReturn must be true or false", STATUS_CODES.BAD_REQUEST);
+        }
+
         return {
           RGPItemID,
           QuantityReceived,
+          ActualDate: actualDate,
+          IsReturn: item.IsReturn ?? false,
 
           Remarks:
             String(
