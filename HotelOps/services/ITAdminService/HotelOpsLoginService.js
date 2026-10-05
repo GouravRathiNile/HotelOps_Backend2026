@@ -278,6 +278,7 @@ LIMIT 1;
 
         LoginMode: loginMode,
         UserType: user.usertype,
+        DepartmentName: user.departmentname,
       },
     };
   } catch (error) {
