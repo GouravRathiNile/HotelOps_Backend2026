@@ -1954,10 +1954,10 @@ const getRGPList = async (data) => {
           return {
             ...mapRGP(row),
 
-            Approvals:
-              approvals.map(
-                mapRGPApproval,
-              ),
+             Approvals:
+    mapRGPApprovalFlow(
+      approvals,
+    ),
 
             ApprovalStatus:
               approvalStatus,
@@ -6940,10 +6940,8 @@ const getRGPApprovalConfig = async (data) => {
                 row.approvallevel,
               ),
 
-            ApprovalRole:
-              normalizeRGPApprovalRole(
-                row.approvalrole,
-              ),
+           ApprovalRole:
+  row.approvalrole,
 
             ApprovalOrder:
               Number(
@@ -7135,10 +7133,12 @@ const saveRGPApprovalConfig = async (data) => {
           item.ApprovalOrder,
         );
 
-      const approvalRole =
-        normalizeRGPApprovalRole(
-          item.ApprovalRole,
-        );
+     const approvalRole =
+  String(
+    item.ApprovalRole || "",
+  )
+    .trim()
+    .toUpperCase();
 
       if (
         !Number.isInteger(
