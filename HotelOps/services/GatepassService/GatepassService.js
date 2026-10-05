@@ -9425,22 +9425,67 @@ CreatedDate:
     );
   }
 };
-// ========================================================================PDF
-const getRGPReportOrganizationName = async (organizationID) => {
-  if (!organizationID) return "All Organizations";
-  const result = await pool.query(
-    `SELECT OrganizationName FROM Organization_Master WHERE OrganizationID = $1 LIMIT 1;`,
-    [organizationID],
-  );
-  return result.rows[0]?.organizationname || "-";
-};
-// ============================================================RGP List Report PDF
-const getRGPListReportPdf = async (data) => {
+// ============================================================RGP Red Flag Report
+const getRGPRedFlagReport = async (data) => {
   try {
-    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const page =
+      Number(data.page) || 1;
+
+    const pageSize =
+      Math.min(
+        Number(data.PageSize) || 10,
+        100,
+      );
+
+    const offset =
+      (page - 1) * pageSize;
+
     const values = [];
+
     const conditions = [
       "m.IsDeleted = FALSE",
+      "i.IsDeleted = FALSE",
+
+      // RGP bahar hona chahiye
+      `
+      UPPER(
+        TRIM(
+          COALESCE(
+            m.Status,
+            ''
+          )
+        )
+      ) IN (
+        'CHECKED OUT',
+        'RETURN PENDING'
+      )
+      `,
+
+      // Item fully returned nahi hona chahiye
+      `
+      COALESCE(
+        i.IsReturned,
+        FALSE
+      ) = FALSE
+      `,
+
+      // Quantity abhi pending honi chahiye
+      `
+      COALESCE(
+        i.RemainingQuantity,
+        0
+      ) > 0
+      `,
+
+      // Expected Return Date + 30 Days cross
+      `
+      m.ExpectedReturnDate IS NOT NULL
+      AND m.ExpectedReturnDate::DATE <=
+        (
+          CURRENT_DATE -
+          INTERVAL '30 days'
+        )
+      `,
     ];
 
     // ============================================================
@@ -9448,34 +9493,12 @@ const getRGPListReportPdf = async (data) => {
     // ============================================================
 
     if (data.OrganizationID) {
-      values.push(data.OrganizationID);
+      values.push(
+        data.OrganizationID,
+      );
 
       conditions.push(
         `m.OrganizationID = $${values.length}`,
-      );
-    }
-
-    // ============================================================
-    // From Date
-    // ============================================================
-
-    if (data.FromDate) {
-      values.push(data.FromDate);
-
-      conditions.push(
-        `m.CreatedDate::DATE >= $${values.length}::DATE`,
-      );
-    }
-
-    // ============================================================
-    // To Date
-    // ============================================================
-
-    if (data.ToDate) {
-      values.push(data.ToDate);
-
-      conditions.push(
-        `m.CreatedDate::DATE <= $${values.length}::DATE`,
       );
     }
 
@@ -9484,7 +9507,9 @@ const getRGPListReportPdf = async (data) => {
     // ============================================================
 
     if (data.DepartmentID) {
-      values.push(data.DepartmentID);
+      values.push(
+        data.DepartmentID,
+      );
 
       conditions.push(
         `m.DepartmentID = $${values.length}`,
@@ -9492,65 +9517,13 @@ const getRGPListReportPdf = async (data) => {
     }
 
     // ============================================================
-    // RGP Status Report Filter
-    // ============================================================
-
-    const reportStatus =
-      String(data.Status || "").trim();
-
-    switch (reportStatus) {
-      case "All RGP Open":
-        conditions.push(`
-          UPPER(m.Status) IN (
-            'PENDING',
-            'APPROVED'
-          )
-        `);
-        break;
-
-      case "All RGP Out":
-        conditions.push(`
-          UPPER(m.Status) IN (
-            'CHECKED OUT',
-            'RETURN PENDING'
-          )
-        `);
-        break;
-
-      case "All RGP Closed":
-        conditions.push(`
-          UPPER(m.Status) = 'RETURNED'
-        `);
-        break;
-
-      case "All RGP Cancelled":
-        conditions.push(`
-          UPPER(m.Status) IN (
-            'CANCELLED',
-            'REJECTED'
-          )
-        `);
-        break;
-
-      case "All RGP Overdue":
-        conditions.push(`
-          m.ExpectedReturnDate <
-            (CURRENT_DATE - INTERVAL '30 days')
-
-          AND UPPER(m.Status) IN (
-            'CHECKED OUT',
-            'RETURN PENDING'
-          )
-        `);
-        break;
-    }
-
-    // ============================================================
     // RGP Number Filter
     // ============================================================
 
     if (data.RGPNumber) {
-      values.push(data.RGPNumber);
+      values.push(
+        data.RGPNumber,
+      );
 
       conditions.push(
         `m.RGPNumber = $${values.length}`,
@@ -9563,7 +9536,9 @@ const getRGPListReportPdf = async (data) => {
 
     if (data.VendorName) {
       values.push(
-        `%${String(data.VendorName).trim()}%`,
+        `%${String(
+          data.VendorName,
+        ).trim()}%`,
       );
 
       conditions.push(
@@ -9577,15 +9552,551 @@ const getRGPListReportPdf = async (data) => {
 
     if (data.Search) {
       values.push(
-        `%${String(data.Search).trim()}%`,
+        `%${String(
+          data.Search,
+        ).trim()}%`,
       );
 
-      const searchIndex = values.length;
+      const searchIndex =
+        values.length;
 
       conditions.push(`
         (
-          CAST(m.RGPNumber AS TEXT)
-            ILIKE $${searchIndex}
+          CAST(
+            m.RGPNumber AS TEXT
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.VendorName,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.Company,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.ContactNumber,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.TakenBy,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            d.DepartmentName,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            i.ItemName,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            i.Specification,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            i.SerialNumber,
+            ''
+          ) ILIKE $${searchIndex}
+        )
+      `);
+    }
+
+    // ============================================================
+    // Where Clause
+    // ============================================================
+
+    const whereClause =
+      `WHERE ${conditions.join(
+        " AND ",
+      )}`;
+
+    // ============================================================
+    // Total Count
+    // Item Wise Count
+    // ============================================================
+
+    const countResult =
+      await pool.query(
+        `
+        SELECT
+          COUNT(*)::BIGINT AS TotalCount
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        INNER JOIN Gatepass_RGP_Entry_Item_Details i
+          ON i.RGPID =
+            m.RGPID
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID =
+            m.DepartmentID
+
+        ${whereClause};
+        `,
+        values,
+      );
+
+    const totalCount =
+      Number(
+        countResult.rows[0]
+          ?.totalcount || 0,
+      );
+
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const reportValues = [
+      ...values,
+    ];
+
+    reportValues.push(
+      pageSize,
+    );
+
+    const limitIndex =
+      reportValues.length;
+
+    reportValues.push(
+      offset,
+    );
+
+    const offsetIndex =
+      reportValues.length;
+
+    // ============================================================
+    // Red Flag Report Data
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.RGPID,
+          m.RGPNumber,
+
+          m.OrganizationID,
+
+          m.VendorName,
+          m.ContactNumber,
+          m.Company,
+
+          m.DepartmentID,
+          d.DepartmentName,
+
+          m.TakenBy,
+
+          m.ExpectedReturnDate,
+
+          m.Status,
+
+          m.CheckoutDateTime,
+
+          i.RGPItemID,
+
+          i.ItemName,
+          i.Specification,
+
+          i.Quantity,
+          i.Unit,
+          i.Rate,
+
+          i.MakeModel,
+          i.SerialNumber,
+
+          i.ReturnedQuantity,
+          i.RemainingQuantity,
+          i.IsReturned,
+
+          (
+            CURRENT_DATE -
+            m.ExpectedReturnDate::DATE
+          )::INTEGER AS OverdueDays
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        INNER JOIN Gatepass_RGP_Entry_Item_Details i
+          ON i.RGPID =
+            m.RGPID
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID =
+            m.DepartmentID
+
+        ${whereClause}
+
+        ORDER BY
+          OverdueDays DESC,
+          m.RGPNumber DESC,
+          i.RGPItemID ASC
+
+        LIMIT $${limitIndex}
+        OFFSET $${offsetIndex};
+        `,
+        reportValues,
+      );
+
+    // ============================================================
+    // Map Response
+    // ============================================================
+
+    const reportData =
+      result.rows.map(
+        (row) => ({
+          RGPID:
+            Number(
+              row.rgpid,
+            ),
+
+          RGPNumber:
+            Number(
+              row.rgpnumber,
+            ),
+
+          OrganizationID:
+            Number(
+              row.organizationid,
+            ),
+
+          VendorName:
+            row.vendorname,
+
+          ContactNumber:
+            row.contactnumber,
+
+          Company:
+            row.company,
+
+          DepartmentID:
+            row.departmentid
+              ? Number(
+                  row.departmentid,
+                )
+              : null,
+
+          DepartmentName:
+            row.departmentname,
+
+          TakenBy:
+            row.takenby,
+
+          ExpectedReturnDate:
+            row.expectedreturndate
+              ? formatDate(
+                  row.expectedreturndate,
+                )
+              : null,
+
+          Status:
+            row.status,
+
+          CheckoutDateTime:
+            row.checkoutdatetime
+              ? formatDate(
+                  row.checkoutdatetime,
+                )
+              : null,
+
+          RGPItemID:
+            Number(
+              row.rgpitemid,
+            ),
+
+          ItemName:
+            row.itemname,
+
+          Specification:
+            row.specification,
+
+          Quantity:
+            Number(
+              row.quantity || 0,
+            ),
+
+          Unit:
+            row.unit,
+
+          Rate:
+            Number(
+              row.rate || 0,
+            ),
+
+          MakeModel:
+            row.makemodel,
+
+          SerialNumber:
+            row.serialnumber,
+
+          ReturnedQuantity:
+            Number(
+              row.returnedquantity ||
+                0,
+            ),
+
+          RemainingQuantity:
+            Number(
+              row.remainingquantity ||
+                0,
+            ),
+
+          IsReturned:
+            Boolean(
+              row.isreturned,
+            ),
+
+          OverdueDays:
+            Number(
+              row.overduedays ||
+                0,
+            ),
+        }),
+      );
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return ok(
+      "RGP red flag report fetched successfully.",
+      reportData,
+      {
+        TotalCount:
+          totalCount,
+
+        Page:
+          page,
+
+        PageSize:
+          pageSize,
+
+        TotalPages:
+          Math.ceil(
+            totalCount /
+              pageSize,
+          ),
+      },
+    );
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch RGP red flag report",
+    );
+  }
+};
+// ========================================================================PDF
+const getRGPReportOrganizationName = async (organizationID) => {
+  if (!organizationID) return "All Organizations";
+  const result = await pool.query(
+    `SELECT OrganizationName FROM Organization_Master WHERE OrganizationID = $1 LIMIT 1;`,
+    [organizationID],
+  );
+  return result.rows[0]?.organizationname || "-";
+};
+// ============================================================RGP List Report PDF
+const getRGPListReportPdf = async (data) => {
+  try {
+    const organizationName =
+      await getRGPReportOrganizationName(
+        data.OrganizationID,
+      );
+
+    const values = [];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+    ];
+
+    // ============================================================
+    // Organization Filter
+    // ============================================================
+
+    if (data.OrganizationID) {
+      values.push(
+        data.OrganizationID,
+      );
+
+      conditions.push(
+        `m.OrganizationID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Department Filter
+    // ============================================================
+
+    if (data.DepartmentID) {
+      values.push(
+        data.DepartmentID,
+      );
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // RGP Status Report Filter
+    // ============================================================
+
+    const reportStatus =
+      String(
+        data.Status || "",
+      ).trim();
+
+    switch (reportStatus) {
+      // ==========================================================
+      // All RGP Open
+      // Only APPROVED
+      // ==========================================================
+
+      case "All RGP Open":
+        conditions.push(`
+          UPPER(
+            TRIM(
+              COALESCE(
+                m.Status,
+                ''
+              )
+            )
+          ) = 'APPROVED'
+        `);
+        break;
+
+      // ==========================================================
+      // All RGP Out
+      // Only CHECKED OUT
+      // ==========================================================
+
+      case "All RGP Out":
+        conditions.push(`
+          UPPER(
+            TRIM(
+              COALESCE(
+                m.Status,
+                ''
+              )
+            )
+          ) = 'CHECKED OUT'
+        `);
+        break;
+
+      // ==========================================================
+      // All RGP Closed
+      // Only RETURNED
+      // ==========================================================
+
+      case "All RGP Closed":
+        conditions.push(`
+          UPPER(
+            TRIM(
+              COALESCE(
+                m.Status,
+                ''
+              )
+            )
+          ) = 'RETURNED'
+        `);
+        break;
+
+      // ==========================================================
+      // All RGP Cancelled
+      // Only CANCELLED
+      // ==========================================================
+
+      case "All RGP Cancelled":
+        conditions.push(`
+          UPPER(
+            TRIM(
+              COALESCE(
+                m.Status,
+                ''
+              )
+            )
+          ) = 'CANCELLED'
+        `);
+        break;
+
+      // ==========================================================
+      // All RGP Overdue
+      //
+      // Expected Return Date cross ho chuki ho
+      // AND RGP abhi CHECKED OUT ho
+      // ==========================================================
+
+      case "All RGP Overdue":
+        conditions.push(`
+          m.ExpectedReturnDate::DATE <
+            CURRENT_DATE
+
+          AND UPPER(
+            TRIM(
+              COALESCE(
+                m.Status,
+                ''
+              )
+            )
+          ) = 'CHECKED OUT'
+        `);
+        break;
+    }
+
+    // ============================================================
+    // RGP Number Filter
+    // ============================================================
+
+    if (data.RGPNumber) {
+      values.push(
+        data.RGPNumber,
+      );
+
+      conditions.push(
+        `m.RGPNumber = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Vendor Filter
+    // ============================================================
+
+    if (data.VendorName) {
+      values.push(
+        `%${String(
+          data.VendorName,
+        ).trim()}%`,
+      );
+
+      conditions.push(
+        `m.VendorName ILIKE $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Search
+    // ============================================================
+
+    if (data.Search) {
+      values.push(
+        `%${String(
+          data.Search,
+        ).trim()}%`,
+      );
+
+      const searchIndex =
+        values.length;
+
+      conditions.push(`
+        (
+          CAST(
+            m.RGPNumber AS TEXT
+          ) ILIKE $${searchIndex}
 
           OR m.VendorName
             ILIKE $${searchIndex}
@@ -9604,20 +10115,36 @@ const getRGPListReportPdf = async (data) => {
 
           OR EXISTS (
             SELECT 1
+
             FROM Gatepass_RGP_Entry_Item_Details si
-            WHERE si.RGPID = m.RGPID
-              AND si.IsDeleted = FALSE
+
+            WHERE si.RGPID =
+                    m.RGPID
+
+              AND si.IsDeleted =
+                    FALSE
+
               AND si.ItemName
-                ILIKE $${searchIndex}
+                    ILIKE $${searchIndex}
           )
         )
       `);
     }
 
+    // ============================================================
+    // Where Clause
+    // ============================================================
+
     const whereClause =
       conditions.length
-        ? `WHERE ${conditions.join(" AND ")}`
+        ? `WHERE ${conditions.join(
+            " AND ",
+          )}`
         : "";
+
+    // ============================================================
+    // Report Data
+    // ============================================================
 
     const result =
       await pool.query(
@@ -9649,7 +10176,7 @@ const getRGPListReportPdf = async (data) => {
           ON d.DepartmentID =
             m.DepartmentID
 
-${whereClause}
+        ${whereClause}
 
         ORDER BY
           m.CreatedDate DESC,
@@ -9658,55 +10185,127 @@ ${whereClause}
         values,
       );
 
-    const relatedRecords = await attachRGPRelatedData(result.rows);
-    const reportData = result.rows.map((row, index) => ({
-      ...row,
-      expectedreturndate: formatDate(row.expectedreturndate),
-      createddate: formatDate(row.createddate),
-      Items: relatedRecords[index].Items,
-      Approvals: relatedRecords[index].Approvals,
-    }));
+    // ============================================================
+    // Attach Items + Approvals
+    // ============================================================
 
-    // Each item gets its own row; show parent details only on the first row.
-    const pdfRows = reportData.flatMap((rgp) => {
-      const items = Array.isArray(rgp.Items) && rgp.Items.length ? rgp.Items : [{}];
-      return items.map((item, index) => ({
-        RGPNumber: index === 0 ? rgp.rgpnumber : "-",
-        PersonName: index === 0 ? rgp.takenby : "-",
-        Company: index === 0 ? rgp.company : "-",
-        ExpectedReturnDate: index === 0 ? rgp.expectedreturndate : "-",
-        DepartmentName: index === 0 ? rgp.departmentname : "-",
-        CreatedDate: index === 0 ? rgp.createddate : "-",
-        ItemName: item.ItemName ?? item.itemname ?? "-",
-        Quantity: item.Quantity ?? item.quantity ?? "-",
-      }));
-    });
+    const relatedRecords =
+      await attachRGPRelatedData(
+        result.rows,
+      );
+
+    const reportData =
+      result.rows.map(
+        (row, index) => ({
+          ...row,
+
+          expectedreturndate:
+            formatDate(
+              row.expectedreturndate,
+            ),
+
+          createddate:
+            formatDate(
+              row.createddate,
+            ),
+
+          Items:
+            relatedRecords[index]
+              .Items,
+
+          Approvals:
+            relatedRecords[index]
+              .Approvals,
+        }),
+      );
+
+    // ============================================================
+    // PDF Rows
+    // Each Item Gets Its Own Row
+    // ============================================================
+
+    const pdfRows =
+      reportData.flatMap(
+        (rgp) => {
+          const items =
+            Array.isArray(
+              rgp.Items,
+            ) &&
+            rgp.Items.length
+              ? rgp.Items
+              : [{}];
+
+          return items.map(
+            (item, index) => ({
+              RGPNumber:
+                index === 0
+                  ? rgp.rgpnumber
+                  : "-",
+
+              PersonName:
+                index === 0
+                  ? rgp.takenby
+                  : "-",
+
+              Company:
+                index === 0
+                  ? rgp.company
+                  : "-",
+
+              ExpectedReturnDate:
+                index === 0
+                  ? rgp.expectedreturndate
+                  : "-",
+
+              DepartmentName:
+                index === 0
+                  ? rgp.departmentname
+                  : "-",
+
+              CreatedDate:
+                index === 0
+                  ? rgp.createddate
+                  : "-",
+
+              ItemName:
+                item.ItemName ??
+                item.itemname ??
+                "-",
+
+              Quantity:
+                item.Quantity ??
+                item.quantity ??
+                "-",
+            }),
+          );
+        },
+      );
+
+    // ============================================================
     // PDF Metadata / Applied Filters
+    // No FromDate / ToDate
     // ============================================================
 
     const metadata = [
-      { label: "Organization", value: organizationName },
       {
-        label: "From Date",
+        label:
+          "Organization",
+
         value:
-          data.FromDate
-            ? formatDate(data.FromDate)
-            : "All",
+          organizationName,
       },
       {
-        label: "To Date",
+        label:
+          "Status",
+
         value:
-          data.ToDate
-            ? formatDate(data.ToDate)
-            : "All",
+          reportStatus ||
+          "All",
       },
       {
-        label: "Status",
-        value:
-          reportStatus || "All",
-      },
-      {
-        label: "Department",
+        label:
+          "Department",
+
         value:
           data.DepartmentName ||
           "All Department",
@@ -9735,45 +10334,70 @@ ${whereClause}
 
         columns: [
           {
-            header: "RGP No.",
-            key: "RGPNumber",
-            width: 55,
+            header:
+              "RGP No.",
+            key:
+              "RGPNumber",
+            width:
+              55,
           },
           {
-            header: "Person Name",
-            key: "PersonName",
-            width: 85,
+            header:
+              "Person Name",
+            key:
+              "PersonName",
+            width:
+              85,
           },
           {
-            header: "Company",
-            key: "Company",
-            width: 90,
+            header:
+              "Company",
+            key:
+              "Company",
+            width:
+              90,
           },
           {
-            header: "Exp. Return Date",
-            key: "ExpectedReturnDate",
-            width: 85,
+            header:
+              "Exp. Return Date",
+            key:
+              "ExpectedReturnDate",
+            width:
+              85,
           },
           {
-            header: "Department",
-            key: "DepartmentName",
-            width: 85,
+            header:
+              "Department",
+            key:
+              "DepartmentName",
+            width:
+              85,
           },
           {
-            header: "Created Date",
-            key: "CreatedDate",
-            width: 95,
+            header:
+              "Created Date",
+            key:
+              "CreatedDate",
+            width:
+              95,
           },
           {
-            header: "Item Name",
-            key: "ItemName",
-            width: "*",
+            header:
+              "Item Name",
+            key:
+              "ItemName",
+            width:
+              "*",
           },
           {
-            header: "Qty.",
-            key: "Quantity",
-            width: 45,
-            align: "center",
+            header:
+              "Qty.",
+            key:
+              "Quantity",
+            width:
+              45,
+            align:
+              "center",
           },
         ],
 
@@ -9782,10 +10406,14 @@ ${whereClause}
       });
 
     return {
-      success: true,
+      success:
+        true,
+
       message:
         "RGP list report PDF generated successfully.",
-      data: pdfBuffer,
+
+      data:
+        pdfBuffer,
     };
   } catch (error) {
     console.error(
@@ -12801,6 +13429,518 @@ const preparedBy =
     );
   }
 };
+// ============================================================RGP Red Flag Report PDF
+const getRGPRedFlagReportPdf = async (data) => {
+  try {
+    const organizationName =
+      await getRGPReportOrganizationName(
+        data.OrganizationID,
+      );
+
+    const values = [];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+      "i.IsDeleted = FALSE",
+
+      // ==========================================================
+      // RGP bahar hona chahiye
+      // ==========================================================
+
+      `
+      UPPER(
+        TRIM(
+          COALESCE(
+            m.Status,
+            ''
+          )
+        )
+      ) IN (
+        'CHECKED OUT',
+        'RETURN PENDING'
+      )
+      `,
+
+      // ==========================================================
+      // Item fully returned nahi hona chahiye
+      // ==========================================================
+
+      `
+      COALESCE(
+        i.IsReturned,
+        FALSE
+      ) = FALSE
+      `,
+
+      // ==========================================================
+      // Remaining Quantity > 0
+      // ==========================================================
+
+      `
+      COALESCE(
+        i.RemainingQuantity,
+        0
+      ) > 0
+      `,
+
+      // ==========================================================
+      // Expected Return Date + 30 Days Cross
+      // ==========================================================
+
+      `
+      m.ExpectedReturnDate IS NOT NULL
+
+      AND m.ExpectedReturnDate::DATE <=
+        (
+          CURRENT_DATE -
+          INTERVAL '30 days'
+        )
+      `,
+    ];
+
+    // ============================================================
+    // Organization Filter
+    // ============================================================
+
+    if (data.OrganizationID) {
+      values.push(
+        data.OrganizationID,
+      );
+
+      conditions.push(
+        `m.OrganizationID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Department Filter
+    // ============================================================
+
+    if (data.DepartmentID) {
+      values.push(
+        data.DepartmentID,
+      );
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // RGP Number Filter
+    // ============================================================
+
+    if (data.RGPNumber) {
+      values.push(
+        data.RGPNumber,
+      );
+
+      conditions.push(
+        `m.RGPNumber = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Vendor Filter
+    // ============================================================
+
+    if (data.VendorName) {
+      values.push(
+        `%${String(
+          data.VendorName,
+        ).trim()}%`,
+      );
+
+      conditions.push(
+        `m.VendorName ILIKE $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Search
+    // ============================================================
+
+    if (data.Search) {
+      values.push(
+        `%${String(
+          data.Search,
+        ).trim()}%`,
+      );
+
+      const searchIndex =
+        values.length;
+
+      conditions.push(`
+        (
+          CAST(
+            m.RGPNumber AS TEXT
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.VendorName,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.Company,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.ContactNumber,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.TakenBy,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            d.DepartmentName,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            i.ItemName,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            i.Specification,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            i.SerialNumber,
+            ''
+          ) ILIKE $${searchIndex}
+        )
+      `);
+    }
+
+    // ============================================================
+    // Where Clause
+    // ============================================================
+
+    const whereClause =
+      conditions.length
+        ? `WHERE ${conditions.join(
+            " AND ",
+          )}`
+        : "";
+
+    // ============================================================
+    // Red Flag Report Data
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.RGPID,
+          m.RGPNumber,
+
+          m.OrganizationID,
+
+          m.VendorName,
+          m.ContactNumber,
+          m.Company,
+
+          m.DepartmentID,
+          d.DepartmentName,
+
+          m.TakenBy,
+
+          m.ExpectedReturnDate,
+
+          m.Status,
+
+          m.CheckoutDateTime,
+
+          i.RGPItemID,
+
+          i.ItemName,
+          i.Specification,
+
+          i.Quantity,
+          i.Unit,
+          i.Rate,
+
+          i.MakeModel,
+          i.SerialNumber,
+
+          i.ReturnedQuantity,
+          i.RemainingQuantity,
+          i.IsReturned,
+
+          (
+            CURRENT_DATE -
+            m.ExpectedReturnDate::DATE
+          )::INTEGER AS OverdueDays
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        INNER JOIN Gatepass_RGP_Entry_Item_Details i
+          ON i.RGPID =
+            m.RGPID
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID =
+            m.DepartmentID
+
+        ${whereClause}
+
+        ORDER BY
+          OverdueDays DESC,
+          m.RGPNumber DESC,
+          i.RGPItemID ASC;
+        `,
+        values,
+      );
+
+    // ============================================================
+    // PDF Rows
+    // ============================================================
+
+    const pdfRows =
+      result.rows.map(
+        (row) => ({
+          RGPNumber:
+            row.rgpnumber ??
+            "-",
+
+          VendorName:
+            row.vendorname ||
+            "-",
+
+          DepartmentName:
+            row.departmentname ||
+            "-",
+
+          ItemName:
+            row.itemname ||
+            "-",
+
+          Quantity:
+            row.quantity != null
+              ? Number(
+                  row.quantity,
+                )
+              : "-",
+
+          ReturnedQuantity:
+            Number(
+              row.returnedquantity ||
+                0,
+            ),
+
+          RemainingQuantity:
+            Number(
+              row.remainingquantity ||
+                0,
+            ),
+
+          ExpectedReturnDate:
+            row.expectedreturndate
+              ? formatDate(
+                  row.expectedreturndate,
+                )
+              : "-",
+
+          OverdueDays:
+            Number(
+              row.overduedays ||
+                0,
+            ),
+
+          Status:
+            row.status ||
+            "-",
+        }),
+      );
+
+    // ============================================================
+    // PDF Metadata / Applied Filters
+    // ============================================================
+
+    const metadata = [
+      {
+        label:
+          "Organization",
+
+        value:
+          organizationName,
+      },
+      {
+        label:
+          "Department",
+
+        value:
+          data.DepartmentName ||
+          "All Department",
+      },
+      {
+        label:
+          "RGP Number",
+
+        value:
+          data.RGPNumber ||
+          "All",
+      },
+      {
+        label:
+          "Vendor",
+
+        value:
+          data.VendorName ||
+          "All Vendor",
+      },
+      
+    ];
+
+    // ============================================================
+    // Generate PDF
+    // ============================================================
+
+    const pdfBuffer =
+      await generatePdf({
+        title:
+          "RGP RED FLAG REPORT",
+
+        reportName:
+          "RGP Red Flag Report",
+
+        organizationId:
+          data.OrganizationID,
+
+        orientation:
+          "landscape",
+
+        metadata,
+
+        columns: [
+          {
+            header:
+              "RGP No.",
+            key:
+              "RGPNumber",
+            width:
+              50,
+          },
+          {
+            header:
+              "Vendor",
+            key:
+              "VendorName",
+            width:
+              75,
+          },
+          {
+            header:
+              "Department",
+            key:
+              "DepartmentName",
+            width:
+              75,
+          },
+          {
+            header:
+              "Item Name",
+            key:
+              "ItemName",
+            width:
+              "*",
+          },
+          {
+            header:
+              "Qty.",
+            key:
+              "Quantity",
+            width:
+              40,
+            align:
+              "center",
+          },
+          {
+            header:
+              "Returned",
+            key:
+              "ReturnedQuantity",
+            width:
+              55,
+            align:
+              "center",
+          },
+          {
+            header:
+              "Pending",
+            key:
+              "RemainingQuantity",
+            width:
+              50,
+            align:
+              "center",
+          },
+          {
+            header:
+              "Exp. Return",
+            key:
+              "ExpectedReturnDate",
+            width:
+              70,
+          },
+          {
+            header:
+              "Overdue Days",
+            key:
+              "OverdueDays",
+            width:
+              55,
+            align:
+              "center",
+          },
+          {
+            header:
+              "Status",
+            key:
+              "Status",
+            width:
+              65,
+          },
+        ],
+
+        rows:
+          pdfRows,
+      });
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return {
+      success:
+        true,
+
+      message:
+        "RGP red flag report PDF generated successfully.",
+
+      data:
+        pdfBuffer,
+    };
+  } catch (error) {
+    console.error(
+      "RGP Red Flag Report PDF Error:",
+      error,
+    );
+
+    return databaseFailure(
+      error,
+      "Generate RGP red flag report PDF",
+    );
+  }
+};
+
 
 // ===========================================================================================NRGP
 // ============================================================Helpers
@@ -19161,12 +20301,13 @@ module.exports = {
   getRGPDepartmentWiseReport,
   getRGPVendorWiseReport,
   getRGPPendingReturnReport,
+  getRGPRedFlagReport,
   getRGPListReportPdf,
   getRGPDepartmentWiseReportPdf,
   getRGPVendorWiseReportPdf,
   getRGPPendingReturnReportPdf,
   generateRGPDetailPdf,
-
+getRGPRedFlagReportPdf,
 
   createNRGP,
   getNRGPList,

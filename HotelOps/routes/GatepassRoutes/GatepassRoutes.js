@@ -19,12 +19,14 @@ const {
   getRGPDepartmentWiseReport,
   getRGPVendorWiseReport,
   getRGPPendingReturnReport,
+  getRGPRedFlagReport,
   getRGPVendorNames,
   getRGPListReportPdf,
   getRGPDepartmentWiseReportPdf,
   getRGPVendorWiseReportPdf,
   getRGPPendingReturnReportPdf,
   generateRGPDetailPdf,
+getRGPRedFlagReportPdf,
 
   createNRGP,
   getNRGPList,
@@ -70,12 +72,14 @@ router.get("/RGPListReports",authenticateToken,getRGPListReport,);
 router.get("/DepartmentWiseReports",authenticateToken,getRGPDepartmentWiseReport,);
 router.get("/VendorWiseReports",authenticateToken,getRGPVendorWiseReport,);
 router.get("/PendingReturnReports",authenticateToken,getRGPPendingReturnReport,);
+router.get("/RGPRedFlagReport",authenticateToken,getRGPRedFlagReport,);
 // =============================================================PDF
 router.get("/RGPListReportspdf",authenticateToken,getRGPListReportPdf,);
 router.get("/DepartmentWiseReportspdf",authenticateToken,getRGPDepartmentWiseReportPdf,);
 router.get("/VendorWiseReportspdf",authenticateToken,getRGPVendorWiseReportPdf,);
 router.get("/PendingReturnReportspdf",authenticateToken,getRGPPendingReturnReportPdf,);
 router.get("/RGPDetailPdf",authenticateToken,generateRGPDetailPdf,);
+router.get("/RGPRedFlagReportPdf",authenticateToken,getRGPRedFlagReportPdf,);
 
 // ==================================================================================NRGP
 router.post("/CreateNRGP",authenticateToken,createNRGP,);
@@ -99,5 +103,4 @@ router.get("/NRGPDepartmentWiseReportsPdf",authenticateToken,generateNRGPDepartm
 router.get("/NRGPVendorWiseReportsPdf",authenticateToken,generateNRGPVendorWiseReportPdf,);
 router.get("/NRGPApprovalStatusReportsPdf",authenticateToken,generateNRGPApprovalStatusReportPdf,);
 router.get("/NRGPDetailPdf",authenticateToken,generateNRGPDetailPdf,);
-
 module.exports = router;

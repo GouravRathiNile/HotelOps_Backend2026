@@ -2677,193 +2677,446 @@ exports.getRGPPendingReturnReport =async (req, res) => {
         });
     }
 };
-// ========================================================================PDF
-// ============================================================RGP List Report PDF
-exports.getRGPListReportPdf = async (req, res) => {
-    try {
-      const {
+// ============================================================Get RGP Red Flag Report
+exports.getRGPRedFlagReport = async (
+  req,
+  res,
+) => {
+  try {
+    const {
+      OrganizationID,
+      DepartmentID,
+      RGPNumber,
+      VendorName,
+      Search,
+      page = 1,
+      PageSize = 10,
+    } = req.query;
+
+    // ============================================================
+    // Organization Validation
+    // ============================================================
+
+    if (
+      !OrganizationID ||
+      !Number.isInteger(
+        Number(
+          OrganizationID,
+        ),
+      ) ||
+      Number(
         OrganizationID,
-        FromDate,
-        ToDate,
-        Status,
-        DepartmentID,
-        RGPNumber,
-        VendorName,
-        Search,
-        DepartmentName,
-      } = req.query;
-
-      // ============================================================
-      // Organization Validation
-      // ============================================================
-
-      if (
-        !OrganizationID ||
-        !Number.isInteger(
-          Number(OrganizationID),
-        ) ||
-        Number(OrganizationID) <= 0
-      ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              "Valid OrganizationID is required.",
-          });
-      }
-
-      // ============================================================
-      // Department Validation
-      // ============================================================
-
-      if (
-        DepartmentID &&
-        (
-          !Number.isInteger(
-            Number(DepartmentID),
-          ) ||
-          Number(DepartmentID) <= 0
-        )
-      ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              "DepartmentID must be a positive integer.",
-          });
-      }
-
-      // ============================================================
-      // RGP Number Validation
-      // ============================================================
-
-      if (
-        RGPNumber &&
-        (
-          !Number.isInteger(
-            Number(RGPNumber),
-          ) ||
-          Number(RGPNumber) <= 0
-        )
-      ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message:
-              "RGPNumber must be a positive integer.",
-          });
-      }
-
-      const result =
-        await GatepassService
-          .getRGPListReportPdf({
-            OrganizationID:
-              Number(
-                OrganizationID,
-              ),
-
-            FromDate:
-              FromDate || null,
-
-            ToDate:
-              ToDate || null,
-
-            Status:
-              Status || null,
-
-            DepartmentID:
-              DepartmentID
-                ? Number(
-                    DepartmentID,
-                  )
-                : null,
-
-            RGPNumber:
-              RGPNumber
-                ? Number(
-                    RGPNumber,
-                  )
-                : null,
-
-            VendorName:
-              VendorName || null,
-
-            Search:
-              Search || null,
-
-            DepartmentName:
-              DepartmentName ||
-              null,
-
-            UserID:
-              req.user?.UserID,
-
-            UserType:
-              req.user?.UserType,
-
-            DepartmentNameJWT:
-              req.user
-                ?.DepartmentName,
-
-            LoginType:
-              req.user?.LoginType,
-
-            AllOrganizationAccess:
-              req.user
-                ?.AllOrganizationAccess,
-          });
-
-      if (!result.success) {
-        return res
-          .status(
-            result.statusCode ||
-              500,
-          )
-          .json(result);
-      }
-
-      // ============================================================
-      // PDF Response
-      // ============================================================
-
-      const fileName =
-        `RGP_List_Report_${Date.now()}.pdf`;
-
-      res.setHeader(
-        "Content-Type",
-        "application/pdf",
-      );
-
-      res.setHeader(
-        "Content-Disposition",
-        `inline; filename="${fileName}"`,
-      );
-
-      res.setHeader(
-        "Content-Length",
-        result.data.length,
-      );
-
-      return res.end(
-        result.data,
-      );
-    } catch (error) {
-      console.error(
-        "RGP List Report PDF Controller Error:",
-        error,
-      );
-
+      ) <= 0
+    ) {
       return res
-        .status(500)
+        .status(400)
         .json({
-          success: false,
+          success:
+            false,
+
           message:
-            "Unable to generate RGP list report PDF.",
+            "Valid OrganizationID is required.",
         });
     }
+
+    // ============================================================
+    // Department Validation
+    // ============================================================
+
+    if (
+      DepartmentID &&
+      (
+        !Number.isInteger(
+          Number(
+            DepartmentID,
+          ),
+        ) ||
+        Number(
+          DepartmentID,
+        ) <= 0
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "DepartmentID must be a positive integer.",
+        });
+    }
+
+    // ============================================================
+    // RGP Number Validation
+    // ============================================================
+
+    if (
+      RGPNumber &&
+      (
+        !Number.isInteger(
+          Number(
+            RGPNumber,
+          ),
+        ) ||
+        Number(
+          RGPNumber,
+        ) <= 0
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "RGPNumber must be a positive integer.",
+        });
+    }
+
+    // ============================================================
+    // Pagination Validation
+    // ============================================================
+
+    const pageNumber =
+      Number(page);
+
+    const pageSizeNumber =
+      Number(PageSize);
+
+    if (
+      !Number.isInteger(
+        pageNumber,
+      ) ||
+      pageNumber <= 0
+    ) {
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "page must be a positive integer.",
+        });
+    }
+
+    if (
+      !Number.isInteger(
+        pageSizeNumber,
+      ) ||
+      pageSizeNumber <= 0 ||
+      pageSizeNumber > 100
+    ) {
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "PageSize must be between 1 and 100.",
+        });
+    }
+
+    // ============================================================
+    // Service
+    // ============================================================
+
+    const result =
+      await GatepassService
+        .getRGPRedFlagReport({
+          OrganizationID:
+            Number(
+              OrganizationID,
+            ),
+
+          DepartmentID:
+            DepartmentID
+              ? Number(
+                  DepartmentID,
+                )
+              : null,
+
+          RGPNumber:
+            RGPNumber
+              ? Number(
+                  RGPNumber,
+                )
+              : null,
+
+          VendorName:
+            VendorName ||
+            null,
+
+          Search:
+            Search ||
+            null,
+
+          page:
+            pageNumber,
+
+          PageSize:
+            pageSizeNumber,
+
+          UserID:
+            req.user?.UserID,
+
+          UserType:
+            req.user?.UserType,
+
+          DepartmentName:
+            req.user
+              ?.DepartmentName,
+
+          LoginType:
+            req.user
+              ?.LoginType,
+
+          AllOrganizationAccess:
+            req.user
+              ?.AllOrganizationAccess,
+        });
+
+    return res
+      .status(
+        result.statusCode ||
+          200,
+      )
+      .json(
+        result,
+      );
+  } catch (error) {
+    console.error(
+      "Get RGP Red Flag Report Controller Error:",
+      error,
+    );
+
+    return res
+      .status(500)
+      .json({
+        success:
+          false,
+
+        message:
+          "Unable to fetch RGP red flag report.",
+      });
+  }
+};
+// ========================================================================PDF
+// ============================================================RGP List Report PDF
+exports.getRGPListReportPdf = async (
+  req,
+  res,
+) => {
+  try {
+    const {
+      OrganizationID,
+      Status,
+      DepartmentID,
+      RGPNumber,
+      VendorName,
+      Search,
+      DepartmentName,
+    } = req.query;
+
+    // ============================================================
+    // Organization Validation
+    // ============================================================
+
+    if (
+      !OrganizationID ||
+      !Number.isInteger(
+        Number(
+          OrganizationID,
+        ),
+      ) ||
+      Number(
+        OrganizationID,
+      ) <= 0
+    ) {
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "Valid OrganizationID is required.",
+        });
+    }
+
+    // ============================================================
+    // Department Validation
+    // ============================================================
+
+    if (
+      DepartmentID &&
+      (
+        !Number.isInteger(
+          Number(
+            DepartmentID,
+          ),
+        ) ||
+        Number(
+          DepartmentID,
+        ) <= 0
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "DepartmentID must be a positive integer.",
+        });
+    }
+
+    // ============================================================
+    // RGP Number Validation
+    // ============================================================
+
+    if (
+      RGPNumber &&
+      (
+        !Number.isInteger(
+          Number(
+            RGPNumber,
+          ),
+        ) ||
+        Number(
+          RGPNumber,
+        ) <= 0
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "RGPNumber must be a positive integer.",
+        });
+    }
+
+    // ============================================================
+    // Service
+    // ============================================================
+
+    const result =
+      await GatepassService
+        .getRGPListReportPdf({
+          OrganizationID:
+            Number(
+              OrganizationID,
+            ),
+
+          Status:
+            Status ||
+            null,
+
+          DepartmentID:
+            DepartmentID
+              ? Number(
+                  DepartmentID,
+                )
+              : null,
+
+          RGPNumber:
+            RGPNumber
+              ? Number(
+                  RGPNumber,
+                )
+              : null,
+
+          VendorName:
+            VendorName ||
+            null,
+
+          Search:
+            Search ||
+            null,
+
+          DepartmentName:
+            DepartmentName ||
+            null,
+
+          UserID:
+            req.user?.UserID,
+
+          UserType:
+            req.user?.UserType,
+
+          DepartmentNameJWT:
+            req.user
+              ?.DepartmentName,
+
+          LoginType:
+            req.user?.LoginType,
+
+          AllOrganizationAccess:
+            req.user
+              ?.AllOrganizationAccess,
+        });
+
+    if (
+      !result.success
+    ) {
+      return res
+        .status(
+          result.statusCode ||
+            500,
+        )
+        .json(
+          result,
+        );
+    }
+
+    // ============================================================
+    // PDF Response
+    // ============================================================
+
+    const fileName =
+      `RGP_List_Report_${Date.now()}.pdf`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/pdf",
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${fileName}"`,
+    );
+
+    res.setHeader(
+      "Content-Length",
+      result.data.length,
+    );
+
+    return res.end(
+      result.data,
+    );
+  } catch (error) {
+    console.error(
+      "RGP List Report PDF Controller Error:",
+      error,
+    );
+
+    return res
+      .status(500)
+      .json({
+        success:
+          false,
+
+        message:
+          "Unable to generate RGP list report PDF.",
+      });
+  }
 };
 // ============================================================Department Wise Report PDF
 exports.getRGPDepartmentWiseReportPdf =async (req, res) => {
@@ -3403,6 +3656,203 @@ exports.generateRGPDetailPdf = async (req, res) => {
     });
   }
 };
+// ============================================================Get RGP Red Flag Report PDF
+exports.getRGPRedFlagReportPdf = async (
+  req,
+  res,
+) => {
+  try {
+    const {
+      OrganizationID,
+      DepartmentID,
+      DepartmentName,
+      RGPNumber,
+      VendorName,
+      Search,
+    } = req.query;
+
+    // ============================================================
+    // Organization Validation
+    // ============================================================
+
+    if (
+      !OrganizationID ||
+      !Number.isInteger(
+        Number(
+          OrganizationID,
+        ),
+      ) ||
+      Number(
+        OrganizationID,
+      ) <= 0
+    ) {
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "Valid OrganizationID is required.",
+        });
+    }
+
+    // ============================================================
+    // Department Validation
+    // ============================================================
+
+    if (
+      DepartmentID &&
+      (
+        !Number.isInteger(
+          Number(
+            DepartmentID,
+          ),
+        ) ||
+        Number(
+          DepartmentID,
+        ) <= 0
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "DepartmentID must be a positive integer.",
+        });
+    }
+
+    // ============================================================
+    // RGP Number Validation
+    // ============================================================
+
+    if (
+      RGPNumber &&
+      (
+        !Number.isInteger(
+          Number(
+            RGPNumber,
+          ),
+        ) ||
+        Number(
+          RGPNumber,
+        ) <= 0
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "RGPNumber must be a positive integer.",
+        });
+    }
+
+    // ============================================================
+    // Service
+    // ============================================================
+
+    const result =
+      await GatepassService
+        .getRGPRedFlagReportPdf({
+          OrganizationID:
+            Number(
+              OrganizationID,
+            ),
+
+          DepartmentID:
+            DepartmentID
+              ? Number(
+                  DepartmentID,
+                )
+              : null,
+
+          DepartmentName:
+            DepartmentName ||
+            null,
+
+          RGPNumber:
+            RGPNumber
+              ? Number(
+                  RGPNumber,
+                )
+              : null,
+
+          VendorName:
+            VendorName ||
+            null,
+
+          Search:
+            Search ||
+            null,
+
+          UserID:
+            req.user?.UserID,
+
+          UserType:
+            req.user?.UserType,
+
+          LoginType:
+            req.user?.LoginType,
+
+          AllOrganizationAccess:
+            req.user
+              ?.AllOrganizationAccess,
+        });
+
+    if (
+      !result.success
+    ) {
+      return res
+        .status(
+          result.statusCode ||
+            500,
+        )
+        .json(
+          result,
+        );
+    }
+
+    // ============================================================
+    // PDF Response
+    // ============================================================
+
+    res.setHeader(
+      "Content-Type",
+      "application/pdf",
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      'inline; filename="RGP-Red-Flag-Report.pdf"',
+    );
+
+    return res.send(
+      result.data,
+    );
+  } catch (error) {
+    console.error(
+      "Get RGP Red Flag Report PDF Controller Error:",
+      error,
+    );
+
+    return res
+      .status(500)
+      .json({
+        success:
+          false,
+
+        message:
+          "Unable to generate RGP red flag report PDF.",
+      });
+  }
+};
+
 
 // =======================================================================================NRGP
 // ============================================================ Create NRGP
