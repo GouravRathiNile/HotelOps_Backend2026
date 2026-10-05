@@ -508,6 +508,163 @@ exports.getRGPList = async (req, res) => {
     return handleError(error, res);
   }
 };
+// ============================================================Get RGP Total List
+exports.getRGPTotalList = async (req, res) => {
+  try {
+    const {
+      OrganizationID,
+      RGPNumber,
+      DepartmentID,
+      Status,
+      FromDate,
+      ToDate,
+      Search,
+      page,
+      PageSize,
+    } = req.query;
+
+    // ============================================================
+    // Organization Validation
+    // ============================================================
+
+    if (
+      !OrganizationID ||
+      !Number.isInteger(Number(OrganizationID)) ||
+      Number(OrganizationID) <= 0
+    ) {
+      throw new AppError(
+        "Organization ID must be a valid positive integer",
+        STATUS_CODES.BAD_REQUEST,
+      );
+    }
+
+    // ============================================================
+    // RGP Number Validation
+    // ============================================================
+
+    if (
+      RGPNumber &&
+      (
+        !Number.isInteger(Number(RGPNumber)) ||
+        Number(RGPNumber) <= 0
+      )
+    ) {
+      throw new AppError(
+        "RGP Number must be a valid positive integer",
+        STATUS_CODES.BAD_REQUEST,
+      );
+    }
+
+    // ============================================================
+    // Department Validation
+    // ============================================================
+
+    if (
+      DepartmentID &&
+      (
+        !Number.isInteger(Number(DepartmentID)) ||
+        Number(DepartmentID) <= 0
+      )
+    ) {
+      throw new AppError(
+        "Department ID must be a valid positive integer",
+        STATUS_CODES.BAD_REQUEST,
+      );
+    }
+
+    // ============================================================
+    // Page Validation
+    // ============================================================
+
+    if (
+      page &&
+      (
+        !Number.isInteger(Number(page)) ||
+        Number(page) <= 0
+      )
+    ) {
+      throw new AppError(
+        "Page must be a valid positive integer",
+        STATUS_CODES.BAD_REQUEST,
+      );
+    }
+
+    // ============================================================
+    // PageSize Validation
+    // ============================================================
+
+    if (
+      PageSize &&
+      (
+        !Number.isInteger(Number(PageSize)) ||
+        Number(PageSize) <= 0
+      )
+    ) {
+      throw new AppError(
+        "PageSize must be a valid positive integer",
+        STATUS_CODES.BAD_REQUEST,
+      );
+    }
+
+    // ============================================================
+    // Service
+    // ============================================================
+
+    const result =
+      await GatepassService.getRGPTotalList({
+        OrganizationID:
+          Number(OrganizationID),
+
+        RGPNumber:
+          RGPNumber
+            ? Number(RGPNumber)
+            : null,
+
+        DepartmentID:
+          DepartmentID
+            ? Number(DepartmentID)
+            : null,
+
+        Status:
+          Status
+            ? String(Status).trim()
+            : null,
+
+        FromDate:
+          FromDate || null,
+
+        ToDate:
+          ToDate || null,
+
+        Search:
+          Search
+            ? String(Search).trim()
+            : null,
+
+        page:
+          page
+            ? Number(page)
+            : 1,
+
+        PageSize:
+          PageSize
+            ? Number(PageSize)
+            : 10,
+      });
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return res.json(result);
+
+  } catch (error) {
+    return handleError(
+      error,
+      res,
+    );
+  }
+};
 // ============================================================ Get RGP By ID
 exports.getRGPById = async (req, res) => {
   try {

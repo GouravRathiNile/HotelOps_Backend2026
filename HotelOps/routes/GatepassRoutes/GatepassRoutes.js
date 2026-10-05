@@ -4,6 +4,7 @@ const upload = require("../../middleware/upload");
 const {
   createRGP,
   getRGPList,
+  getRGPTotalList,
   getRGPById,
   getRGPByNumber,
   updateRGP,
@@ -52,6 +53,7 @@ const router = express.Router();
 // ==================================================================================RGP
 router.post("/CreateRGP",authenticateToken,upload.array("Documents", 10),createRGP,);
 router.get("/RGPList",authenticateToken,getRGPList,);
+router.get("/RGPTotalList",authenticateToken,getRGPTotalList,);
 router.get("/RGPById/:id",authenticateToken,getRGPById,);
 router.get("/RGPByNumber",authenticateToken,getRGPByNumber,);
 router.get("/VendorNames",authenticateToken,getRGPVendorNames,);

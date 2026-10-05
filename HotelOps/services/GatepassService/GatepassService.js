@@ -1825,10 +1825,15 @@ const getRGPList = async (data) => {
           //
           // TRUE only when:
           // RGP CreatedBy === Logged-In UserID
+          // and approvals are not all approved.
           // ====================================================
 
           const canAction =
             Boolean(
+              !(approvals.length > 0 && approvals.every(
+                (approval) => normalizeStatus(approval.status) === "APPROVED",
+              )) &&
+
               row.createdby !=
                 null &&
 
@@ -1898,6 +1903,718 @@ const getRGPList = async (data) => {
     return databaseFailure(
       error,
       "Fetch RGP list",
+    );
+  }
+};
+// ============================================================Get RGP Total List
+const getRGPTotalList = async (data) => {
+  try {
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const page =
+      Math.max(
+        Number(data.page) || 1,
+        1,
+      );
+
+    const pageSize =
+      Math.min(
+        Math.max(
+          Number(data.PageSize) || 10,
+          1,
+        ),
+        100,
+      );
+
+    const offset =
+      (page - 1) * pageSize;
+
+    // ============================================================
+    // Conditions
+    // ============================================================
+
+    const values = [];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+    ];
+
+    // ============================================================
+    // Organization
+    // ============================================================
+
+    const organizationID =
+      Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(
+        organizationID,
+      ) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+    values.push(
+      organizationID,
+    );
+
+    conditions.push(
+      `m.OrganizationID = $${values.length}`,
+    );
+
+    // ============================================================
+    // RGP Number
+    // ============================================================
+
+    if (data.RGPNumber) {
+      values.push(
+        data.RGPNumber,
+      );
+
+      conditions.push(
+        `m.RGPNumber = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Department
+    // ============================================================
+
+    if (data.DepartmentID) {
+      values.push(
+        data.DepartmentID,
+      );
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // From Date
+    // ============================================================
+
+    if (data.FromDate) {
+      values.push(
+        data.FromDate,
+      );
+
+      conditions.push(
+        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+      );
+    }
+
+    // ============================================================
+    // To Date
+    // ============================================================
+
+    if (data.ToDate) {
+      values.push(
+        data.ToDate,
+      );
+
+      conditions.push(
+        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+      );
+    }
+
+    // ============================================================
+    // Status
+    //
+    // Direct master lifecycle status:
+    // PENDING
+    // APPROVED
+    // CHECKED OUT
+    // RETURN PENDING
+    // RETURNED
+    // CANCELLED
+    // REJECTED
+    // ============================================================
+
+    if (data.Status) {
+      values.push(
+        String(
+          data.Status,
+        )
+          .trim()
+          .toUpperCase(),
+      );
+
+      conditions.push(
+        `UPPER(TRIM(m.Status)) = $${values.length}`,
+      );
+    }
+
+    // ============================================================
+    // Search
+    // ============================================================
+
+    if (data.Search) {
+      values.push(
+        `%${String(
+          data.Search,
+        ).trim()}%`,
+      );
+
+      const searchIndex =
+        values.length;
+
+      conditions.push(`
+        (
+          m.RGPNumber::TEXT
+            ILIKE $${searchIndex}
+
+          OR m.VendorName
+            ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.ContactNumber,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.Company,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.TakenBy,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            m.Address,
+            ''
+          ) ILIKE $${searchIndex}
+
+          OR COALESCE(
+            d.DepartmentName,
+            ''
+          ) ILIKE $${searchIndex}
+        )
+      `);
+    }
+
+    // ============================================================
+    // Where Clause
+    // ============================================================
+
+    const whereClause =
+      conditions.join(
+        " AND ",
+      );
+
+    // ============================================================
+    // Total Count
+    // ============================================================
+
+    const countResult =
+      await pool.query(
+        `
+        SELECT
+          COUNT(*)::BIGINT AS TotalCount
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID =
+            m.DepartmentID
+
+        WHERE ${whereClause};
+        `,
+        values,
+      );
+
+    const totalCount =
+      Number(
+        countResult.rows[0]
+          .totalcount,
+      );
+
+    // ============================================================
+    // Pagination Values
+    // ============================================================
+
+    const listValues = [
+      ...values,
+      pageSize,
+      offset,
+    ];
+
+    const limitIndex =
+      values.length + 1;
+
+    const offsetIndex =
+      values.length + 2;
+
+    // ============================================================
+    // Get RGP List
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.RGPID,
+          m.RGPNumber,
+          m.OrganizationID,
+
+          m.ExpectedReturnDate,
+
+          m.VendorName,
+          m.ContactNumber,
+          m.Company,
+
+          m.DepartmentID,
+          d.DepartmentName,
+
+          m.Address,
+          m.TakenBy,
+
+          m.Status,
+
+          -- ================================================
+          -- Checkout
+          -- ================================================
+
+          m.CheckoutDateTime,
+          m.CheckoutBy,
+          checkoutUser.FullName
+            AS CheckoutByName,
+          m.CheckoutRemarks,
+
+          -- ================================================
+          -- Cancellation
+          -- ================================================
+
+          m.CancelledBy,
+          cancelledUser.FullName
+            AS CancelledByName,
+          m.CancelledDateTime,
+          m.CancellationRemarks,
+
+          -- ================================================
+          -- Return Completion
+          -- ================================================
+
+          m.ReturnedBy,
+          returnedUser.FullName
+            AS ReturnedByName,
+          m.ReturnedDateTime,
+          m.ReturnRemarks,
+
+          -- ================================================
+          -- Created By
+          -- ================================================
+
+          m.CreatedBy,
+          createdUser.FullName
+            AS CreatedByName,
+          m.CreatedDate,
+
+          m.ModifiedBy,
+          m.ModifiedDate
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID =
+            m.DepartmentID
+
+        LEFT JOIN user_master createdUser
+          ON createdUser.UserID =
+            m.CreatedBy
+
+        LEFT JOIN user_master checkoutUser
+          ON checkoutUser.UserID =
+            m.CheckoutBy
+
+        LEFT JOIN user_master cancelledUser
+          ON cancelledUser.UserID =
+            m.CancelledBy
+
+        LEFT JOIN user_master returnedUser
+          ON returnedUser.UserID =
+            m.ReturnedBy
+
+        WHERE ${whereClause}
+
+        ORDER BY
+          m.RGPID DESC
+
+        LIMIT $${limitIndex}
+        OFFSET $${offsetIndex};
+        `,
+        listValues,
+      );
+
+    // ============================================================
+    // Get Approvals
+    // ============================================================
+
+    const approvalsByRGP =
+      new Map();
+
+    if (
+      result.rows.length > 0
+    ) {
+      const rgpIDs =
+        result.rows.map(
+          (row) =>
+            Number(row.rgpid),
+        );
+
+      const approvalResult =
+        await pool.query(
+          `
+          SELECT
+            a.RGPApprovalID,
+            a.RGPID,
+            a.OrganizationID,
+            a.RGPApprovalConfigID,
+            a.ApprovalLevel,
+            a.ApprovalRole,
+            a.ApprovalOrder,
+            a.Status,
+            a.StatusDateTime,
+            a.ActionBy,
+
+            actionUser.FullName
+              AS ActionByName,
+
+            a.Remarks
+
+          FROM Gatepass_RGP_Approval a
+
+          LEFT JOIN user_master actionUser
+            ON actionUser.UserID =
+              a.ActionBy
+
+          WHERE a.RGPID =
+            ANY($1::BIGINT[])
+
+            AND a.IsDeleted =
+              FALSE
+
+          ORDER BY
+            a.RGPID ASC,
+            a.ApprovalOrder ASC,
+            a.ApprovalLevel ASC,
+            a.RGPApprovalID ASC;
+          `,
+          [rgpIDs],
+        );
+
+      for (
+        const approval
+        of approvalResult.rows
+      ) {
+        const rgpID =
+          String(
+            approval.rgpid,
+          );
+
+        if (
+          !approvalsByRGP.has(
+            rgpID,
+          )
+        ) {
+          approvalsByRGP.set(
+            rgpID,
+            [],
+          );
+        }
+
+        approvalsByRGP
+          .get(rgpID)
+          .push({
+            RGPApprovalID:
+              Number(
+                approval.rgpapprovalid,
+              ),
+
+            RGPApprovalConfigID:
+              approval.rgpapprovalconfigid !==
+                null &&
+              approval.rgpapprovalconfigid !==
+                undefined
+                ? Number(
+                    approval.rgpapprovalconfigid,
+                  )
+                : null,
+
+            ApprovalLevel:
+              Number(
+                approval.approvallevel,
+              ),
+
+            ApprovalRole:
+              approval.approvalrole,
+
+            ApprovalOrder:
+              Number(
+                approval.approvalorder,
+              ),
+
+            Status:
+              approval.status,
+
+            StatusDateTime:
+              approval.statusdatetime
+                ? formatDate(
+                    approval.statusdatetime,
+                    "DD MMM YYYY",
+                  )
+                : null,
+
+            ActionBy:
+              approval.actionby !==
+                null &&
+              approval.actionby !==
+                undefined
+                ? Number(
+                    approval.actionby,
+                  )
+                : null,
+
+            ActionByName:
+              approval.actionbyname ||
+              null,
+
+            Remarks:
+              approval.remarks ??
+              null,
+          });
+      }
+    }
+
+    // ============================================================
+    // Map List
+    // ============================================================
+
+    const mappedData =
+      result.rows.map(
+        (row) => {
+          const approvals =
+            approvalsByRGP.get(
+              String(
+                row.rgpid,
+              ),
+            ) || [];
+
+          return {
+            RGPID:
+              Number(
+                row.rgpid,
+              ),
+
+            RGPNumber:
+              Number(
+                row.rgpnumber,
+              ),
+
+            OrganizationID:
+              Number(
+                row.organizationid,
+              ),
+
+            ExpectedReturnDate:
+              row.expectedreturndate
+                ? formatDate(
+                    row.expectedreturndate,
+                  )
+                : null,
+
+            VendorName:
+              row.vendorname,
+
+            ContactNumber:
+              row.contactnumber,
+
+            Company:
+              row.company,
+
+            DepartmentID:
+              Number(
+                row.departmentid,
+              ),
+
+            DepartmentName:
+              row.departmentname ||
+              null,
+
+            Address:
+              row.address,
+
+            TakenBy:
+              row.takenby,
+
+            // ==================================================
+            // Current RGP Lifecycle Status
+            // ==================================================
+
+            Status:
+              row.status,
+
+            // ==================================================
+            // Approvals
+            // ==================================================
+
+            Approvals:
+              approvals,
+
+            // ==================================================
+            // Checkout
+            // ==================================================
+
+            CheckoutDateTime:
+              row.checkoutdatetime
+                ? formatDate(
+                    row.checkoutdatetime,
+                    "DD MMM YYYY",
+                  )
+                : null,
+
+            CheckoutBy:
+              row.checkoutby !==
+                null &&
+              row.checkoutby !==
+                undefined
+                ? Number(
+                    row.checkoutby,
+                  )
+                : null,
+
+            CheckoutByName:
+              row.checkoutbyname ||
+              null,
+
+            CheckoutRemarks:
+              row.checkoutremarks ??
+              null,
+
+            // ==================================================
+            // Cancellation
+            // ==================================================
+
+            CancelledBy:
+              row.cancelledby !==
+                null &&
+              row.cancelledby !==
+                undefined
+                ? Number(
+                    row.cancelledby,
+                  )
+                : null,
+
+            CancelledByName:
+              row.cancelledbyname ||
+              null,
+
+            CancelledDateTime:
+              row.cancelleddatetime
+                ? formatDate(
+                    row.cancelleddatetime,
+                    "DD MMM YYYY",
+                  )
+                : null,
+
+            CancellationRemarks:
+              row.cancellationremarks ??
+              null,
+
+            // ==================================================
+            // Return Completion
+            // ==================================================
+
+            ReturnedBy:
+              row.returnedby !==
+                null &&
+              row.returnedby !==
+                undefined
+                ? Number(
+                    row.returnedby,
+                  )
+                : null,
+
+            ReturnedByName:
+              row.returnedbyname ||
+              null,
+
+            ReturnedDateTime:
+              row.returneddatetime
+                ? formatDate(
+                    row.returneddatetime,
+                    "DD MMM YYYY",
+                  )
+                : null,
+
+            ReturnRemarks:
+              row.returnremarks ??
+              null,
+
+            // ==================================================
+            // Created
+            // ==================================================
+
+            CreatedBy:
+              row.createdby !==
+                null &&
+              row.createdby !==
+                undefined
+                ? Number(
+                    row.createdby,
+                  )
+                : null,
+
+            CreatedByName:
+              row.createdbyname ||
+              null,
+
+            CreatedDate:
+              row.createddate
+                ? formatDate(
+                    row.createddate,
+                  )
+                : null,
+          };
+        },
+      );
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return ok(
+      "RGP total list fetched successfully.",
+      mappedData,
+      {
+        TotalCount:
+          totalCount,
+
+        page,
+
+        PageSize:
+          pageSize,
+
+        TotalPages:
+          Math.ceil(
+            totalCount /
+              pageSize,
+          ),
+      },
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch RGP total list",
     );
   }
 };
@@ -7481,8 +8198,7 @@ const getRGPPendingReturnReport = async (data) => {
               row.organizationid,
             ),
 
-          ExpectedReturnDate:
-            row.expectedreturndate,
+         
 
           VendorName:
             row.vendorname,
@@ -7506,15 +8222,20 @@ const getRGPPendingReturnReport = async (data) => {
 
           Status:
             row.status,
+ExpectedReturnDate:
+  row.expectedreturndate
+    ? formatDate(row.expectedreturndate)
+    : null,
 
-          CheckoutDateTime:
-            row.checkoutdatetime,
+CheckoutDateTime:
+  row.checkoutdatetime
+    ? formatDate(row.checkoutdatetime)
+    : null,
 
-          CheckoutBy:
-            row.checkoutby,
-
-          CreatedDate:
-            row.createddate,
+CreatedDate:
+  row.createddate
+    ? formatDate(row.createddate)
+    : null,
 
           RGPItemID:
             Number(
@@ -17320,6 +18041,7 @@ const generateNRGPDetailPdf = async (data) => {
 module.exports = {
   createRGP,
   getRGPList,
+  getRGPTotalList,
   getRGPById,
   getRGPByNumber,
   getRGPVendorNames,
