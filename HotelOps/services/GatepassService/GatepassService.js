@@ -270,28 +270,33 @@ const mapRGPDocument = (row) => ({
 });
 // ==========================Map RGP Approval
 const mapRGPApproval = (row) => ({
+  // Internal use only.
+  // Final API response se remove kar denge.
+  RGPApprovalID:
+    Number(row.rgpapprovalid),
+
   RGPApprovalConfigID:
     row.rgpapprovalconfigid == null
       ? null
-      : Number(row.rgpapprovalconfigid),
-  
+      : Number(
+          row.rgpapprovalconfigid,
+        ),
 
   ApprovalLevel:
-    Number(row.approvallevel),
+    Number(
+      row.approvallevel,
+    ),
 
   ApprovalRole:
     row.approvalrole,
 
-  ApprovalOrder:
-    Number(row.approvalorder),
-
   Status:
     row.status,
 
-  
   Remarks:
     row.remarks,
 });
+
 // ==========================Map RGP Approval Flow
 const mapRGPApprovalFlow = (approvalRows) => {
   let flowStopped = false;
@@ -2501,6 +2506,75 @@ const getRGPTotalList = async (data) => {
               ),
             ) || [];
 
+          // ========================================================
+          // Approval Flow
+          //
+          // If any approval is REJECTED / CANCELLED:
+          //
+          // Current REJECTED / CANCELLED approval:
+          //   -> Keep actual data
+          //
+          // All approvals after that:
+          //   -> Status blank
+          //   -> StatusDateTime null
+          //   -> ActionBy null
+          //   -> ActionByName null
+          //   -> Remarks blank
+          //
+          // ApprovalRole / Level / Order remain unchanged.
+          // ========================================================
+
+          let approvalFlowStopped =
+            false;
+
+          const mappedApprovals =
+            approvals.map(
+              (approval) => {
+                if (
+                  approvalFlowStopped
+                ) {
+                  return {
+                    ...approval,
+
+                    Status:
+                      "",
+
+                    StatusDateTime:
+                      null,
+
+                    ActionBy:
+                      null,
+
+                    ActionByName:
+                      null,
+
+                    Remarks:
+                      "",
+                  };
+                }
+
+                const approvalStatus =
+                  String(
+                    approval.Status ||
+                      "",
+                  )
+                    .trim()
+                    .toUpperCase();
+
+                if (
+                  approvalStatus ===
+                    "REJECTED" ||
+                  approvalStatus ===
+                    "CANCELLED"
+                ) {
+                  approvalFlowStopped =
+                    true;
+                }
+
+                return approval;
+              },
+            );
+
           return {
             RGPID:
               Number(
@@ -2560,7 +2634,7 @@ const getRGPTotalList = async (data) => {
             // ==================================================
 
             Approvals:
-              approvals,
+              mappedApprovals,
 
             // ==================================================
             // Checkout
@@ -2703,7 +2777,6 @@ const getRGPTotalList = async (data) => {
           ),
       },
     );
-
   } catch (error) {
     return databaseFailure(
       error,
@@ -3021,7 +3094,9 @@ const getRGPById = async (data) => {
     // ============================================================
 
     rgp.Items =
-      Array.isArray(rgp.Items)
+      Array.isArray(
+        rgp.Items,
+      )
         ? rgp.Items.flatMap(
             (item) => {
               const itemID =
@@ -3070,7 +3145,8 @@ const getRGPById = async (data) => {
                   0,
                 );
 
-              const itemRows = [];
+              const itemRows =
+                [];
 
               // ==================================================
               // Returned Rows
@@ -3293,7 +3369,8 @@ const getRGPById = async (data) => {
     // REJECTED
     // CANCELLED
     //
-    // ActionByName will be attached to rgp.Approvals
+    // ActionBy -> user_master.UserID
+    // ActionByName -> user_master.FullName
     // ============================================================
 
     const approvalNameResult =
@@ -3305,6 +3382,7 @@ const getRGPById = async (data) => {
           a.ApprovalOrder,
           a.Status,
           a.ActionBy,
+
           u.FullName AS ActionByName
 
         FROM Gatepass_RGP_Approval a
@@ -3325,6 +3403,9 @@ const getRGPById = async (data) => {
 
     // ============================================================
     // Approval Action User Map
+    //
+    // IMPORTANT:
+    // Map using RGPApprovalID.
     // ============================================================
 
     const approvalUserMap =
@@ -3339,14 +3420,6 @@ const getRGPById = async (data) => {
           approval.rgpapprovalid,
         ),
         {
-          ActionBy:
-            approval.actionby === null ||
-            approval.actionby === undefined
-              ? null
-              : Number(
-                  approval.actionby,
-                ),
-
           ActionByName:
             approval.actionbyname ||
             null,
@@ -3356,6 +3429,16 @@ const getRGPById = async (data) => {
 
     // ============================================================
     // Attach ActionByName To Existing Approvals
+    //
+    // Final response DOES NOT contain:
+    //
+    // RGPApprovalID
+    // ApprovalOrder
+    // ActionBy
+    //
+    // Final response DOES contain:
+    //
+    // ActionByName
     // ============================================================
 
     rgp.Approvals =
@@ -3371,13 +3454,15 @@ const getRGPById = async (data) => {
                   ),
                 );
 
-              return {
-                ...approval,
+              const {
+                RGPApprovalID,
+                ApprovalOrder,
+                ActionBy,
+                ...approvalData
+              } = approval;
 
-                ActionBy:
-                  actionUser?.ActionBy ??
-                  approval.ActionBy ??
-                  null,
+              return {
+                ...approvalData,
 
                 ActionByName:
                   actionUser?.ActionByName ??
@@ -3392,7 +3477,8 @@ const getRGPById = async (data) => {
     //
     // Keep this because existing frontend/PDF may already use it.
     //
-    // Now names can come from:
+    // Names can come from:
+    //
     // APPROVED
     // REJECTED
     // CANCELLED
@@ -3428,7 +3514,7 @@ const getRGPById = async (data) => {
           .toUpperCase();
 
       // ==========================================================
-      // Ignore Pending
+      // Ignore Pending / Blank
       // ==========================================================
 
       if (
@@ -3522,7 +3608,6 @@ const getRGPById = async (data) => {
       "RGP record fetched successfully.",
       rgp,
     );
-
   } catch (error) {
     return databaseFailure(
       error,
@@ -11154,118 +11239,167 @@ const generateRGPDetailPdf = async (data) => {
     // ============================================================
     // Approval / Rejection / Cancellation Details
     // ============================================================
+// ============================================================
+// Approval / Rejection / Cancellation Details
+// ============================================================
 
-    const approvalActionStack =
-      [];
+const approvalActionStack = [];
 
-    const approvals =
-      Array.isArray(
-        detail.Approvals,
+const approvals =
+  Array.isArray(
+    detail.Approvals,
+  )
+    ? detail.Approvals
+    : [];
+
+// ============================================================
+// Approval Rows
+//
+// Directly using getRGPById response:
+//
+// ApprovalLevel
+// ApprovalRole
+// Status
+// Remarks
+// ActionByName
+// ============================================================
+
+approvals.forEach(
+  (approval) => {
+    const status =
+      String(
+        approval.Status || "",
       )
-        ? detail.Approvals
-        : [];
+        .trim()
+        .toUpperCase();
 
-    // ============================================================
-    // Approval Rows
-    // ============================================================
+    // ========================================================
+    // Only actual completed actions
+    //
+    // Blank / Pending approval stages PDF me show nahi honge.
+    // ========================================================
 
-    approvals.forEach(
-      (approval) => {
-        const status =
-          String(
-            approval.Status ||
-              "",
-          )
-            .trim()
-            .toUpperCase();
+    if (
+      ![
+        "APPROVED",
+        "REJECTED",
+        "CANCELLED",
+      ].includes(
+        status,
+      )
+    ) {
+      return;
+    }
 
-        // Pending approval ko PDF me nahi dikhana
-        if (
-          ![
-            "APPROVED",
-            "REJECTED",
-            "CANCELLED",
-          ].includes(
-            status,
-          )
-        ) {
-          return;
-        }
+    const role =
+      String(
+        approval.ApprovalRole ||
+          "",
+      ).trim();
 
-        const role =
-          String(
-            approval.ApprovalRole ||
-              "",
-          ).trim();
+    const actionByName =
+      String(
+        approval.ActionByName ||
+          "",
+      ).trim();
 
-        const actionBy =
-          approval.ActionByName ||
-          approval.ActionBy;
+    // ========================================================
+    // Role and ActionByName required
+    // ========================================================
 
-        if (
-          !role ||
-          actionBy === null ||
-          actionBy === undefined ||
-          String(
-            actionBy,
-          ).trim() === ""
-        ) {
-          return;
-        }
+    if (
+      !role ||
+      !actionByName
+    ) {
+      return;
+    }
 
-        let actionLabel =
-          "";
+    // ========================================================
+    // Action Label
+    // ========================================================
 
-        if (
-          status ===
-          "APPROVED"
-        ) {
-          actionLabel =
-            "Approved";
-        } else if (
-          status ===
-          "REJECTED"
-        ) {
-          actionLabel =
-            "Rejected";
-        } else if (
-          status ===
-          "CANCELLED"
-        ) {
-          actionLabel =
-            "Cancelled";
-        }
+    let actionLabel = "";
 
-        approvalActionStack.push({
-          text: [
-            {
-              text:
-                `${actionLabel} by ${role}: `,
+    if (
+      status === "APPROVED"
+    ) {
+      actionLabel =
+        "Approved";
+    } else if (
+      status === "REJECTED"
+    ) {
+      actionLabel =
+        "Rejected";
+    } else if (
+      status === "CANCELLED"
+    ) {
+      actionLabel =
+        "Cancelled";
+    }
 
-              bold:
-                true,
-            },
+    // ========================================================
+    // Output Examples:
+    //
+    // Approved by HOD - Kailash Garg
+    // Rejected by HOD - Kailash Garg
+    // Cancelled by HOD - Kailash Garg
+    // ========================================================
 
-            {
-              text:
-                displayValue(
-                  actionBy,
-                ),
-            },
-          ],
+    approvalActionStack.push({
+      text: [
+        {
+          text:
+            `${actionLabel} by ${role} - `,
 
-          fontSize:
-            9,
+          bold:
+            true,
+        },
 
-          margin: [
-            0,
-            0,
-            0,
-            5,
-          ],
-        });
-      },
-    );
+        {
+          text:
+            actionByName,
+        },
+      ],
+
+      fontSize:
+        9,
+
+      margin: [
+        0,
+        0,
+        0,
+        5,
+      ],
+    });
+  },
+);
+
+// ============================================================
+// No Approval Action
+// ============================================================
+
+if (
+  approvalActionStack.length ===
+  0
+) {
+  approvalActionStack.push({
+    text:
+      "-",
+
+    fontSize:
+      9,
+  });
+}
+
+// ============================================================
+// Prepare By
+// ============================================================
+
+const preparedBy =
+  displayValue(
+    detail.CreatedByName ||
+      detail.CreatedBy,
+  );
 
     // ============================================================
     // Master Level Cancellation
@@ -11274,85 +11408,7 @@ const generateRGPDetailPdf = async (data) => {
     // Show it separately when RGP is cancelled.
     // ============================================================
 
-    const masterStatus =
-      String(
-        detail.Status || "",
-      )
-        .trim()
-        .toUpperCase();
-
-    if (
-      masterStatus ===
-      "CANCELLED"
-    ) {
-      const cancelledBy =
-        detail.CancelledByName ||
-        detail.CancelledBy;
-
-      if (
-        cancelledBy !== null &&
-        cancelledBy !== undefined &&
-        String(
-          cancelledBy,
-        ).trim() !== ""
-      ) {
-        approvalActionStack.push({
-          text: [
-            {
-              text:
-                "Cancelled by: ",
-
-              bold:
-                true,
-            },
-
-            {
-              text:
-                displayValue(
-                  cancelledBy,
-                ),
-            },
-          ],
-
-          fontSize:
-            9,
-
-          margin: [
-            0,
-            0,
-            0,
-            5,
-          ],
-        });
-      }
-    }
-
-    // ============================================================
-    // No Action
-    // ============================================================
-
-    if (
-      approvalActionStack.length ===
-      0
-    ) {
-      approvalActionStack.push({
-        text:
-          "-",
-
-        fontSize:
-          9,
-      });
-    }
-
-    // ============================================================
-    // Prepare By
-    // ============================================================
-
-    const preparedBy =
-      displayValue(
-        detail.CreatedByName ||
-          detail.CreatedBy,
-      );
+  
 
     // ============================================================
     // Document Definition
@@ -11851,7 +11907,7 @@ const generateRGPDetailPdf = async (data) => {
 
                 {
                   text:
-                    "Approval Details",
+                    "Checked & Approved By",
 
                   bold:
                     true,
