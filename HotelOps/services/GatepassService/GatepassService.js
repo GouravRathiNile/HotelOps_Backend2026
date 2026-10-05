@@ -292,6 +292,40 @@ const mapRGPApproval = (row) => ({
   Remarks:
     row.remarks,
 });
+// ==========================Map RGP Approval Flow
+const mapRGPApprovalFlow = (approvalRows) => {
+  let flowStopped = false;
+
+  return approvalRows.map((row) => {
+    const mappedApproval =
+      mapRGPApproval(row);
+
+    // Reject / Cancel ke baad ke approval stages blank
+    if (flowStopped) {
+      return {
+        ...mappedApproval,
+        Status: "",
+        Remarks: "",
+      };
+    }
+
+    const status =
+      String(row.status || "")
+        .trim()
+        .toUpperCase();
+
+    // Current Reject / Cancel row actual data ke saath rahegi.
+    // Iske baad wali rows blank hongi.
+    if (
+      status === "REJECTED" ||
+      status === "CANCELLED"
+    ) {
+      flowStopped = true;
+    }
+
+    return mappedApproval;
+  });
+};
 // ==========================Attach RGP Related Data
 const attachRGPRelatedData = async (
   rows,
@@ -432,10 +466,14 @@ const attachRGPRelatedData = async (
       .map(mapRGPDocument)
       .map(omitParentIDs);
 
-    rgp.Approvals = approvalResult.rows
-      .filter(belongsToRGP)
-      .map(mapRGPApproval)
-      .map(omitParentIDs);
+   const rgpApprovalRows =
+  approvalResult.rows
+    .filter(belongsToRGP);
+
+rgp.Approvals =
+  mapRGPApprovalFlow(
+    rgpApprovalRows,
+  ).map(omitParentIDs);
 
     return rgp;
   });
@@ -1190,7 +1228,7 @@ const getRGPList = async (data) => {
                       m.RGPID
 
                 AND a.IsDeleted =
-                      FALSE
+                    FALSE
             )
 
             AND NOT EXISTS (
@@ -1202,7 +1240,7 @@ const getRGPList = async (data) => {
                       m.RGPID
 
                 AND a.IsDeleted =
-                      FALSE
+                    FALSE
 
                 AND UPPER(
                   TRIM(
@@ -1234,7 +1272,7 @@ const getRGPList = async (data) => {
                       m.RGPID
 
                 AND a.IsDeleted =
-                      FALSE
+                    FALSE
 
                 AND UPPER(
                   TRIM(
@@ -1244,6 +1282,38 @@ const getRGPList = async (data) => {
                     )
                   )
                 ) = 'REJECTED'
+            )
+          `);
+        }
+
+        // ======================================================
+        // CANCELLED
+        // ======================================================
+
+        else if (
+          filterStatus ===
+          "CANCELLED"
+        ) {
+          conditions.push(`
+            EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval a
+
+              WHERE a.RGPID =
+                      m.RGPID
+
+                AND a.IsDeleted =
+                    FALSE
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      a.Status,
+                      'PENDING'
+                    )
+                  )
+                ) = 'CANCELLED'
             )
           `);
         }
@@ -1266,7 +1336,7 @@ const getRGPList = async (data) => {
                       m.RGPID
 
                 AND a.IsDeleted =
-                      FALSE
+                    FALSE
 
                 AND UPPER(
                   TRIM(
@@ -1287,7 +1357,7 @@ const getRGPList = async (data) => {
                       m.RGPID
 
                 AND a.IsDeleted =
-                      FALSE
+                    FALSE
 
                 AND UPPER(
                   TRIM(
@@ -1296,7 +1366,10 @@ const getRGPList = async (data) => {
                       'PENDING'
                     )
                   )
-                ) = 'REJECTED'
+                ) IN (
+                  'REJECTED',
+                  'CANCELLED'
+                )
             )
           `);
         }
@@ -1328,6 +1401,7 @@ const getRGPList = async (data) => {
             "PENDING",
             "APPROVED",
             "REJECTED",
+            "CANCELLED",
           ].includes(
             filterStatus,
           )
@@ -1356,7 +1430,7 @@ const getRGPList = async (data) => {
                       m.RGPID
 
                 AND filterApproval.IsDeleted =
-                      FALSE
+                    FALSE
 
                 AND (
                   CASE
@@ -1690,6 +1764,15 @@ const getRGPList = async (data) => {
             isSecurity ||
             isCEO
           ) {
+            const hasCancelled =
+              approvals.some(
+                (approval) =>
+                  normalizeStatus(
+                    approval.status,
+                  ) ===
+                  "CANCELLED",
+              );
+
             const hasRejected =
               approvals.some(
                 (approval) =>
@@ -1700,8 +1783,7 @@ const getRGPList = async (data) => {
               );
 
             const allApproved =
-              approvals.length >
-                0 &&
+              approvals.length > 0 &&
               approvals.every(
                 (approval) =>
                   normalizeStatus(
@@ -1710,7 +1792,12 @@ const getRGPList = async (data) => {
                   "APPROVED",
               );
 
-            if (hasRejected) {
+            if (hasCancelled) {
+              approvalStatus =
+                "CANCELLED";
+            } else if (
+              hasRejected
+            ) {
               approvalStatus =
                 "REJECTED";
             } else if (
@@ -1830,9 +1917,16 @@ const getRGPList = async (data) => {
 
           const canAction =
             Boolean(
-              !(approvals.length > 0 && approvals.every(
-                (approval) => normalizeStatus(approval.status) === "APPROVED",
-              )) &&
+              !(
+                approvals.length > 0 &&
+                approvals.every(
+                  (approval) =>
+                    normalizeStatus(
+                      approval.status,
+                    ) ===
+                    "APPROVED",
+                )
+              ) &&
 
               row.createdby !=
                 null &&
@@ -1898,7 +1992,6 @@ const getRGPList = async (data) => {
           ),
       },
     );
-
   } catch (error) {
     return databaseFailure(
       error,
@@ -2664,18 +2757,35 @@ const getRGPById = async (data) => {
 
           m.Status,
 
+          -- ======================================================
+          -- Checkout
+          -- ======================================================
+
           m.CheckoutDateTime,
           m.CheckoutBy,
           checkoutUser.FullName AS CheckoutByName,
           m.CheckoutRemarks,
 
+          -- ======================================================
+          -- Cancel
+          -- ======================================================
+
           m.CancelledBy,
+          cancelledUser.FullName AS CancelledByName,
           m.CancelledDateTime,
           m.CancellationRemarks,
+
+          -- ======================================================
+          -- Return
+          -- ======================================================
 
           m.ReturnedBy,
           m.ReturnedDateTime,
           m.ReturnRemarks,
+
+          -- ======================================================
+          -- Created
+          -- ======================================================
 
           m.CreatedBy,
           createdUser.FullName AS CreatedByName,
@@ -2697,6 +2807,10 @@ const getRGPById = async (data) => {
         LEFT JOIN user_master checkoutUser
           ON checkoutUser.UserID =
             m.CheckoutBy
+
+        LEFT JOIN user_master cancelledUser
+          ON cancelledUser.UserID =
+            m.CancelledBy
 
         WHERE m.RGPID = $1
           AND m.IsDeleted = FALSE
@@ -2753,6 +2867,22 @@ const getRGPById = async (data) => {
       masterRow.checkoutremarks;
 
     // ============================================================
+    // Cancellation Details
+    // ============================================================
+
+    const cancelledBy =
+      masterRow.cancelledby;
+
+    const cancelledByName =
+      masterRow.cancelledbyname;
+
+    const cancelledDateTime =
+      masterRow.cancelleddatetime;
+
+    const cancellationRemarks =
+      masterRow.cancellationremarks;
+
+    // ============================================================
     // Attach Existing Related Data
     //
     // Items
@@ -2769,10 +2899,9 @@ const getRGPById = async (data) => {
     // Get Return Details
     //
     // Every return transaction remains a separate row.
+    //
     // Example:
-    //
     // Original Qty = 994
-    //
     // Return 1 = 100
     // Return 2 = 194
     //
@@ -2931,7 +3060,6 @@ const getRGPById = async (data) => {
               // ==================================================
               // Calculate Remaining From Original Quantity
               //
-              // Example:
               // 994 - (100 + 194) = 700
               // ==================================================
 
@@ -2994,7 +3122,7 @@ const getRGPById = async (data) => {
               // Pending / Remaining Row
               //
               // Always last.
-              // Only add when some quantity is still pending.
+              // Only add when quantity is still pending.
               // ==================================================
 
               if (
@@ -3133,7 +3261,39 @@ const getRGPById = async (data) => {
       checkoutRemarks || null;
 
     // ============================================================
-    // Get Approval User Names
+    // Explicitly Attach Cancellation Details
+    // ============================================================
+
+    rgp.CancelledBy =
+      cancelledBy !== null &&
+      cancelledBy !== undefined
+        ? Number(
+            cancelledBy,
+          )
+        : null;
+
+    rgp.CancelledByName =
+      cancelledByName || null;
+
+    rgp.CancelledDateTime =
+      cancelledDateTime
+        ? formatDate(
+            cancelledDateTime,
+            "DD MMM YYYY HH:mm:ss",
+          )
+        : null;
+
+    rgp.CancellationRemarks =
+      cancellationRemarks || null;
+
+    // ============================================================
+    // Get Approval Action User Names
+    //
+    // APPROVED
+    // REJECTED
+    // CANCELLED
+    //
+    // ActionByName will be attached to rgp.Approvals
     // ============================================================
 
     const approvalNameResult =
@@ -3145,7 +3305,6 @@ const getRGPById = async (data) => {
           a.ApprovalOrder,
           a.Status,
           a.ActionBy,
-
           u.FullName AS ActionByName
 
         FROM Gatepass_RGP_Approval a
@@ -3165,7 +3324,78 @@ const getRGPById = async (data) => {
       );
 
     // ============================================================
+    // Approval Action User Map
+    // ============================================================
+
+    const approvalUserMap =
+      new Map();
+
+    for (
+      const approval
+      of approvalNameResult.rows
+    ) {
+      approvalUserMap.set(
+        Number(
+          approval.rgpapprovalid,
+        ),
+        {
+          ActionBy:
+            approval.actionby === null ||
+            approval.actionby === undefined
+              ? null
+              : Number(
+                  approval.actionby,
+                ),
+
+          ActionByName:
+            approval.actionbyname ||
+            null,
+        },
+      );
+    }
+
+    // ============================================================
+    // Attach ActionByName To Existing Approvals
+    // ============================================================
+
+    rgp.Approvals =
+      Array.isArray(
+        rgp.Approvals,
+      )
+        ? rgp.Approvals.map(
+            (approval) => {
+              const actionUser =
+                approvalUserMap.get(
+                  Number(
+                    approval.RGPApprovalID,
+                  ),
+                );
+
+              return {
+                ...approval,
+
+                ActionBy:
+                  actionUser?.ActionBy ??
+                  approval.ActionBy ??
+                  null,
+
+                ActionByName:
+                  actionUser?.ActionByName ??
+                  null,
+              };
+            },
+          )
+        : [];
+
+    // ============================================================
     // Approval Names
+    //
+    // Keep this because existing frontend/PDF may already use it.
+    //
+    // Now names can come from:
+    // APPROVED
+    // REJECTED
+    // CANCELLED
     // ============================================================
 
     let HODName =
@@ -3197,9 +3427,18 @@ const getRGPById = async (data) => {
           .trim()
           .toUpperCase();
 
+      // ==========================================================
+      // Ignore Pending
+      // ==========================================================
+
       if (
-        status !==
-        "APPROVED"
+        ![
+          "APPROVED",
+          "REJECTED",
+          "CANCELLED",
+        ].includes(
+          status,
+        )
       ) {
         continue;
       }
@@ -4684,6 +4923,56 @@ const processRGPApproval = async (data) => {
     } = data;
 
     // ============================================================
+    // Validate RGPID
+    // ============================================================
+
+    const rgpID =
+      Number(RGPID);
+
+    if (
+      !Number.isInteger(rgpID) ||
+      rgpID <= 0
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Valid RGPID is required.",
+        400,
+      );
+    }
+
+    // ============================================================
+    // Validate Action
+    //
+    // Supported:
+    // APPROVE
+    // REJECT
+    // CANCEL
+    // ============================================================
+
+    const normalizedAction =
+      String(Action || "")
+        .trim()
+        .toUpperCase();
+
+    if (
+      ![
+        "APPROVE",
+        "REJECT",
+        "CANCEL",
+      ].includes(
+        normalizedAction,
+      )
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Action must be APPROVE, REJECT or CANCEL.",
+        400,
+      );
+    }
+
+    // ============================================================
     // Logged-In Approval Role
     // ============================================================
 
@@ -4697,7 +4986,7 @@ const processRGPApproval = async (data) => {
       await client.query("ROLLBACK");
 
       return fail(
-        "You are not authorized to approve RGP.",
+        "You are not authorized to process RGP approval.",
         403,
       );
     }
@@ -4723,10 +5012,16 @@ const processRGPApproval = async (data) => {
 
         FOR UPDATE;
         `,
-        [RGPID],
+        [rgpID],
       );
 
-    if (!masterResult.rows.length) {
+    // ============================================================
+    // RGP Not Found
+    // ============================================================
+
+    if (
+      !masterResult.rows.length
+    ) {
       await client.query("ROLLBACK");
 
       return fail(
@@ -4738,12 +5033,37 @@ const processRGPApproval = async (data) => {
     const master =
       masterResult.rows[0];
 
-    if (approvalRole === "HOD" &&
-        !(Number(data.UserDepartmentID) > 0 &&
-          Number(data.UserDepartmentID) === Number(master.departmentid))) {
+    // ============================================================
+    // HOD Department Validation
+    //
+    // HOD can only take action on RGP of own department.
+    // ============================================================
+
+    if (
+      approvalRole === "HOD" &&
+      !(
+        Number(
+          data.UserDepartmentID,
+        ) > 0 &&
+        Number(
+          data.UserDepartmentID,
+        ) ===
+          Number(
+            master.departmentid,
+          )
+      )
+    ) {
       await client.query("ROLLBACK");
-      return fail("Only the HOD of the RGP department can approve or reject this RGP.", 403);
+
+      return fail(
+        "Only the HOD of the RGP department can approve, reject or cancel this RGP.",
+        403,
+      );
     }
+
+    // ============================================================
+    // Current Master Status
+    // ============================================================
 
     const currentMasterStatus =
       String(
@@ -4753,7 +5073,7 @@ const processRGPApproval = async (data) => {
         .toUpperCase();
 
     // ============================================================
-    // Final Status Check
+    // Final Status Checks
     // ============================================================
 
     if (
@@ -4775,7 +5095,19 @@ const processRGPApproval = async (data) => {
       await client.query("ROLLBACK");
 
       return fail(
-        "Rejected RGP cannot be approved further.",
+        "Rejected RGP cannot be processed further.",
+        400,
+      );
+    }
+
+    if (
+      currentMasterStatus ===
+      "CANCELLED"
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Cancelled RGP cannot be processed further.",
         400,
       );
     }
@@ -4785,8 +5117,9 @@ const processRGPApproval = async (data) => {
         "CHECKED OUT",
         "RETURN PENDING",
         "RETURNED",
-        "CANCELLED",
-      ].includes(currentMasterStatus)
+      ].includes(
+        currentMasterStatus,
+      )
     ) {
       await client.query("ROLLBACK");
 
@@ -4831,10 +5164,16 @@ const processRGPApproval = async (data) => {
 
         FOR UPDATE;
         `,
-        [RGPID],
+        [rgpID],
       );
 
-    if (!approvalResult.rows.length) {
+    // ============================================================
+    // Approval Flow Not Found
+    // ============================================================
+
+    if (
+      !approvalResult.rows.length
+    ) {
       await client.query("ROLLBACK");
 
       return fail(
@@ -4846,7 +5185,13 @@ const processRGPApproval = async (data) => {
     // ============================================================
     // Current Pending Stage
     //
-    // First approval which is not Approved
+    // First approval which is not Approved.
+    //
+    // Example:
+    //
+    // HOD = Approved
+    // FC  = Pending   <-- Current
+    // GM  = Pending
     // ============================================================
 
     const currentStage =
@@ -4869,6 +5214,10 @@ const processRGPApproval = async (data) => {
         400,
       );
     }
+
+    // ============================================================
+    // Current Approval Role
+    // ============================================================
 
     const currentApprovalRole =
       normalizeRGPApprovalRole(
@@ -4916,16 +5265,26 @@ const processRGPApproval = async (data) => {
     }
 
     // ============================================================
-    // Action Status
+    // Approval Status From Action
     // ============================================================
+
+    const approvalStatusMap = {
+      APPROVE: "Approved",
+      REJECT: "Rejected",
+      CANCEL: "Cancelled",
+    };
 
     const newStatus =
-      Action === "APPROVE"
-        ? "Approved"
-        : "Rejected";
+      approvalStatusMap[
+        normalizedAction
+      ];
 
     // ============================================================
-    // Update Current Approval
+    // Update Current Approval Row
+    //
+    // APPROVE -> Approved
+    // REJECT  -> Rejected
+    // CANCEL  -> Cancelled
     // ============================================================
 
     await client.query(
@@ -4943,6 +5302,7 @@ const processRGPApproval = async (data) => {
         Remarks = $3,
 
         ModifiedBy = $2,
+
         ModifiedDate =
           CURRENT_TIMESTAMP
 
@@ -4954,44 +5314,67 @@ const processRGPApproval = async (data) => {
         newStatus,
         UserID,
         Remarks || null,
-
         currentStage.rgpapprovalid,
-        RGPID,
+        rgpID,
       ],
     );
 
     // ============================================================
-    // REJECT
+    // CANCEL
+    //
+    // Current Approval Row:
+    // Status = Cancelled
+    //
+    // Master:
+    // Status = CANCELLED
+    // CancelledBy = Current User
+    // CancellationRemarks = Remarks
+    //
+    // Remaining approval rows stay Pending.
     // ============================================================
 
-    if (Action === "REJECT") {
+    if (
+      normalizedAction ===
+      "CANCEL"
+    ) {
       await client.query(
         `
         UPDATE Gatepass_RGP_Entry_Master
 
         SET
-          Status = 'REJECTED',
+          Status = 'CANCELLED',
+
+          CancelledBy = $1,
+
+          CancelledDateTime =
+            CURRENT_TIMESTAMP,
+
+          CancellationRemarks = $2,
 
           ModifiedBy = $1,
+
           ModifiedDate =
             CURRENT_TIMESTAMP
 
-        WHERE RGPID = $2
+        WHERE RGPID = $3
           AND IsDeleted = FALSE;
         `,
         [
           UserID,
-          RGPID,
+          Remarks || null,
+          rgpID,
         ],
       );
 
-      await client.query("COMMIT");
+      await client.query(
+        "COMMIT",
+      );
 
       return ok(
-        "RGP rejected successfully.",
+        "RGP cancelled successfully.",
         {
           RGPID:
-            Number(RGPID),
+            Number(rgpID),
 
           RGPNumber:
             Number(
@@ -5000,6 +5383,71 @@ const processRGPApproval = async (data) => {
 
           ApprovalRole:
             currentApprovalRole,
+
+          ApprovalStatus:
+            "CANCELLED",
+
+          Status:
+            "CANCELLED",
+        },
+      );
+    }
+
+    // ============================================================
+    // REJECT
+    //
+    // Current Approval Row:
+    // Status = Rejected
+    //
+    // Master:
+    // Status = REJECTED
+    // ============================================================
+
+    if (
+      normalizedAction ===
+      "REJECT"
+    ) {
+      await client.query(
+        `
+        UPDATE Gatepass_RGP_Entry_Master
+
+        SET
+          Status = 'REJECTED',
+
+          ModifiedBy = $1,
+
+          ModifiedDate =
+            CURRENT_TIMESTAMP
+
+        WHERE RGPID = $2
+          AND IsDeleted = FALSE;
+        `,
+        [
+          UserID,
+          rgpID,
+        ],
+      );
+
+      await client.query(
+        "COMMIT",
+      );
+
+      return ok(
+        "RGP rejected successfully.",
+        {
+          RGPID:
+            Number(rgpID),
+
+          RGPNumber:
+            Number(
+              master.rgpnumber,
+            ),
+
+          ApprovalRole:
+            currentApprovalRole,
+
+          ApprovalStatus:
+            "REJECTED",
 
           Status:
             "REJECTED",
@@ -5010,8 +5458,16 @@ const processRGPApproval = async (data) => {
     // ============================================================
     // APPROVE
     //
-    // Check Next Pending Stage
+    // We reach here only when:
+    // normalizedAction === "APPROVE"
+    //
+    // Find next approval stage.
     // ============================================================
+
+    const currentApprovalID =
+      Number(
+        currentStage.rgpapprovalid,
+      );
 
     const nextStage =
       approvalResult.rows.find(
@@ -5019,8 +5475,12 @@ const processRGPApproval = async (data) => {
           Number(
             row.rgpapprovalid,
           ) !==
+            currentApprovalID &&
+          Number(
+            row.approvalorder,
+          ) >
             Number(
-              currentStage.rgpapprovalid,
+              currentStage.approvalorder,
             ) &&
           String(
             row.status ||
@@ -5033,7 +5493,9 @@ const processRGPApproval = async (data) => {
 
     // ============================================================
     // No Next Stage
-    // Fully Approved
+    //
+    // All Approvals Completed
+    // Master = APPROVED
     // ============================================================
 
     if (!nextStage) {
@@ -5045,6 +5507,7 @@ const processRGPApproval = async (data) => {
           Status = 'APPROVED',
 
           ModifiedBy = $1,
+
           ModifiedDate =
             CURRENT_TIMESTAMP
 
@@ -5053,17 +5516,19 @@ const processRGPApproval = async (data) => {
         `,
         [
           UserID,
-          RGPID,
+          rgpID,
         ],
       );
 
-      await client.query("COMMIT");
+      await client.query(
+        "COMMIT",
+      );
 
       return ok(
         "RGP fully approved successfully.",
         {
           RGPID:
-            Number(RGPID),
+            Number(rgpID),
 
           RGPNumber:
             Number(
@@ -5073,6 +5538,9 @@ const processRGPApproval = async (data) => {
           ApprovalRole:
             currentApprovalRole,
 
+          ApprovalStatus:
+            "APPROVED",
+
           Status:
             "APPROVED",
         },
@@ -5081,6 +5549,9 @@ const processRGPApproval = async (data) => {
 
     // ============================================================
     // Next Approval Pending
+    //
+    // Current approval = Approved
+    // Next approval = Pending
     // Master remains PENDING
     // ============================================================
 
@@ -5092,6 +5563,7 @@ const processRGPApproval = async (data) => {
         Status = 'PENDING',
 
         ModifiedBy = $1,
+
         ModifiedDate =
           CURRENT_TIMESTAMP
 
@@ -5100,17 +5572,19 @@ const processRGPApproval = async (data) => {
       `,
       [
         UserID,
-        RGPID,
+        rgpID,
       ],
     );
 
-    await client.query("COMMIT");
+    await client.query(
+      "COMMIT",
+    );
 
     return ok(
       "RGP approval processed successfully.",
       {
         RGPID:
-          Number(RGPID),
+          Number(rgpID),
 
         RGPNumber:
           Number(
@@ -5125,10 +5599,14 @@ const processRGPApproval = async (data) => {
             nextStage.approvalrole,
           ),
 
+        ApprovalStatus:
+          "APPROVED",
+
         Status:
           "PENDING",
       },
     );
+
   } catch (error) {
     await client.query(
       "ROLLBACK",
@@ -9920,8 +10398,7 @@ const generateRGPDetailPdf = async (data) => {
 
     const displayDate = (
       value,
-      format =
-        "DD MMM YYYY",
+      format = "DD MMM YYYY",
     ) =>
       value
         ? formatDate(
@@ -10675,163 +11152,190 @@ const generateRGPDetailPdf = async (data) => {
     }
 
     // ============================================================
-    // Approval Names
+    // Approval / Rejection / Cancellation Details
     // ============================================================
 
-    const approvalNames =
-      detail.ApprovalNames ||
-      {};
-
-    const approvedByStack =
+    const approvalActionStack =
       [];
 
+    const approvals =
+      Array.isArray(
+        detail.Approvals,
+      )
+        ? detail.Approvals
+        : [];
+
     // ============================================================
-    // HOD
+    // Approval Rows
     // ============================================================
+
+    approvals.forEach(
+      (approval) => {
+        const status =
+          String(
+            approval.Status ||
+              "",
+          )
+            .trim()
+            .toUpperCase();
+
+        // Pending approval ko PDF me nahi dikhana
+        if (
+          ![
+            "APPROVED",
+            "REJECTED",
+            "CANCELLED",
+          ].includes(
+            status,
+          )
+        ) {
+          return;
+        }
+
+        const role =
+          String(
+            approval.ApprovalRole ||
+              "",
+          ).trim();
+
+        const actionBy =
+          approval.ActionByName ||
+          approval.ActionBy;
+
+        if (
+          !role ||
+          actionBy === null ||
+          actionBy === undefined ||
+          String(
+            actionBy,
+          ).trim() === ""
+        ) {
+          return;
+        }
+
+        let actionLabel =
+          "";
+
+        if (
+          status ===
+          "APPROVED"
+        ) {
+          actionLabel =
+            "Approved";
+        } else if (
+          status ===
+          "REJECTED"
+        ) {
+          actionLabel =
+            "Rejected";
+        } else if (
+          status ===
+          "CANCELLED"
+        ) {
+          actionLabel =
+            "Cancelled";
+        }
+
+        approvalActionStack.push({
+          text: [
+            {
+              text:
+                `${actionLabel} by ${role}: `,
+
+              bold:
+                true,
+            },
+
+            {
+              text:
+                displayValue(
+                  actionBy,
+                ),
+            },
+          ],
+
+          fontSize:
+            9,
+
+          margin: [
+            0,
+            0,
+            0,
+            5,
+          ],
+        });
+      },
+    );
+
+    // ============================================================
+    // Master Level Cancellation
+    //
+    // RGP CANCEL is stored on RGP Master.
+    // Show it separately when RGP is cancelled.
+    // ============================================================
+
+    const masterStatus =
+      String(
+        detail.Status || "",
+      )
+        .trim()
+        .toUpperCase();
 
     if (
-      approvalNames.HODName
+      masterStatus ===
+      "CANCELLED"
     ) {
-      approvedByStack.push({
-        text: [
-          {
-            text:
-              "Approved by HOD: ",
+      const cancelledBy =
+        detail.CancelledByName ||
+        detail.CancelledBy;
 
-            bold:
-              true,
-          },
+      if (
+        cancelledBy !== null &&
+        cancelledBy !== undefined &&
+        String(
+          cancelledBy,
+        ).trim() !== ""
+      ) {
+        approvalActionStack.push({
+          text: [
+            {
+              text:
+                "Cancelled by: ",
 
-          {
-            text:
-              displayValue(
-                approvalNames.HODName,
-              ),
-          },
-        ],
+              bold:
+                true,
+            },
 
-        fontSize:
-          9,
+            {
+              text:
+                displayValue(
+                  cancelledBy,
+                ),
+            },
+          ],
 
-        margin: [
-          0,
-          0,
-          0,
-          5,
-        ],
-      });
+          fontSize:
+            9,
+
+          margin: [
+            0,
+            0,
+            0,
+            5,
+          ],
+        });
+      }
     }
 
     // ============================================================
-    // FC / DOF
+    // No Action
     // ============================================================
 
     if (
-      approvalNames.FC_DOFName
-    ) {
-      const financeApproval =
-        Array.isArray(
-          detail.Approvals,
-        )
-          ? detail.Approvals.find(
-              (approval) => {
-                const role =
-                  String(
-                    approval.ApprovalRole ||
-                      "",
-                  )
-                    .trim()
-                    .toUpperCase();
-
-                return (
-                  role === "FC" ||
-                  role === "DOF"
-                );
-              },
-            )
-          : null;
-
-      const financeRole =
-        financeApproval
-          ?.ApprovalRole ||
-        "FC/DOF";
-
-      approvedByStack.push({
-        text: [
-          {
-            text:
-              `Approved by ${financeRole}: `,
-
-            bold:
-              true,
-          },
-
-          {
-            text:
-              displayValue(
-                approvalNames.FC_DOFName,
-              ),
-          },
-        ],
-
-        fontSize:
-          9,
-
-        margin: [
-          0,
-          0,
-          0,
-          5,
-        ],
-      });
-    }
-
-    // ============================================================
-    // GM
-    // ============================================================
-
-    if (
-      approvalNames.GMName
-    ) {
-      approvedByStack.push({
-        text: [
-          {
-            text:
-              "Approved by GM: ",
-
-            bold:
-              true,
-          },
-
-          {
-            text:
-              displayValue(
-                approvalNames.GMName,
-              ),
-          },
-        ],
-
-        fontSize:
-          9,
-
-        margin: [
-          0,
-          0,
-          0,
-          5,
-        ],
-      });
-    }
-
-    // ============================================================
-    // No Approved User
-    // ============================================================
-
-    if (
-      approvedByStack.length ===
+      approvalActionStack.length ===
       0
     ) {
-      approvedByStack.push({
+      approvalActionStack.push({
         text:
           "-",
 
@@ -11205,14 +11709,14 @@ const generateRGPDetailPdf = async (data) => {
               true,
 
             widths: [
-              28,  // Sr.No.
-              120, // Item Name
-              105, // Specification
-              32,  // Qty.
-              35,  // Unit
-              42,  // Rate
-              75,  // Make / Model
-              45,  // Serial No.
+              28,
+              120,
+              105,
+              32,
+              35,
+              42,
+              75,
+              45,
             ],
 
             body:
@@ -11342,12 +11846,12 @@ const generateRGPDetailPdf = async (data) => {
                 },
 
                 // ================================================
-                // Checked & Approved By
+                // Approval Details
                 // ================================================
 
                 {
                   text:
-                    "Checked & Approved By",
+                    "Approval Details",
 
                   bold:
                     true,
@@ -11364,12 +11868,12 @@ const generateRGPDetailPdf = async (data) => {
                 },
 
                 // ================================================
-                // Approval Names
+                // Approved / Rejected / Cancelled By
                 // ================================================
 
                 {
                   stack:
-                    approvedByStack,
+                    approvalActionStack,
                 },
               ],
             },
@@ -11696,7 +12200,6 @@ const generateRGPDetailPdf = async (data) => {
     );
   }
 };
-
 
 // ===========================================================================================NRGP
 // ============================================================Helpers
