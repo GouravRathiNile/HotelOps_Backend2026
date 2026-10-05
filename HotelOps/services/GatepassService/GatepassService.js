@@ -10430,7 +10430,11 @@ const getRGPListReportPdf = async (data) => {
 // ============================================================Department Wise Report PDF
 const getRGPDepartmentWiseReportPdf = async (data) => {
   try {
-    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const organizationName =
+      await getRGPReportOrganizationName(
+        data.OrganizationID,
+      );
+
     const values = [];
 
     const conditions = [
@@ -10499,7 +10503,9 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
 
     if (data.Search) {
       values.push(
-        `%${String(data.Search).trim()}%`,
+        `%${String(
+          data.Search,
+        ).trim()}%`,
       );
 
       conditions.push(
@@ -10512,8 +10518,7 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
 
     // ============================================================
     // Department Wise Report
-    // SAME QUERY / SAME CONDITIONS AS GET API
-    // Only pagination removed for PDF
+    // SAME CONDITIONS AS GET API
     // ============================================================
 
     const result =
@@ -10527,46 +10532,218 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
             'Unknown'
           ) AS DepartmentName,
 
+          -- ======================================================
+          -- Total RGP
+          -- ======================================================
+
           COUNT(
             DISTINCT m.RGPID
           )::BIGINT AS TotalRGP,
 
-          COUNT(
-            DISTINCT m.RGPID
-          ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'PENDING',
-                'APPROVED'
-              )
-          )::BIGINT AS OpenRGP,
+          -- ======================================================
+          -- Pending RGP
+          --
+          -- At least one approval is Pending
+          -- AND no approval is Rejected / Cancelled
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'CHECKED OUT',
-                'RETURN PENDING'
+            WHERE
+
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) = 'PENDING'
               )
+
+              AND NOT EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) IN (
+                    'REJECTED',
+                    'CANCELLED'
+                  )
+              )
+          )::BIGINT AS PendingRGP,
+
+          -- ======================================================
+          -- Approved RGP
+          --
+          -- Approval rows must exist
+          -- AND every active approval must be APPROVED
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE
+
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+              )
+
+              AND NOT EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) <> 'APPROVED'
+              )
+          )::BIGINT AS ApprovedRGP,
+
+          -- ======================================================
+          -- Rejected RGP
+          --
+          -- Any approval is REJECTED
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval a
+
+              WHERE a.RGPID =
+                      m.RGPID
+
+                AND a.IsDeleted =
+                      FALSE
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      a.Status,
+                      ''
+                    )
+                  )
+                ) = 'REJECTED'
+            )
+          )::BIGINT AS RejectedRGP,
+
+          -- ======================================================
+          -- Cancelled RGP
+          --
+          -- Any approval is CANCELLED
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval a
+
+              WHERE a.RGPID =
+                      m.RGPID
+
+                AND a.IsDeleted =
+                      FALSE
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      a.Status,
+                      ''
+                    )
+                  )
+                ) = 'CANCELLED'
+            )
+          )::BIGINT AS CancelledRGP,
+
+          -- ======================================================
+          -- Out RGP
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE UPPER(
+              TRIM(
+                COALESCE(
+                  m.Status,
+                  ''
+                )
+              )
+            ) = 'CHECKED OUT'
           )::BIGINT AS OutRGP,
 
-          COUNT(
-            DISTINCT m.RGPID
-          ) FILTER (
-            WHERE UPPER(m.Status)
-              = 'RETURNED'
-          )::BIGINT AS ClosedRGP,
+          -- ======================================================
+          -- Closed RGP
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'CANCELLED',
-                'REJECTED'
+            WHERE UPPER(
+              TRIM(
+                COALESCE(
+                  m.Status,
+                  ''
+                )
               )
-          )::BIGINT AS CancelledRGP,
+            ) = 'RETURNED'
+          )::BIGINT AS ClosedRGP,
+
+          -- ======================================================
+          -- Overdue RGP
+          -- SAME 30 DAYS CONDITION AS GET API
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
@@ -10578,11 +10755,17 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
                   INTERVAL '30 days'
                 )
 
-              AND UPPER(m.Status)
-                IN (
-                  'CHECKED OUT',
-                  'RETURN PENDING'
+              AND UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
                 )
+              ) IN (
+                'CHECKED OUT',
+                'RETURN PENDING'
+              )
           )::BIGINT AS OverdueRGP
 
         FROM Gatepass_RGP_Entry_Master m
@@ -10605,7 +10788,8 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
       );
 
     // ============================================================
-    // SAME RESPONSE MAPPING AS GET API
+    // Response Mapping
+    // SAME AS UPDATED GET API
     // ============================================================
 
     const reportData =
@@ -10624,9 +10808,24 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
               row.totalrgp,
             ),
 
-          OpenRGP:
+          PendingRGP:
             Number(
-              row.openrgp,
+              row.pendingrgp,
+            ),
+
+          ApprovedRGP:
+            Number(
+              row.approvedrgp,
+            ),
+
+          RejectedRGP:
+            Number(
+              row.rejectedrgp,
+            ),
+
+          CancelledRGP:
+            Number(
+              row.cancelledrgp,
             ),
 
           OutRGP:
@@ -10637,11 +10836,6 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
           ClosedRGP:
             Number(
               row.closedrgp,
-            ),
-
-          CancelledRGP:
-            Number(
-              row.cancelledrgp,
             ),
 
           OverdueRGP:
@@ -10670,9 +10864,17 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
           "landscape",
 
         metadata: [
-          { label: "Organization", value: organizationName },
           {
-            label: "From Date",
+            label:
+              "Organization",
+
+            value:
+              organizationName,
+          },
+          {
+            label:
+              "From Date",
+
             value:
               data.FromDate
                 ? formatDate(
@@ -10681,7 +10883,9 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
                 : "All",
           },
           {
-            label: "To Date",
+            label:
+              "To Date",
+
             value:
               data.ToDate
                 ? formatDate(
@@ -10690,7 +10894,9 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
                 : "All",
           },
           {
-            label: "Department",
+            label:
+              "Department",
+
             value:
               data.DepartmentName ||
               "All Department",
@@ -10699,45 +10905,92 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
 
         columns: [
           {
-            header: "Department",
-            key: "DepartmentName",
-            width: "*",
+            header:
+              "Department",
+            key:
+              "DepartmentName",
+            width:
+              "*",
           },
           {
-            header: "Total RGP",
-            key: "TotalRGP",
-            width: 70,
-            align: "center",
+            header:
+              "Total RGP",
+            key:
+              "TotalRGP",
+            width:
+              55,
+            align:
+              "center",
           },
           {
-            header: "Open RGP",
-            key: "OpenRGP",
-            width: 70,
-            align: "center",
+            header:
+              "Pending",
+            key:
+              "PendingRGP",
+            width:
+              55,
+            align:
+              "center",
           },
           {
-            header: "Out RGP",
-            key: "OutRGP",
-            width: 70,
-            align: "center",
+            header:
+              "Approved",
+            key:
+              "ApprovedRGP",
+            width:
+              60,
+            align:
+              "center",
           },
           {
-            header: "Closed RGP",
-            key: "ClosedRGP",
-            width: 75,
-            align: "center",
+            header:
+              "Rejected",
+            key:
+              "RejectedRGP",
+            width:
+              60,
+            align:
+              "center",
           },
           {
-            header: "Cancelled RGP",
-            key: "CancelledRGP",
-            width: 85,
-            align: "center",
+            header:
+              "Cancelled",
+            key:
+              "CancelledRGP",
+            width:
+              60,
+            align:
+              "center",
           },
           {
-            header: "Overdue RGP",
-            key: "OverdueRGP",
-            width: 80,
-            align: "center",
+            header:
+              "Out",
+            key:
+              "OutRGP",
+            width:
+              45,
+            align:
+              "center",
+          },
+          {
+            header:
+              "Closed",
+            key:
+              "ClosedRGP",
+            width:
+              50,
+            align:
+              "center",
+          },
+          {
+            header:
+              "Overdue",
+            key:
+              "OverdueRGP",
+            width:
+              55,
+            align:
+              "center",
           },
         ],
 
@@ -10746,10 +10999,14 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
       });
 
     return {
-      success: true,
+      success:
+        true,
+
       message:
         "RGP department wise report PDF generated successfully.",
-      data: pdfBuffer,
+
+      data:
+        pdfBuffer,
     };
   } catch (error) {
     console.error(
@@ -10766,7 +11023,11 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
 // ============================================================RGP Vendor Wise Report PDF
 const getRGPVendorWiseReportPdf = async (data) => {
   try {
-    const organizationName = await getRGPReportOrganizationName(data.OrganizationID);
+    const organizationName =
+      await getRGPReportOrganizationName(
+        data.OrganizationID,
+      );
+
     const values = [];
 
     const conditions = [
@@ -10863,8 +11124,7 @@ const getRGPVendorWiseReportPdf = async (data) => {
 
     // ============================================================
     // Vendor Wise Report
-    // SAME QUERY / SAME CONDITIONS AS GET API
-    // Only LIMIT/OFFSET removed for PDF
+    // SAME CONDITIONS AS UPDATED GET API
     // ============================================================
 
     const result =
@@ -10873,46 +11133,220 @@ const getRGPVendorWiseReportPdf = async (data) => {
         SELECT
           m.VendorName,
 
+          -- ======================================================
+          -- Total RGP
+          -- ======================================================
+
           COUNT(
             DISTINCT m.RGPID
           )::BIGINT AS TotalRGP,
 
-          COUNT(
-            DISTINCT m.RGPID
-          ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'PENDING',
-                'APPROVED'
-              )
-          )::BIGINT AS OpenRGP,
+          -- ======================================================
+          -- Pending RGP
+          --
+          -- At least one active approval is Pending
+          -- AND no active approval is Rejected / Cancelled
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'CHECKED OUT',
-                'RETURN PENDING'
+            WHERE
+
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) = 'PENDING'
               )
+
+              AND NOT EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) IN (
+                    'REJECTED',
+                    'CANCELLED'
+                  )
+              )
+          )::BIGINT AS PendingRGP,
+
+          -- ======================================================
+          -- Approved RGP
+          --
+          -- Approval rows must exist
+          -- AND all active approvals must be APPROVED
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE
+
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+              )
+
+              AND NOT EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) <> 'APPROVED'
+              )
+          )::BIGINT AS ApprovedRGP,
+
+          -- ======================================================
+          -- Rejected RGP
+          --
+          -- Any active approval is REJECTED
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval a
+
+              WHERE a.RGPID =
+                      m.RGPID
+
+                AND a.IsDeleted =
+                      FALSE
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      a.Status,
+                      ''
+                    )
+                  )
+                ) = 'REJECTED'
+            )
+          )::BIGINT AS RejectedRGP,
+
+          -- ======================================================
+          -- Cancelled RGP
+          --
+          -- Any active approval is CANCELLED
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE EXISTS (
+              SELECT 1
+
+              FROM Gatepass_RGP_Approval a
+
+              WHERE a.RGPID =
+                      m.RGPID
+
+                AND a.IsDeleted =
+                      FALSE
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      a.Status,
+                      ''
+                    )
+                  )
+                ) = 'CANCELLED'
+            )
+          )::BIGINT AS CancelledRGP,
+
+          -- ======================================================
+          -- Out RGP
+          -- Master Status = CHECKED OUT
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE UPPER(
+              TRIM(
+                COALESCE(
+                  m.Status,
+                  ''
+                )
+              )
+            ) = 'CHECKED OUT'
           )::BIGINT AS OutRGP,
 
-          COUNT(
-            DISTINCT m.RGPID
-          ) FILTER (
-            WHERE UPPER(m.Status)
-              = 'RETURNED'
-          )::BIGINT AS ClosedRGP,
+          -- ======================================================
+          -- Closed RGP
+          -- Master Status = RETURNED
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'CANCELLED',
-                'REJECTED'
+            WHERE UPPER(
+              TRIM(
+                COALESCE(
+                  m.Status,
+                  ''
+                )
               )
-          )::BIGINT AS CancelledRGP,
+            ) = 'RETURNED'
+          )::BIGINT AS ClosedRGP,
+
+          -- ======================================================
+          -- Overdue RGP
+          -- SAME EXISTING 30 DAYS CONDITION
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
@@ -10924,11 +11358,17 @@ const getRGPVendorWiseReportPdf = async (data) => {
                   INTERVAL '30 days'
                 )
 
-              AND UPPER(m.Status)
-                IN (
-                  'CHECKED OUT',
-                  'RETURN PENDING'
+              AND UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
                 )
+              ) IN (
+                'CHECKED OUT',
+                'RETURN PENDING'
+              )
           )::BIGINT AS OverdueRGP
 
         FROM Gatepass_RGP_Entry_Master m
@@ -10946,7 +11386,7 @@ const getRGPVendorWiseReportPdf = async (data) => {
       );
 
     // ============================================================
-    // SAME DATA MAPPING AS GET API
+    // SAME DATA MAPPING AS UPDATED GET API
     // ============================================================
 
     const reportData =
@@ -10960,9 +11400,24 @@ const getRGPVendorWiseReportPdf = async (data) => {
               row.totalrgp,
             ),
 
-          OpenRGP:
+          PendingRGP:
             Number(
-              row.openrgp,
+              row.pendingrgp,
+            ),
+
+          ApprovedRGP:
+            Number(
+              row.approvedrgp,
+            ),
+
+          RejectedRGP:
+            Number(
+              row.rejectedrgp,
+            ),
+
+          CancelledRGP:
+            Number(
+              row.cancelledrgp,
             ),
 
           OutRGP:
@@ -10973,11 +11428,6 @@ const getRGPVendorWiseReportPdf = async (data) => {
           ClosedRGP:
             Number(
               row.closedrgp,
-            ),
-
-          CancelledRGP:
-            Number(
-              row.cancelledrgp,
             ),
 
           OverdueRGP:
@@ -11006,9 +11456,17 @@ const getRGPVendorWiseReportPdf = async (data) => {
           "landscape",
 
         metadata: [
-          { label: "Organization", value: organizationName },
           {
-            label: "From Date",
+            label:
+              "Organization",
+
+            value:
+              organizationName,
+          },
+          {
+            label:
+              "From Date",
+
             value:
               data.FromDate
                 ? formatDate(
@@ -11017,7 +11475,9 @@ const getRGPVendorWiseReportPdf = async (data) => {
                 : "All",
           },
           {
-            label: "To Date",
+            label:
+              "To Date",
+
             value:
               data.ToDate
                 ? formatDate(
@@ -11026,7 +11486,9 @@ const getRGPVendorWiseReportPdf = async (data) => {
                 : "All",
           },
           {
-            label: "Vendor",
+            label:
+              "Vendor",
+
             value:
               data.VendorName ||
               "All Vendor",
@@ -11035,45 +11497,92 @@ const getRGPVendorWiseReportPdf = async (data) => {
 
         columns: [
           {
-            header: "Vendor Name",
-            key: "VendorName",
-            width: "*",
+            header:
+              "Vendor Name",
+            key:
+              "VendorName",
+            width:
+              "*",
           },
           {
-            header: "Total RGP",
-            key: "TotalRGP",
-            width: 75,
-            align: "center",
+            header:
+              "Total RGP",
+            key:
+              "TotalRGP",
+            width:
+              55,
+            align:
+              "center",
           },
           {
-            header: "Open RGP",
-            key: "OpenRGP",
-            width: 75,
-            align: "center",
+            header:
+              "Pending",
+            key:
+              "PendingRGP",
+            width:
+              55,
+            align:
+              "center",
           },
           {
-            header: "Out RGP",
-            key: "OutRGP",
-            width: 75,
-            align: "center",
+            header:
+              "Approved",
+            key:
+              "ApprovedRGP",
+            width:
+              60,
+            align:
+              "center",
           },
           {
-            header: "Closed RGP",
-            key: "ClosedRGP",
-            width: 80,
-            align: "center",
+            header:
+              "Rejected",
+            key:
+              "RejectedRGP",
+            width:
+              60,
+            align:
+              "center",
           },
           {
-            header: "Cancelled RGP",
-            key: "CancelledRGP",
-            width: 90,
-            align: "center",
+            header:
+              "Cancelled",
+            key:
+              "CancelledRGP",
+            width:
+              60,
+            align:
+              "center",
           },
           {
-            header: "Overdue RGP",
-            key: "OverdueRGP",
-            width: 85,
-            align: "center",
+            header:
+              "Out",
+            key:
+              "OutRGP",
+            width:
+              45,
+            align:
+              "center",
+          },
+          {
+            header:
+              "Closed",
+            key:
+              "ClosedRGP",
+            width:
+              50,
+            align:
+              "center",
+          },
+          {
+            header:
+              "Overdue",
+            key:
+              "OverdueRGP",
+            width:
+              55,
+            align:
+              "center",
           },
         ],
 
@@ -11082,10 +11591,14 @@ const getRGPVendorWiseReportPdf = async (data) => {
       });
 
     return {
-      success: true,
+      success:
+        true,
+
       message:
         "RGP vendor wise report PDF generated successfully.",
-      data: pdfBuffer,
+
+      data:
+        pdfBuffer,
     };
   } catch (error) {
     console.error(
