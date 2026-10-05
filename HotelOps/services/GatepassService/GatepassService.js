@@ -7964,12 +7964,14 @@ const getRGPListReport = async (data) => {
 // ============================================================Department Wise Report
 const getRGPDepartmentWiseReport = async (data) => {
   try {
-    const page = Number(data.page) || 1;
+    const page =
+      Number(data.page) || 1;
 
-    const pageSize = Math.min(
-      Number(data.PageSize) || 10,
-      100,
-    );
+    const pageSize =
+      Math.min(
+        Number(data.PageSize) || 10,
+        100,
+      );
 
     const offset =
       (page - 1) * pageSize;
@@ -8042,7 +8044,9 @@ const getRGPDepartmentWiseReport = async (data) => {
 
     if (data.Search) {
       values.push(
-        `%${String(data.Search).trim()}%`,
+        `%${String(
+          data.Search,
+        ).trim()}%`,
       );
 
       conditions.push(
@@ -8051,7 +8055,9 @@ const getRGPDepartmentWiseReport = async (data) => {
     }
 
     const whereClause =
-      `WHERE ${conditions.join(" AND ")}`;
+      `WHERE ${conditions.join(
+        " AND ",
+      )}`;
 
     // ============================================================
     // Count Departments
@@ -8119,46 +8125,223 @@ const getRGPDepartmentWiseReport = async (data) => {
             'Unknown'
           ) AS DepartmentName,
 
+          -- ======================================================
+          -- Total RGP
+          -- ======================================================
+
           COUNT(
             DISTINCT m.RGPID
           )::BIGINT AS TotalRGP,
 
+          -- ======================================================
+          -- Pending RGP
+          --
+          -- At least one approval is Pending.
+          -- Rejected / Cancelled RGP pending me count nahi honge.
+          -- ======================================================
+
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'PENDING',
-                'APPROVED'
+            WHERE
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) = 'PENDING'
               )
-          )::BIGINT AS OpenRGP,
 
-          COUNT(
-            DISTINCT m.RGPID
-          ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'CHECKED OUT',
-                'RETURN PENDING'
+              AND NOT EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) IN (
+                    'REJECTED',
+                    'CANCELLED'
+                  )
               )
-          )::BIGINT AS OutRGP,
+          )::BIGINT AS PendingRGP,
+
+          -- ======================================================
+          -- Approved RGP
+          --
+          -- Approval rows honi chahiye
+          -- AND
+          -- All approval rows Approved honi chahiye.
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
-            WHERE UPPER(m.Status)
-              = 'RETURNED'
-          )::BIGINT AS ClosedRGP,
+            WHERE
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+              )
+
+              AND NOT EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) <> 'APPROVED'
+              )
+          )::BIGINT AS ApprovedRGP,
+
+          -- ======================================================
+          -- Rejected RGP
+          --
+          -- Ek bhi approval Rejected hai to RejectedRGP.
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'CANCELLED',
-                'REJECTED'
+            WHERE
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        ''
+                      )
+                    )
+                  ) = 'REJECTED'
+              )
+          )::BIGINT AS RejectedRGP,
+
+          -- ======================================================
+          -- Cancelled RGP
+          --
+          -- Ek bhi approval Cancelled hai to CancelledRGP.
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        ''
+                      )
+                    )
+                  ) = 'CANCELLED'
               )
           )::BIGINT AS CancelledRGP,
+
+          -- ======================================================
+          -- Out RGP
+          -- Checkout completed
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE
+              UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
+                )
+              ) = 'CHECKED OUT'
+          )::BIGINT AS OutRGP,
+
+          -- ======================================================
+          -- Closed / Returned RGP
+          -- Master RETURNED means all items returned.
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE
+              UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
+                )
+              ) = 'RETURNED'
+          )::BIGINT AS ClosedRGP,
+
+          -- ======================================================
+          -- Overdue RGP
+          -- Same Existing Condition
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
@@ -8170,11 +8353,17 @@ const getRGPDepartmentWiseReport = async (data) => {
                   INTERVAL '30 days'
                 )
 
-              AND UPPER(m.Status)
-                IN (
-                  'CHECKED OUT',
-                  'RETURN PENDING'
+              AND UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
                 )
+              ) IN (
+                'CHECKED OUT',
+                'RETURN PENDING'
+              )
           )::BIGINT AS OverdueRGP
 
         FROM Gatepass_RGP_Entry_Master m
@@ -8199,6 +8388,10 @@ const getRGPDepartmentWiseReport = async (data) => {
         reportValues,
       );
 
+    // ============================================================
+    // Map Response
+    // ============================================================
+
     const reportData =
       result.rows.map(
         (row) => ({
@@ -8215,9 +8408,24 @@ const getRGPDepartmentWiseReport = async (data) => {
               row.totalrgp,
             ),
 
-          OpenRGP:
+          PendingRGP:
             Number(
-              row.openrgp,
+              row.pendingrgp,
+            ),
+
+          ApprovedRGP:
+            Number(
+              row.approvedrgp,
+            ),
+
+          RejectedRGP:
+            Number(
+              row.rejectedrgp,
+            ),
+
+          CancelledRGP:
+            Number(
+              row.cancelledrgp,
             ),
 
           OutRGP:
@@ -8230,17 +8438,16 @@ const getRGPDepartmentWiseReport = async (data) => {
               row.closedrgp,
             ),
 
-          CancelledRGP:
-            Number(
-              row.cancelledrgp,
-            ),
-
           OverdueRGP:
             Number(
               row.overduergp,
             ),
         }),
       );
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return ok(
       "RGP department wise report fetched successfully.",
@@ -8435,46 +8642,223 @@ const getRGPVendorWiseReport = async (data) => {
         SELECT
           m.VendorName,
 
+          -- ======================================================
+          -- Total RGP
+          -- ======================================================
+
           COUNT(
             DISTINCT m.RGPID
           )::BIGINT AS TotalRGP,
 
+          -- ======================================================
+          -- Pending RGP
+          --
+          -- Ek bhi approval Pending hai.
+          -- Rejected / Cancelled nahi hona chahiye.
+          -- ======================================================
+
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'PENDING',
-                'APPROVED'
+            WHERE
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) = 'PENDING'
               )
-          )::BIGINT AS OpenRGP,
 
-          COUNT(
-            DISTINCT m.RGPID
-          ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'CHECKED OUT',
-                'RETURN PENDING'
+              AND NOT EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) IN (
+                    'REJECTED',
+                    'CANCELLED'
+                  )
               )
-          )::BIGINT AS OutRGP,
+          )::BIGINT AS PendingRGP,
+
+          -- ======================================================
+          -- Approved RGP
+          --
+          -- Approval rows honi chahiye.
+          -- Saare approval stages Approved hone chahiye.
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
-            WHERE UPPER(m.Status)
-              = 'RETURNED'
-          )::BIGINT AS ClosedRGP,
+            WHERE
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+              )
+
+              AND NOT EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        'PENDING'
+                      )
+                    )
+                  ) <> 'APPROVED'
+              )
+          )::BIGINT AS ApprovedRGP,
+
+          -- ======================================================
+          -- Rejected RGP
+          --
+          -- Ek bhi approval Rejected hai.
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
-            WHERE UPPER(m.Status)
-              IN (
-                'CANCELLED',
-                'REJECTED'
+            WHERE
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        ''
+                      )
+                    )
+                  ) = 'REJECTED'
+              )
+          )::BIGINT AS RejectedRGP,
+
+          -- ======================================================
+          -- Cancelled RGP
+          --
+          -- Ek bhi approval Cancelled hai.
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE
+              EXISTS (
+                SELECT 1
+
+                FROM Gatepass_RGP_Approval a
+
+                WHERE a.RGPID =
+                        m.RGPID
+
+                  AND a.IsDeleted =
+                        FALSE
+
+                  AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        a.Status,
+                        ''
+                      )
+                    )
+                  ) = 'CANCELLED'
               )
           )::BIGINT AS CancelledRGP,
+
+          -- ======================================================
+          -- Out RGP
+          -- Master Status = CHECKED OUT
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE
+              UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
+                )
+              ) = 'CHECKED OUT'
+          )::BIGINT AS OutRGP,
+
+          -- ======================================================
+          -- Closed RGP
+          -- Master Status = RETURNED
+          -- All items returned
+          -- ======================================================
+
+          COUNT(
+            DISTINCT m.RGPID
+          ) FILTER (
+            WHERE
+              UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
+                )
+              ) = 'RETURNED'
+          )::BIGINT AS ClosedRGP,
+
+          -- ======================================================
+          -- Overdue RGP
+          -- Same Existing Logic
+          -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
@@ -8486,11 +8870,17 @@ const getRGPVendorWiseReport = async (data) => {
                   INTERVAL '30 days'
                 )
 
-              AND UPPER(m.Status)
-                IN (
-                  'CHECKED OUT',
-                  'RETURN PENDING'
+              AND UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
                 )
+              ) IN (
+                'CHECKED OUT',
+                'RETURN PENDING'
+              )
           )::BIGINT AS OverdueRGP
 
         FROM Gatepass_RGP_Entry_Master m
@@ -8510,6 +8900,10 @@ const getRGPVendorWiseReport = async (data) => {
         reportValues,
       );
 
+    // ============================================================
+    // Map Response
+    // ============================================================
+
     const reportData =
       result.rows.map(
         (row) => ({
@@ -8521,9 +8915,24 @@ const getRGPVendorWiseReport = async (data) => {
               row.totalrgp,
             ),
 
-          OpenRGP:
+          PendingRGP:
             Number(
-              row.openrgp,
+              row.pendingrgp,
+            ),
+
+          ApprovedRGP:
+            Number(
+              row.approvedrgp,
+            ),
+
+          RejectedRGP:
+            Number(
+              row.rejectedrgp,
+            ),
+
+          CancelledRGP:
+            Number(
+              row.cancelledrgp,
             ),
 
           OutRGP:
@@ -8536,17 +8945,16 @@ const getRGPVendorWiseReport = async (data) => {
               row.closedrgp,
             ),
 
-          CancelledRGP:
-            Number(
-              row.cancelledrgp,
-            ),
-
           OverdueRGP:
             Number(
               row.overduergp,
             ),
         }),
       );
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return ok(
       "RGP vendor wise report fetched successfully.",
