@@ -14941,6 +14941,21 @@ const mapNRGPApproval = (row) => ({
   Remarks:
     row.remarks,
 });
+const normalizeNRGPApprovalRole = (role) => {
+  const normalizedRole =
+    String(role || "")
+      .trim()
+      .toUpperCase();
+
+  if (
+    normalizedRole === "FC" ||
+    normalizedRole === "DOF"
+  ) {
+    return "FC";
+  }
+
+  return normalizedRole;
+};
 // ========================Attach NRGP Related Data
 const attachNRGPRelatedData = async (rows) => {
   if (!rows.length) {
@@ -16531,19 +16546,23 @@ const processNRGPApproval = async (data) => {
   const client = await pool.connect();
 
   try {
-    const NRGPID = Number(data.NRGPID);
+    const NRGPID =
+      Number(data.NRGPID);
 
-    const action = String(
-      data.Action || "",
-    )
-      .trim()
-      .toUpperCase();
+    const action =
+      String(data.Action || "")
+        .trim()
+        .toUpperCase();
 
-    const userType = String(
-      data.UserType || "",
-    )
-      .trim()
-      .toUpperCase();
+    // ============================================================
+    // User Role
+    // FC / DOF are treated as same Finance role
+    // ============================================================
+
+    const userType =
+      normalizeNRGPApprovalRole(
+        data.UserType,
+      );
 
     // ============================================================
     // Validation
@@ -16560,9 +16579,11 @@ const processNRGPApproval = async (data) => {
     }
 
     if (
-      !["APPROVE", "REJECT", "CANCEL"].includes(
-        action,
-      )
+      ![
+        "APPROVE",
+        "REJECT",
+        "CANCEL",
+      ].includes(action)
     ) {
       return fail(
         "Action must be APPROVE, REJECT or CANCEL.",
@@ -16581,11 +16602,13 @@ const processNRGPApproval = async (data) => {
     // Begin Transaction
     // ============================================================
 
-    await client.query("BEGIN");
+    await client.query(
+      "BEGIN",
+    );
 
     // ============================================================
     // Get NRGP
-    // Lock record while processing approval
+    // Lock master record while approval is processing
     // ============================================================
 
     const masterResult =
@@ -16596,16 +16619,29 @@ const processNRGPApproval = async (data) => {
           NRGPNumber,
           OrganizationID,
           Status
+
         FROM Gatepass_NRGP_Entry_Master
+
         WHERE NRGPID = $1
           AND IsDeleted = FALSE
+
         FOR UPDATE;
         `,
-        [NRGPID],
+        [
+          NRGPID,
+        ],
       );
 
-    if (!masterResult.rows.length) {
-      await client.query("ROLLBACK");
+    // ============================================================
+    // NRGP Not Found
+    // ============================================================
+
+    if (
+      !masterResult.rows.length
+    ) {
+      await client.query(
+        "ROLLBACK",
+      );
 
       return fail(
         "NRGP record not found.",
@@ -16617,7 +16653,9 @@ const processNRGPApproval = async (data) => {
       masterResult.rows[0];
 
     const currentStatus =
-      String(master.status || "")
+      String(
+        master.status || "",
+      )
         .trim()
         .toUpperCase();
 
@@ -16630,9 +16668,13 @@ const processNRGPApproval = async (data) => {
         "APPROVED",
         "REJECTED",
         "CANCELLED",
-      ].includes(currentStatus)
+      ].includes(
+        currentStatus,
+      )
     ) {
-      await client.query("ROLLBACK");
+      await client.query(
+        "ROLLBACK",
+      );
 
       return fail(
         `NRGP is already ${currentStatus}.`,
@@ -16642,6 +16684,9 @@ const processNRGPApproval = async (data) => {
 
     // ============================================================
     // Get Current Pending Approval
+    //
+    // Sequential approval:
+    // Lowest pending ApprovalOrder is current approval.
     // ============================================================
 
     const currentApprovalResult =
@@ -16655,19 +16700,43 @@ const processNRGPApproval = async (data) => {
           ApprovalRole,
           ApprovalOrder,
           Status
+
         FROM Gatepass_NRGP_Approval
+
         WHERE NRGPID = $1
           AND IsDeleted = FALSE
-          AND UPPER(Status) = 'PENDING'
-        ORDER BY ApprovalOrder ASC
+          AND UPPER(
+                TRIM(
+                  COALESCE(
+                    Status,
+                    'PENDING'
+                  )
+                )
+              ) = 'PENDING'
+
+        ORDER BY
+          ApprovalOrder ASC
+
         LIMIT 1
+
         FOR UPDATE;
         `,
-        [NRGPID],
+        [
+          NRGPID,
+        ],
       );
 
-    if (!currentApprovalResult.rows.length) {
-      await client.query("ROLLBACK");
+    // ============================================================
+    // No Pending Approval
+    // ============================================================
+
+    if (
+      !currentApprovalResult
+        .rows.length
+    ) {
+      await client.query(
+        "ROLLBACK",
+      );
 
       return fail(
         "No pending approval found for this NRGP.",
@@ -16676,21 +16745,39 @@ const processNRGPApproval = async (data) => {
     }
 
     const currentApproval =
-      currentApprovalResult.rows[0];
+      currentApprovalResult
+        .rows[0];
+
+    // ============================================================
+    // Normalize Current Approval Role
+    //
+    // Examples:
+    // FC  -> FC
+    // DOF -> FC
+    // HOD -> HOD
+    // GM  -> GM
+    // ============================================================
 
     const approvalRole =
-      String(
-        currentApproval.approvalrole || "",
-      )
-        .trim()
-        .toUpperCase();
+      normalizeNRGPApprovalRole(
+        currentApproval
+          .approvalrole,
+      );
 
     // ============================================================
     // Role Validation
+    //
+    // FC and DOF match each other.
+    // Other roles must match exactly.
     // ============================================================
 
-    if (approvalRole !== userType) {
-      await client.query("ROLLBACK");
+    if (
+      approvalRole !==
+      userType
+    ) {
+      await client.query(
+        "ROLLBACK",
+      );
 
       return fail(
         `Current approval is pending with ${currentApproval.approvalrole}.`,
@@ -16702,70 +16789,129 @@ const processNRGPApproval = async (data) => {
     // APPROVE
     // ============================================================
 
-    if (action === "APPROVE") {
+    if (
+      action ===
+      "APPROVE"
+    ) {
+      // ==========================================================
+      // Approve Current Stage
+      // ==========================================================
+
       await client.query(
         `
         UPDATE Gatepass_NRGP_Approval
+
         SET
           Status = 'Approved',
-          StatusDateTime = CURRENT_TIMESTAMP,
+
+          StatusDateTime =
+            CURRENT_TIMESTAMP,
+
           ActionBy = $1,
+
           Remarks = $2,
+
           ModifiedBy = $1,
-          ModifiedDate = CURRENT_TIMESTAMP
+
+          ModifiedDate =
+            CURRENT_TIMESTAMP
+
         WHERE NRGPApprovalID = $3
           AND IsDeleted = FALSE;
         `,
         [
-          data.UserID || null,
+          data.UserID ||
+            null,
+
           data.Remarks
-            ? String(data.Remarks).trim()
+            ? String(
+                data.Remarks,
+              ).trim()
             : null,
-          currentApproval.nrgpapprovalid,
+
+          currentApproval
+            .nrgpapprovalid,
         ],
       );
 
-      // ============================================================
+      // ==========================================================
       // Check Remaining Pending Approvals
-      // ============================================================
+      // ==========================================================
 
       const pendingResult =
         await client.query(
           `
           SELECT
             NRGPApprovalID
+
           FROM Gatepass_NRGP_Approval
+
           WHERE NRGPID = $1
             AND IsDeleted = FALSE
-            AND UPPER(Status) = 'PENDING'
+
+            AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      Status,
+                      'PENDING'
+                    )
+                  )
+                ) = 'PENDING'
+
+          ORDER BY
+            ApprovalOrder ASC
+
           LIMIT 1;
           `,
-          [NRGPID],
+          [
+            NRGPID,
+          ],
         );
 
-      // ============================================================
-      // All Approvals Completed
-      // ============================================================
+      // ==========================================================
+      // No Pending Approval
+      // All Approval Stages Completed
+      // ==========================================================
 
-      if (!pendingResult.rows.length) {
+      if (
+        !pendingResult
+          .rows.length
+      ) {
         await client.query(
           `
           UPDATE Gatepass_NRGP_Entry_Master
+
           SET
             Status = 'APPROVED',
+
             ModifiedBy = $1,
-            ModifiedDate = CURRENT_TIMESTAMP
+
+            ModifiedDate =
+              CURRENT_TIMESTAMP
+
           WHERE NRGPID = $2
             AND IsDeleted = FALSE;
           `,
           [
-            data.UserID || null,
+            data.UserID ||
+              null,
+
             NRGPID,
           ],
         );
       }
 
-      await client.query("COMMIT");
+      // ==========================================================
+      // Commit
+      // ==========================================================
+
+      await client.query(
+        "COMMIT",
+      );
+
+      // ==========================================================
+      // Response
+      // ==========================================================
 
       return ok(
         pendingResult.rows.length
@@ -16773,9 +16919,13 @@ const processNRGPApproval = async (data) => {
           : "NRGP fully approved successfully.",
         {
           NRGPID,
-          Action: "APPROVE",
+
+          Action:
+            "APPROVE",
+
           Status:
-            pendingResult.rows.length
+            pendingResult
+              .rows.length
               ? "PENDING"
               : "APPROVED",
         },
@@ -16786,53 +16936,96 @@ const processNRGPApproval = async (data) => {
     // REJECT
     // ============================================================
 
-    if (action === "REJECT") {
+    if (
+      action ===
+      "REJECT"
+    ) {
+      // ==========================================================
+      // Reject Current Approval Stage
+      // ==========================================================
+
       await client.query(
         `
         UPDATE Gatepass_NRGP_Approval
+
         SET
           Status = 'Rejected',
-          StatusDateTime = CURRENT_TIMESTAMP,
+
+          StatusDateTime =
+            CURRENT_TIMESTAMP,
+
           ActionBy = $1,
+
           Remarks = $2,
+
           ModifiedBy = $1,
-          ModifiedDate = CURRENT_TIMESTAMP
+
+          ModifiedDate =
+            CURRENT_TIMESTAMP
+
         WHERE NRGPApprovalID = $3
           AND IsDeleted = FALSE;
         `,
         [
-          data.UserID || null,
+          data.UserID ||
+            null,
+
           data.Remarks
-            ? String(data.Remarks).trim()
+            ? String(
+                data.Remarks,
+              ).trim()
             : null,
-          currentApproval.nrgpapprovalid,
+
+          currentApproval
+            .nrgpapprovalid,
         ],
       );
+
+      // ==========================================================
+      // Update Master Status
+      // ==========================================================
 
       await client.query(
         `
         UPDATE Gatepass_NRGP_Entry_Master
+
         SET
           Status = 'REJECTED',
+
           ModifiedBy = $1,
-          ModifiedDate = CURRENT_TIMESTAMP
+
+          ModifiedDate =
+            CURRENT_TIMESTAMP
+
         WHERE NRGPID = $2
           AND IsDeleted = FALSE;
         `,
         [
-          data.UserID || null,
+          data.UserID ||
+            null,
+
           NRGPID,
         ],
       );
 
-      await client.query("COMMIT");
+      // ==========================================================
+      // Commit
+      // ==========================================================
+
+      await client.query(
+        "COMMIT",
+      );
 
       return ok(
         "NRGP rejected successfully.",
         {
           NRGPID,
-          Action: "REJECT",
-          Status: "REJECTED",
+
+          Action:
+            "REJECT",
+
+          Status:
+            "REJECTED",
         },
       );
     }
@@ -16841,72 +17034,145 @@ const processNRGPApproval = async (data) => {
     // CANCEL
     // ============================================================
 
-    if (action === "CANCEL") {
+    if (
+      action ===
+      "CANCEL"
+    ) {
+      // ==========================================================
+      // Cancel Current Approval Stage
+      // ==========================================================
+
       await client.query(
         `
         UPDATE Gatepass_NRGP_Approval
+
         SET
           Status = 'Cancelled',
-          StatusDateTime = CURRENT_TIMESTAMP,
+
+          StatusDateTime =
+            CURRENT_TIMESTAMP,
+
           ActionBy = $1,
+
           Remarks = $2,
+
           ModifiedBy = $1,
-          ModifiedDate = CURRENT_TIMESTAMP
+
+          ModifiedDate =
+            CURRENT_TIMESTAMP
+
         WHERE NRGPApprovalID = $3
           AND IsDeleted = FALSE;
         `,
         [
-          data.UserID || null,
+          data.UserID ||
+            null,
+
           data.Remarks
-            ? String(data.Remarks).trim()
+            ? String(
+                data.Remarks,
+              ).trim()
             : null,
-          currentApproval.nrgpapprovalid,
+
+          currentApproval
+            .nrgpapprovalid,
         ],
       );
+
+      // ==========================================================
+      // Update Master Status
+      // ==========================================================
 
       await client.query(
         `
         UPDATE Gatepass_NRGP_Entry_Master
+
         SET
           Status = 'CANCELLED',
+
           ModifiedBy = $1,
-          ModifiedDate = CURRENT_TIMESTAMP
+
+          ModifiedDate =
+            CURRENT_TIMESTAMP
+
         WHERE NRGPID = $2
           AND IsDeleted = FALSE;
         `,
         [
-          data.UserID || null,
+          data.UserID ||
+            null,
+
           NRGPID,
         ],
       );
 
-      await client.query("COMMIT");
+      // ==========================================================
+      // Commit
+      // ==========================================================
+
+      await client.query(
+        "COMMIT",
+      );
 
       return ok(
         "NRGP cancelled successfully.",
         {
           NRGPID,
-          Action: "CANCEL",
-          Status: "CANCELLED",
+
+          Action:
+            "CANCEL",
+
+          Status:
+            "CANCELLED",
         },
       );
     }
 
+    // ============================================================
+    // Safety Rollback
+    // Normally execution never reaches here
+    // ============================================================
+
+    await client.query(
+      "ROLLBACK",
+    );
+
+    return fail(
+      "Unable to process NRGP approval.",
+      400,
+    );
   } catch (error) {
+    // ============================================================
+    // Rollback
+    // ============================================================
+
     try {
-      await client.query("ROLLBACK");
-    } catch (rollbackError) {
+      await client.query(
+        "ROLLBACK",
+      );
+    } catch (
+      rollbackError
+    ) {
       console.error(
         "Process NRGP Approval Rollback Error:",
         rollbackError.message,
       );
     }
 
+    console.error(
+      "Process NRGP Approval Error:",
+      error,
+    );
+
     return databaseFailure(
       error,
       "Process NRGP approval",
     );
   } finally {
+    // ============================================================
+    // Release DB Client
+    // ============================================================
+
     client.release();
   }
 };
@@ -20125,6 +20391,7 @@ const generateNRGPDetailPdf = async (data) => {
       ).map((shape) => {
         const scaledShape = {
           ...shape,
+
           lineWidth:
             (shape.lineWidth || 1) *
             iconScale,
@@ -20167,6 +20434,7 @@ const generateNRGPDetailPdf = async (data) => {
                 x:
                   point.x *
                   iconScale,
+
                 y:
                   point.y *
                   iconScale,
@@ -20189,8 +20457,10 @@ const generateNRGPDetailPdf = async (data) => {
       columns: [
         {
           width: 22,
+
           canvas:
             fieldIcon(icon),
+
           margin: [
             0,
             0,
@@ -20198,11 +20468,16 @@ const generateNRGPDetailPdf = async (data) => {
             0,
           ],
         },
+
         {
           width: "*",
-          text: label,
+
+          text:
+            label,
+
           style:
             "fieldLabel",
+
           margin: [
             2,
             3,
@@ -20269,11 +20544,18 @@ const generateNRGPDetailPdf = async (data) => {
     const sectionHeading = (
       title,
     ) => ({
-      text: title,
-      fontSize: 11,
-      bold: true,
+      text:
+        title,
+
+      fontSize:
+        11,
+
+      bold:
+        true,
+
       color:
         COLORS.navy,
+
       margin: [
         0,
         4,
@@ -20305,41 +20587,76 @@ const generateNRGPDetailPdf = async (data) => {
     const itemDetailsBody = [
       [
         {
-          text: "Sr.No.",
-          style: "tableHeader",
-          alignment: "center",
+          text:
+            "Sr.No.",
+
+          style:
+            "tableHeader",
+
+          alignment:
+            "center",
         },
+
         {
-          text: "Item Name",
-          style: "tableHeader",
+          text:
+            "Item Name",
+
+          style:
+            "tableHeader",
         },
+
         {
-          text: "Specification",
-          style: "tableHeader",
+          text:
+            "Specification",
+
+          style:
+            "tableHeader",
         },
+
         {
-          text: "Qty.",
-          style: "tableHeader",
-          alignment: "center",
+          text:
+            "Qty.",
+
+          style:
+            "tableHeader",
+
+          alignment:
+            "center",
         },
+
         {
-          text: "Rate",
-          style: "tableHeader",
-          alignment: "center",
+          text:
+            "Rate",
+
+          style:
+            "tableHeader",
+
+          alignment:
+            "center",
         },
+
         {
-          text: "Make / Model",
-          style: "tableHeader",
+          text:
+            "Make / Model",
+
+          style:
+            "tableHeader",
         },
+
         {
-          text: "Serial No.",
-          style: "tableHeader",
+          text:
+            "Serial No.",
+
+          style:
+            "tableHeader",
         },
       ],
     ];
 
     if (
-      Array.isArray(detail.Items) &&
+      Array.isArray(
+        detail.Items,
+      ) &&
       detail.Items.length > 0
     ) {
       detail.Items.forEach(
@@ -20348,8 +20665,10 @@ const generateNRGPDetailPdf = async (data) => {
             {
               text:
                 index + 1,
+
               style:
                 "tableValue",
+
               alignment:
                 "center",
             },
@@ -20359,6 +20678,7 @@ const generateNRGPDetailPdf = async (data) => {
                 displayValue(
                   item.ItemName,
                 ),
+
               style:
                 "tableValue",
             },
@@ -20368,6 +20688,7 @@ const generateNRGPDetailPdf = async (data) => {
                 displayValue(
                   item.Specification,
                 ),
+
               style:
                 "tableValue",
             },
@@ -20377,8 +20698,10 @@ const generateNRGPDetailPdf = async (data) => {
                 displayValue(
                   item.Quantity,
                 ),
+
               style:
                 "tableValue",
+
               alignment:
                 "center",
             },
@@ -20393,8 +20716,10 @@ const generateNRGPDetailPdf = async (data) => {
                       item.Rate,
                     ).toFixed(2)
                   : "-",
+
               style:
                 "tableValue",
+
               alignment:
                 "center",
             },
@@ -20404,6 +20729,7 @@ const generateNRGPDetailPdf = async (data) => {
                 displayValue(
                   item.MakeModel,
                 ),
+
               style:
                 "tableValue",
             },
@@ -20413,6 +20739,7 @@ const generateNRGPDetailPdf = async (data) => {
                 displayValue(
                   item.SerialNumber,
                 ),
+
               style:
                 "tableValue",
             },
@@ -20424,11 +20751,16 @@ const generateNRGPDetailPdf = async (data) => {
         {
           text:
             "No NRGP item details found.",
-          colSpan: 7,
+
+          colSpan:
+            7,
+
           alignment:
             "center",
+
           color:
             COLORS.muted,
+
           margin: [
             0,
             8,
@@ -20447,129 +20779,112 @@ const generateNRGPDetailPdf = async (data) => {
 
     // ============================================================
     // Approval Details
+    //
+    // Same concept as RGP:
+    // Only actioned approval stages are displayed.
+    // Pending/null stages are NOT displayed.
     // ============================================================
 
-    const approvalDetailsBody = [
-      [
-        {
-          text: "Level",
-          style:
-            "tableHeader",
-          alignment:
-            "center",
-        },
-        {
-          text: "Role",
-          style:
-            "tableHeader",
-        },
-        {
-          text: "Status",
-          style:
-            "tableHeader",
-        },
-        {
-          text: "Action By",
-          style:
-            "tableHeader",
-        },
-        {
-          text: "Remarks",
-          style:
-            "tableHeader",
-        },
-      ],
-    ];
+    const approvalActionRows = [];
 
     if (
       Array.isArray(
         detail.Approvals,
       ) &&
-      detail.Approvals.length >
-        0
+      detail.Approvals.length > 0
     ) {
       detail.Approvals.forEach(
         (approval) => {
-          approvalDetailsBody.push([
-            {
-              text:
-                displayValue(
-                  approval.ApprovalLevel,
-                ),
-              style:
-                "tableValue",
-              alignment:
-                "center",
-            },
+          const status =
+            String(
+              approval.Status || "",
+            )
+              .trim()
+              .toUpperCase();
 
-            {
-              text:
-                displayValue(
-                  approval.ApprovalRole,
-                ),
-              style:
-                "tableValue",
-            },
+          if (
+            ![
+              "APPROVED",
+              "REJECTED",
+              "CANCELLED",
+            ].includes(status)
+          ) {
+            return;
+          }
 
-            {
-              text:
-                displayValue(
-                  approval.Status,
-                ),
-              style:
-                "tableValue",
-            },
+          const role =
+            displayValue(
+              approval.ApprovalRole,
+            );
 
-            {
-              text:
-                displayValue(
-                  approval.ActionBy,
-                ),
-              style:
-                "tableValue",
-            },
+          // getNRGPById should return ActionByName.
+          // Fallback to ActionBy only so existing data does not break.
+          const actionBy =
+            displayValue(
+              approval.ActionByName ??
+                approval.ActionBy,
+            );
 
-            {
-              text:
-                displayValue(
-                  approval.Remarks,
-                ),
-              style:
-                "tableValue",
-            },
-          ]);
+          let actionText = "";
+
+          if (
+            status ===
+            "APPROVED"
+          ) {
+            actionText =
+              `Approved by ${role} - ${actionBy}`;
+          } else if (
+            status ===
+            "REJECTED"
+          ) {
+            actionText =
+              `Rejected by ${role} - ${actionBy}`;
+          } else if (
+            status ===
+            "CANCELLED"
+          ) {
+            actionText =
+              `Cancelled by ${role} - ${actionBy}`;
+          }
+
+          approvalActionRows.push({
+            text:
+              actionText,
+
+            fontSize:
+              9,
+
+            color:
+              COLORS.text,
+
+            margin: [
+              0,
+              0,
+              0,
+              6,
+            ],
+          });
         },
       );
-    } else {
-      approvalDetailsBody.push([
-        {
-          text:
-            "No approval details found.",
-          colSpan: 5,
-          alignment:
-            "center",
-          color:
-            COLORS.muted,
-          margin: [
-            0,
-            8,
-            0,
-            8,
-          ],
-        },
-        {},
-        {},
-        {},
-        {},
-      ]);
     }
+
+    // ============================================================
+    // Prepared By
+    // ============================================================
+
+    const preparedBy =
+      detail.CreatedByName ??
+      detail.PreparedByName ??
+      detail.CreatedBy ??
+      "-";
 
     // ============================================================
     // Document Definition
     // ============================================================
 
     const documentDefinition = {
-      pageSize: "A4",
+      pageSize:
+        "A4",
 
       pageOrientation:
         "portrait",
@@ -20582,8 +20897,12 @@ const generateNRGPDetailPdf = async (data) => {
       ],
 
       defaultStyle: {
-        font: "Roboto",
-        fontSize: 9,
+        font:
+          "Roboto",
+
+        fontSize:
+          9,
+
         color:
           COLORS.text,
       },
@@ -20607,10 +20926,12 @@ const generateNRGPDetailPdf = async (data) => {
                   ? {
                       image:
                         logo,
+
                       fit: [
                         88,
                         50,
                       ],
+
                       border: [
                         false,
                         false,
@@ -20619,7 +20940,9 @@ const generateNRGPDetailPdf = async (data) => {
                       ],
                     }
                   : {
-                      text: "",
+                      text:
+                        "",
+
                       border: [
                         false,
                         false,
@@ -20631,16 +20954,20 @@ const generateNRGPDetailPdf = async (data) => {
                 {
                   text:
                     "NRGP Detail Report",
+
                   style:
                     "title",
+
                   alignment:
                     "center",
+
                   margin: [
                     0,
                     18,
                     0,
                     0,
                   ],
+
                   border: [
                     false,
                     false,
@@ -20650,7 +20977,9 @@ const generateNRGPDetailPdf = async (data) => {
                 },
 
                 {
-                  text: "",
+                  text:
+                    "",
+
                   border: [
                     false,
                     false,
@@ -20673,12 +21002,24 @@ const generateNRGPDetailPdf = async (data) => {
         {
           canvas: [
             {
-              type: "line",
-              x1: 0,
-              y1: 0,
-              x2: 551,
-              y2: 0,
-              lineWidth: 0.8,
+              type:
+                "line",
+
+              x1:
+                0,
+
+              y1:
+                0,
+
+              x2:
+                551,
+
+              y2:
+                0,
+
+              lineWidth:
+                0.8,
+
               lineColor:
                 COLORS.navy,
             },
@@ -20805,7 +21146,9 @@ const generateNRGPDetailPdf = async (data) => {
                   ...valueCell(
                     detail.Address,
                   ),
-                  colSpan: 3,
+
+                  colSpan:
+                    3,
                 },
 
                 {},
@@ -20835,8 +21178,11 @@ const generateNRGPDetailPdf = async (data) => {
 
         {
           table: {
-            headerRows: 1,
-            dontBreakRows: true,
+            headerRows:
+              1,
+
+            dontBreakRows:
+              true,
 
             widths: [
               30,
@@ -20887,55 +21233,188 @@ const generateNRGPDetailPdf = async (data) => {
         },
 
         // ========================================================
-        // Approval Details
+        // Signature / Approval Section
+        // Same style as RGP
         // ========================================================
 
-        sectionHeading(
-          "Approval Details",
-        ),
-
         {
-          table: {
-            headerRows: 1,
-            dontBreakRows: true,
+          margin: [
+            2,
+            18,
+            2,
+            0,
+          ],
 
-            widths: [
-              45,
-              70,
-              65,
-              95,
-              "*",
-            ],
+          columns: [
+            // ====================================================
+            // LEFT SIDE
+            // ====================================================
 
-            body:
-              approvalDetailsBody,
-          },
+            {
+              width:
+                "*",
 
-          layout: {
-            hLineColor: () =>
-              COLORS.border,
+              stack: [
+                {
+                  text:
+                    "Signature of Person Taking Item",
 
-            vLineColor: () =>
-              COLORS.border,
+                  fontSize:
+                    9,
 
-            hLineWidth: () =>
-              0.7,
+                  bold:
+                    true,
 
-            vLineWidth: () =>
-              0.7,
+                  color:
+                    COLORS.text,
 
-            paddingLeft: () =>
-              6,
+                  margin: [
+                    0,
+                    0,
+                    0,
+                    18,
+                  ],
+                },
 
-            paddingRight: () =>
-              6,
+                {
+                  text: [
+                    {
+                      text:
+                        "Taken By: ",
 
-            paddingTop: () =>
-              6,
+                      bold:
+                        true,
+                    },
 
-            paddingBottom: () =>
-              6,
-          },
+                    {
+                      text:
+                        displayValue(
+                          detail.TakenBy,
+                        ),
+                    },
+                  ],
+
+                  fontSize:
+                    9,
+
+                  color:
+                    COLORS.text,
+
+                  margin: [
+                    0,
+                    0,
+                    0,
+                    34,
+                  ],
+                },
+
+                {
+                  text:
+                    "Checked & Approved By",
+
+                  fontSize:
+                    9,
+
+                  bold:
+                    true,
+
+                  decoration:
+                    "underline",
+
+                  color:
+                    COLORS.text,
+
+                  margin: [
+                    0,
+                    0,
+                    0,
+                    10,
+                  ],
+                },
+
+                ...(
+                  approvalActionRows.length >
+                  0
+                    ? approvalActionRows
+                    : [
+                        {
+                          text:
+                            "Approval pending",
+
+                          fontSize:
+                            9,
+
+                          color:
+                            COLORS.muted,
+                        },
+                      ]
+                ),
+              ],
+            },
+
+            // ====================================================
+            // RIGHT SIDE
+            // ====================================================
+
+            {
+              width:
+                180,
+
+              stack: [
+                {
+                  text: [
+                    {
+                      text:
+                        "Prepare By:- ",
+
+                      bold:
+                        true,
+                    },
+
+                    {
+                      text:
+                        displayValue(
+                          preparedBy,
+                        ),
+                    },
+                  ],
+
+                  alignment:
+                    "right",
+
+                  fontSize:
+                    9,
+
+                  color:
+                    COLORS.text,
+
+                  margin: [
+                    0,
+                    20,
+                    0,
+                    70,
+                  ],
+                },
+
+                {
+                  text:
+                    "Security Sign & Seal",
+
+                  alignment:
+                    "right",
+
+                  fontSize:
+                    9,
+
+                  bold:
+                    true,
+
+                  color:
+                    COLORS.text,
+                },
+              ],
+            },
+          ],
         },
       ],
 
@@ -20955,12 +21434,24 @@ const generateNRGPDetailPdf = async (data) => {
           {
             canvas: [
               {
-                type: "line",
-                x1: 0,
-                y1: 0,
-                x2: 551,
-                y2: 0,
-                lineWidth: 0.7,
+                type:
+                  "line",
+
+                x1:
+                  0,
+
+                y1:
+                  0,
+
+                x2:
+                  551,
+
+                y2:
+                  0,
+
+                lineWidth:
+                  0.7,
+
                 lineColor:
                   COLORS.navy,
               },
@@ -20981,22 +21472,31 @@ const generateNRGPDetailPdf = async (data) => {
                   {
                     text:
                       "Powered by HotelOps",
-                    bold: true,
+
+                    bold:
+                      true,
+
                     color:
                       COLORS.navy,
-                    fontSize: 8,
+
+                    fontSize:
+                      8,
                   },
                 ],
               },
 
               {
-                width: 130,
+                width:
+                  130,
 
                 stack: [
                   {
                     text:
                       `Generated On   :  ${generatedOn}`,
-                    fontSize: 7,
+
+                    fontSize:
+                      7,
+
                     color:
                       COLORS.label,
                   },
@@ -21013,32 +21513,48 @@ const generateNRGPDetailPdf = async (data) => {
 
       styles: {
         title: {
-          fontSize: 18,
-          bold: true,
+          fontSize:
+            18,
+
+          bold:
+            true,
+
           color:
             COLORS.navy,
         },
 
         fieldLabel: {
-          fontSize: 8.5,
-          bold: true,
+          fontSize:
+            8.5,
+
+          bold:
+            true,
+
           color:
             COLORS.label,
         },
 
         fieldValue: {
-          fontSize: 9,
+          fontSize:
+            9,
+
           color:
             COLORS.text,
         },
 
         tableHeader: {
-          fontSize: 7,
-          bold: true,
+          fontSize:
+            7,
+
+          bold:
+            true,
+
           color:
             COLORS.navy,
+
           fillColor:
             COLORS.labelBackground,
+
           margin: [
             0,
             2,
@@ -21048,9 +21564,12 @@ const generateNRGPDetailPdf = async (data) => {
         },
 
         tableValue: {
-          fontSize: 7,
+          fontSize:
+            7,
+
           color:
             COLORS.text,
+
           margin: [
             0,
             2,
@@ -21116,7 +21635,8 @@ const generateNRGPDetailPdf = async (data) => {
     // ============================================================
 
     return {
-      success: true,
+      success:
+        true,
 
       message:
         "NRGP detail PDF generated successfully.",
@@ -21130,7 +21650,6 @@ const generateNRGPDetailPdf = async (data) => {
       contentType:
         "application/pdf",
     };
-
   } catch (error) {
     console.error(
       "Generate NRGP detail PDF error:",
