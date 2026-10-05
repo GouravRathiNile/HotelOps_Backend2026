@@ -1166,6 +1166,146 @@ exports.updateRGP = async (req, res) => {
     );
   }
 };
+// ============================================================Update RGP Expected Return Date
+exports.updateRGPExpectedReturnDate = async (
+  req,
+  res,
+) => {
+  try {
+    const {
+      RGPID,
+      ExpectedReturnDate,
+      ExpectedReturnDateRemarks,
+    } = req.body;
+
+    // ============================================================
+    // RGP ID Validation
+    // ============================================================
+
+    if (
+      !RGPID ||
+      !Number.isInteger(
+        Number(RGPID),
+      ) ||
+      Number(RGPID) <= 0
+    ) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message:
+            "Valid RGPID is required.",
+        });
+    }
+
+    // ============================================================
+    // Expected Return Date Required
+    // ============================================================
+
+    if (!ExpectedReturnDate) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message:
+            "ExpectedReturnDate is required.",
+        });
+    }
+
+    // ============================================================
+    // Date Format
+    // ============================================================
+
+    const dateRegex =
+      /^\d{4}-\d{2}-\d{2}$/;
+
+    if (
+      !dateRegex.test(
+        String(
+          ExpectedReturnDate,
+        ),
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message:
+            "ExpectedReturnDate must be in YYYY-MM-DD format.",
+        });
+    }
+
+    // ============================================================
+    // Remarks Required
+    // ============================================================
+
+    if (
+      !ExpectedReturnDateRemarks ||
+      !String(
+        ExpectedReturnDateRemarks,
+      ).trim()
+    ) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message:
+            "ExpectedReturnDateRemarks is required.",
+        });
+    }
+
+    // ============================================================
+    // Queue
+    // UserID always JWT se
+    // ============================================================
+
+    return await sendQueueResponse(
+      req,
+      res,
+      "UPDATE_RGP_EXPECTED_RETURN_DATE",
+      {
+        RGPID:
+          Number(RGPID),
+
+        ExpectedReturnDate,
+
+        ExpectedReturnDateRemarks:
+          String(
+            ExpectedReturnDateRemarks,
+          ).trim(),
+
+        UserID:
+          req.user?.UserID,
+
+        UserType:
+          req.user?.UserType,
+
+        DepartmentName:
+          req.user?.DepartmentName,
+
+        LoginType:
+          req.user?.LoginType,
+
+        AllOrganizationAccess:
+          req.user
+            ?.AllOrganizationAccess,
+      },
+    );
+  } catch (error) {
+    console.error(
+      "Update RGP Expected Return Date Controller Error:",
+      error,
+    );
+
+    return res
+      .status(500)
+      .json({
+        success: false,
+        message:
+          "Unable to update RGP expected return date.",
+      });
+  }
+};
 // ============================================================ Delete RGP
 exports.deleteRGP = async (req, res) => {
   try {

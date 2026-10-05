@@ -16,6 +16,9 @@ const GatepassHandler = async (message) => {
       // ========================================================Update
       case "UPDATE_RGP":
         return await GatepassService.updateRGP(message.data);
+      // ========================================================Update Expected Return Date
+      case "UPDATE_RGP_EXPECTED_RETURN_DATE":
+        return await GatepassService.updateRGPExpectedReturnDate(message.data);
       // ========================================================Delete
       case "DELETE_RGP":
         return await GatepassService.deleteRGP(message.data);

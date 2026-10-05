@@ -8,6 +8,7 @@ const {
   getRGPById,
   getRGPByNumber,
   updateRGP,
+  updateRGPExpectedReturnDate,
   deleteRGP,
   processRGPApproval,
   processRGPGateAction,
@@ -60,6 +61,7 @@ router.get("/RGPById/:id",authenticateToken,getRGPById,);
 router.get("/RGPByNumber",authenticateToken,getRGPByNumber,);
 router.get("/VendorNames",authenticateToken,getRGPVendorNames,);
 router.put("/UpdateRGP",authenticateToken,upload.array("Documents", 10),updateRGP,);
+router.put("/UpdateRGPExpectedReturnDate",authenticateToken,updateRGPExpectedReturnDate,);
 router.delete("/DeleteRGP",authenticateToken,deleteRGP,);
 router.put("/ApproveRGP",authenticateToken,processRGPApproval,);
 router.put("/RGPGateAction",authenticateToken,upload.array("Documents", 10),processRGPGateAction,);

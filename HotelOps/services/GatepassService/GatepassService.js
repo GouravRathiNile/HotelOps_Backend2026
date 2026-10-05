@@ -4814,6 +4814,231 @@ const updateRGP = async (data) => {
     client.release();
   }
 };
+// ============================================================Update RGP Expected Return Date
+const updateRGPExpectedReturnDate = async (data) => {
+  try {
+    const {
+      RGPID,
+      ExpectedReturnDate,
+      ExpectedReturnDateRemarks,
+      UserID,
+    } = data;
+
+    // ============================================================
+    // RGP ID Validation
+    // ============================================================
+
+    if (
+      !RGPID ||
+      !Number.isInteger(Number(RGPID)) ||
+      Number(RGPID) <= 0
+    ) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Valid RGPID is required.",
+      };
+    }
+
+    // ============================================================
+    // Expected Return Date Required
+    // ============================================================
+
+    if (!ExpectedReturnDate) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "ExpectedReturnDate is required.",
+      };
+    }
+
+    // ============================================================
+    // Date Format Validation
+    // YYYY-MM-DD
+    // ============================================================
+
+    const dateRegex =
+      /^\d{4}-\d{2}-\d{2}$/;
+
+    if (
+      !dateRegex.test(
+        String(ExpectedReturnDate),
+      )
+    ) {
+      return {
+        success: false,
+        statusCode: 400,
+        message:
+          "ExpectedReturnDate must be in YYYY-MM-DD format.",
+      };
+    }
+
+    // ============================================================
+    // Remarks Required
+    // ============================================================
+
+    if (
+      !ExpectedReturnDateRemarks ||
+      !String(
+        ExpectedReturnDateRemarks,
+      ).trim()
+    ) {
+      return {
+        success: false,
+        statusCode: 400,
+        message:
+          "ExpectedReturnDateRemarks is required.",
+      };
+    }
+
+    // ============================================================
+    // Check RGP Exists
+    // ============================================================
+
+    const existingResult =
+      await pool.query(
+        `
+        SELECT
+          RGPID,
+          RGPNumber,
+          ExpectedReturnDate,
+          Status
+
+        FROM Gatepass_RGP_Entry_Master
+
+        WHERE RGPID = $1
+          AND IsDeleted = FALSE
+
+        LIMIT 1;
+        `,
+        [Number(RGPID)],
+      );
+
+    if (
+      existingResult.rows.length === 0
+    ) {
+      return {
+        success: false,
+        statusCode: 404,
+        message:
+          "RGP record not found.",
+      };
+    }
+
+    // ============================================================
+    // Expected Return Date Validation
+    //
+    // New date MUST be greater than CURRENT_DATE
+    // Database date used instead of server JS date
+    // ============================================================
+
+    const dateValidation =
+      await pool.query(
+        `
+        SELECT
+          $1::DATE > CURRENT_DATE
+            AS IsValidDate;
+        `,
+        [ExpectedReturnDate],
+      );
+
+    if (
+      dateValidation.rows[0]
+        .isvaliddate !== true
+    ) {
+      return {
+        success: false,
+        statusCode: 400,
+        message:
+          "ExpectedReturnDate must be greater than the current date.",
+      };
+    }
+
+    // ============================================================
+    // Update Expected Return Date
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        UPDATE Gatepass_RGP_Entry_Master
+
+        SET
+          ExpectedReturnDate = $1::DATE,
+
+          ExpectedReturnDateRemarks = $2,
+
+          ExpectedReturnDateUpdatedBy = $3,
+
+          UpdatedBy = $3,
+
+          UpdatedDate = CURRENT_TIMESTAMP
+
+        WHERE RGPID = $4
+          AND IsDeleted = FALSE
+
+        RETURNING
+          RGPID,
+          RGPNumber,
+          ExpectedReturnDate,
+          ExpectedReturnDateRemarks,
+          ExpectedReturnDateUpdatedBy,
+          Status;
+        `,
+        [
+          ExpectedReturnDate,
+          String(
+            ExpectedReturnDateRemarks,
+          ).trim(),
+          UserID,
+          Number(RGPID),
+        ],
+      );
+
+    return {
+      success: true,
+      statusCode: 200,
+      message:
+        "RGP expected return date updated successfully.",
+      data: {
+        RGPID:
+          Number(
+            result.rows[0].rgpid,
+          ),
+
+        RGPNumber:
+          result.rows[0].rgpnumber,
+
+        ExpectedReturnDate:
+          formatDate(
+            result.rows[0]
+              .expectedreturndate,
+          ),
+
+        ExpectedReturnDateRemarks:
+          result.rows[0]
+            .expectedreturndateremarks,
+
+        ExpectedReturnDateUpdatedBy:
+          result.rows[0]
+            .expectedreturndateupdatedby,
+
+        Status:
+          result.rows[0].status,
+      },
+    };
+  } catch (error) {
+    console.error(
+      "Update RGP Expected Return Date Error:",
+      error,
+    );
+
+    return databaseFailure(
+      error,
+      "Update RGP expected return date",
+    );
+  }
+};
 // ============================================================Delete RGP
 const deleteRGP = async (data) => {
   const client =
@@ -9903,6 +10128,10 @@ const getRGPReportOrganizationName = async (organizationID) => {
 // ============================================================RGP List Report PDF
 const getRGPListReportPdf = async (data) => {
   try {
+    // ============================================================
+    // Organization Name
+    // ============================================================
+
     const organizationName =
       await getRGPReportOrganizationName(
         data.OrganizationID,
@@ -10026,9 +10255,7 @@ const getRGPListReportPdf = async (data) => {
 
       // ==========================================================
       // All RGP Overdue
-      //
-      // Expected Return Date cross ho chuki ho
-      // AND RGP abhi CHECKED OUT ho
+      // Expected Return Date Passed + Still Checked Out
       // ==========================================================
 
       case "All RGP Overdue":
@@ -10098,20 +10325,30 @@ const getRGPListReportPdf = async (data) => {
             m.RGPNumber AS TEXT
           ) ILIKE $${searchIndex}
 
-          OR m.VendorName
-            ILIKE $${searchIndex}
+          OR COALESCE(
+            m.VendorName,
+            ''
+          ) ILIKE $${searchIndex}
 
-          OR m.Company
-            ILIKE $${searchIndex}
+          OR COALESCE(
+            m.Company,
+            ''
+          ) ILIKE $${searchIndex}
 
-          OR m.ContactNumber
-            ILIKE $${searchIndex}
+          OR COALESCE(
+            m.ContactNumber,
+            ''
+          ) ILIKE $${searchIndex}
 
-          OR m.TakenBy
-            ILIKE $${searchIndex}
+          OR COALESCE(
+            m.TakenBy,
+            ''
+          ) ILIKE $${searchIndex}
 
-          OR d.DepartmentName
-            ILIKE $${searchIndex}
+          OR COALESCE(
+            d.DepartmentName,
+            ''
+          ) ILIKE $${searchIndex}
 
           OR EXISTS (
             SELECT 1
@@ -10124,8 +10361,10 @@ const getRGPListReportPdf = async (data) => {
               AND si.IsDeleted =
                     FALSE
 
-              AND si.ItemName
-                    ILIKE $${searchIndex}
+              AND COALESCE(
+                    si.ItemName,
+                    ''
+                  ) ILIKE $${searchIndex}
           )
         )
       `);
@@ -10143,7 +10382,7 @@ const getRGPListReportPdf = async (data) => {
         : "";
 
     // ============================================================
-    // Report Data
+    // Get RGP Records
     // ============================================================
 
     const result =
@@ -10186,7 +10425,7 @@ const getRGPListReportPdf = async (data) => {
       );
 
     // ============================================================
-    // Attach Items + Approvals
+    // Attach RGP Items + Approvals
     // ============================================================
 
     const relatedRecords =
@@ -10194,35 +10433,69 @@ const getRGPListReportPdf = async (data) => {
         result.rows,
       );
 
+    // ============================================================
+    // Format Report Data
+    // ============================================================
+
     const reportData =
       result.rows.map(
         (row, index) => ({
           ...row,
 
           expectedreturndate:
-            formatDate(
-              row.expectedreturndate,
-            ),
+            row.expectedreturndate
+              ? formatDate(
+                  row.expectedreturndate,
+                )
+              : "-",
 
           createddate:
-            formatDate(
-              row.createddate,
-            ),
+            row.createddate
+              ? formatDate(
+                  row.createddate,
+                )
+              : "-",
 
           Items:
             relatedRecords[index]
-              .Items,
+              ?.Items || [],
 
           Approvals:
             relatedRecords[index]
-              .Approvals,
+              ?.Approvals || [],
         }),
       );
 
     // ============================================================
-    // PDF Rows
-    // Each Item Gets Its Own Row
+    // Total Records
+    //
+    // IMPORTANT:
+    // This is RGP record count, NOT flattened item row count.
     // ============================================================
+
+    const totalRecords =
+      result.rows.length;
+
+    // ============================================================
+    // PDF Rows
+    //
+    // UI Fields:
+    // #SR
+    // RGP No.
+    // Vendor / Company
+    // Contact
+    // Department
+    // Taken By
+    // Expected Return
+    // Items
+    // Status
+    // Created On
+    //
+    // Multiple Items:
+    // Parent details only on first item row.
+    // ============================================================
+
+    let srNo = 1;
 
     const pdfRows =
       reportData.flatMap(
@@ -10231,59 +10504,108 @@ const getRGPListReportPdf = async (data) => {
             Array.isArray(
               rgp.Items,
             ) &&
-            rgp.Items.length
+            rgp.Items.length > 0
               ? rgp.Items
               : [{}];
 
           return items.map(
-            (item, index) => ({
-              RGPNumber:
-                index === 0
-                  ? rgp.rgpnumber
-                  : "-",
-
-              PersonName:
-                index === 0
-                  ? rgp.takenby
-                  : "-",
-
-              Company:
-                index === 0
-                  ? rgp.company
-                  : "-",
-
-              ExpectedReturnDate:
-                index === 0
-                  ? rgp.expectedreturndate
-                  : "-",
-
-              DepartmentName:
-                index === 0
-                  ? rgp.departmentname
-                  : "-",
-
-              CreatedDate:
-                index === 0
-                  ? rgp.createddate
-                  : "-",
-
-              ItemName:
-                item.ItemName ??
-                item.itemname ??
-                "-",
-
-              Quantity:
+            (item, index) => {
+              const quantity =
                 item.Quantity ??
-                item.quantity ??
-                "-",
-            }),
+                item.quantity;
+
+              return {
+                SR:
+                  index === 0
+                    ? srNo++
+                    : "",
+
+                RGPNumber:
+                  index === 0
+                    ? rgp.rgpnumber ??
+                      "-"
+                    : "",
+
+                VendorCompany:
+                  index === 0
+                    ? [
+                        rgp.vendorname,
+                        rgp.company,
+                      ]
+                        .filter(
+                          (value) =>
+                            value !==
+                              null &&
+                            value !==
+                              undefined &&
+                            String(
+                              value,
+                            ).trim() !==
+                              "",
+                        )
+                        .join(" / ") ||
+                      "-"
+                    : "",
+
+                Contact:
+                  index === 0
+                    ? rgp.contactnumber ||
+                      "-"
+                    : "",
+
+                DepartmentName:
+                  index === 0
+                    ? rgp.departmentname ||
+                      "-"
+                    : "",
+
+                TakenBy:
+                  index === 0
+                    ? rgp.takenby ||
+                      "-"
+                    : "",
+
+                ExpectedReturnDate:
+                  index === 0
+                    ? rgp.expectedreturndate ||
+                      "-"
+                    : "",
+
+                Item:
+                  `${
+                    item.ItemName ??
+                    item.itemname ??
+                    "-"
+                  }${
+                    quantity !==
+                      null &&
+                    quantity !==
+                      undefined &&
+                    quantity !==
+                      ""
+                      ? ` - ${quantity}`
+                      : ""
+                  }`,
+
+                Status:
+                  index === 0
+                    ? rgp.status ||
+                      "-"
+                    : "",
+
+                CreatedOn:
+                  index === 0
+                    ? rgp.createddate ||
+                      "-"
+                    : "",
+              };
+            },
           );
         },
       );
 
     // ============================================================
-    // PDF Metadata / Applied Filters
-    // No FromDate / ToDate
+    // PDF Metadata
     // ============================================================
 
     const metadata = [
@@ -10310,6 +10632,13 @@ const getRGPListReportPdf = async (data) => {
           data.DepartmentName ||
           "All Department",
       },
+      {
+        label:
+          "Total Records",
+
+        value:
+          totalRecords,
+      },
     ];
 
     // ============================================================
@@ -10335,35 +10664,39 @@ const getRGPListReportPdf = async (data) => {
         columns: [
           {
             header:
+              "#SR",
+            key:
+              "SR",
+            width:
+              28,
+            align:
+              "center",
+          },
+          {
+            header:
               "RGP No.",
             key:
               "RGPNumber",
             width:
-              55,
+              45,
+            align:
+              "center",
           },
           {
             header:
-              "Person Name",
+              "Vendor / Company",
             key:
-              "PersonName",
+              "VendorCompany",
             width:
-              85,
+              95,
           },
           {
             header:
-              "Company",
+              "Contact",
             key:
-              "Company",
+              "Contact",
             width:
-              90,
-          },
-          {
-            header:
-              "Exp. Return Date",
-            key:
-              "ExpectedReturnDate",
-            width:
-              85,
+              65,
           },
           {
             header:
@@ -10371,39 +10704,59 @@ const getRGPListReportPdf = async (data) => {
             key:
               "DepartmentName",
             width:
-              85,
+              70,
           },
           {
             header:
-              "Created Date",
+              "Taken By",
             key:
-              "CreatedDate",
+              "TakenBy",
             width:
-              95,
+              65,
           },
           {
             header:
-              "Item Name",
+              "Expected Return",
             key:
-              "ItemName",
+              "ExpectedReturnDate",
+            width:
+              70,
+          },
+          {
+            header:
+              "Items",
+            key:
+              "Item",
             width:
               "*",
           },
           {
             header:
-              "Qty.",
+              "Status",
             key:
-              "Quantity",
+              "Status",
             width:
-              45,
+              65,
             align:
               "center",
+          },
+          {
+            header:
+              "Created On",
+            key:
+              "CreatedOn",
+            width:
+              70,
           },
         ],
 
         rows:
           pdfRows,
       });
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return {
       success:
@@ -20803,6 +21156,7 @@ module.exports = {
   getRGPByNumber,
   getRGPVendorNames,
   updateRGP,
+  updateRGPExpectedReturnDate,
   deleteRGP,
   processRGPApproval,
   processRGPGateAction,
@@ -20820,7 +21174,7 @@ module.exports = {
   getRGPVendorWiseReportPdf,
   getRGPPendingReturnReportPdf,
   generateRGPDetailPdf,
-getRGPRedFlagReportPdf,
+  getRGPRedFlagReportPdf,
 
   createNRGP,
   getNRGPList,
