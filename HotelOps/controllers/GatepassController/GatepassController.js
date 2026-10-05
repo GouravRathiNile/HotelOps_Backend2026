@@ -4394,6 +4394,10 @@ exports.processNRGPApproval = async (req, res) => {
       Remarks,
     } = req.body;
 
+    // ============================================================
+    // NRGP ID Validation
+    // ============================================================
+
     if (
       !Number.isInteger(Number(NRGPID)) ||
       Number(NRGPID) <= 0
@@ -4403,6 +4407,10 @@ exports.processNRGPApproval = async (req, res) => {
         message: "Valid NRGPID is required.",
       });
     }
+
+    // ============================================================
+    // Action Validation
+    // ============================================================
 
     const normalizedAction =
       String(Action || "")
@@ -4423,6 +4431,10 @@ exports.processNRGPApproval = async (req, res) => {
       });
     }
 
+    // ============================================================
+    // Payload
+    // ============================================================
+
     const payload = {
       NRGPID:
         Number(NRGPID),
@@ -4431,7 +4443,9 @@ exports.processNRGPApproval = async (req, res) => {
         normalizedAction,
 
       Remarks:
-        Remarks || null,
+        Remarks
+          ? String(Remarks).trim()
+          : null,
 
       UserID:
         req.user.UserID,
@@ -4449,12 +4463,16 @@ exports.processNRGPApproval = async (req, res) => {
         req.user.AllOrganizationAccess,
     };
 
-    // YAHAN existing processRGPApproval controller
-    // ka exact RabbitMQ call same rahega.
-    // Sirf:
-    //
-    // action: "PROCESS_NRGP_APPROVAL"
-    // data: payload
+    // ============================================================
+    // RabbitMQ
+    // ============================================================
+
+    return await sendQueueResponse(
+      req,
+      res,
+      "PROCESS_NRGP_APPROVAL",
+      payload,
+    );
   } catch (error) {
     console.error(
       "Process NRGP Approval Controller Error:",
