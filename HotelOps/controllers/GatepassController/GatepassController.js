@@ -1954,8 +1954,6 @@ exports.getRGPListReport = async (
   try {
     const {
       OrganizationID,
-      FromDate,
-      ToDate,
       Status,
       DepartmentID,
       RGPNumber,
@@ -1972,15 +1970,23 @@ exports.getRGPListReport = async (
     if (
       !OrganizationID ||
       !Number.isInteger(
-        Number(OrganizationID),
+        Number(
+          OrganizationID,
+        ),
       ) ||
-      Number(OrganizationID) <= 0
+      Number(
+        OrganizationID,
+      ) <= 0
     ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Valid OrganizationID is required.",
-      });
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "Valid OrganizationID is required.",
+        });
     }
 
     // ============================================================
@@ -1991,16 +1997,24 @@ exports.getRGPListReport = async (
       DepartmentID &&
       (
         !Number.isInteger(
-          Number(DepartmentID),
+          Number(
+            DepartmentID,
+          ),
         ) ||
-        Number(DepartmentID) <= 0
+        Number(
+          DepartmentID,
+        ) <= 0
       )
     ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "DepartmentID must be a positive integer.",
-      });
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "DepartmentID must be a positive integer.",
+        });
     }
 
     // ============================================================
@@ -2011,35 +2025,51 @@ exports.getRGPListReport = async (
       RGPNumber &&
       (
         !Number.isInteger(
-          Number(RGPNumber),
+          Number(
+            RGPNumber,
+          ),
         ) ||
-        Number(RGPNumber) <= 0
+        Number(
+          RGPNumber,
+        ) <= 0
       )
     ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "RGPNumber must be a positive integer.",
-      });
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "RGPNumber must be a positive integer.",
+        });
     }
 
     // ============================================================
     // Pagination Validation
     // ============================================================
 
-    const pageNumber = Number(page);
+    const pageNumber =
+      Number(page);
+
     const pageSizeNumber =
       Number(PageSize);
 
     if (
-      !Number.isInteger(pageNumber) ||
+      !Number.isInteger(
+        pageNumber,
+      ) ||
       pageNumber <= 0
     ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "page must be a positive integer.",
-      });
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "page must be a positive integer.",
+        });
     }
 
     if (
@@ -2049,81 +2079,102 @@ exports.getRGPListReport = async (
       pageSizeNumber <= 0 ||
       pageSizeNumber > 100
     ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "PageSize must be between 1 and 100.",
-      });
+      return res
+        .status(400)
+        .json({
+          success:
+            false,
+
+          message:
+            "PageSize must be between 1 and 100.",
+        });
     }
 
+    // ============================================================
+    // Service
+    // ============================================================
+
     const result =
-      await GatepassService.getRGPListReport({
-        OrganizationID:
-          Number(OrganizationID),
+      await GatepassService
+        .getRGPListReport({
+          OrganizationID:
+            Number(
+              OrganizationID,
+            ),
 
-        FromDate:
-          FromDate || null,
+          Status:
+            Status || null,
 
-        ToDate:
-          ToDate || null,
+          DepartmentID:
+            DepartmentID
+              ? Number(
+                  DepartmentID,
+                )
+              : null,
 
-        Status:
-          Status || null,
+          RGPNumber:
+            RGPNumber
+              ? Number(
+                  RGPNumber,
+                )
+              : null,
 
-        DepartmentID:
-          DepartmentID
-            ? Number(DepartmentID)
-            : null,
+          VendorName:
+            VendorName ||
+            null,
 
-        RGPNumber:
-          RGPNumber
-            ? Number(RGPNumber)
-            : null,
+          Search:
+            Search ||
+            null,
 
-        VendorName:
-          VendorName || null,
+          page:
+            pageNumber,
 
-        Search:
-          Search || null,
+          PageSize:
+            pageSizeNumber,
 
-        page: pageNumber,
-        PageSize:
-          pageSizeNumber,
+          UserID:
+            req.user?.UserID,
 
-        UserID:
-          req.user?.UserID,
+          UserType:
+            req.user?.UserType,
 
-        UserType:
-          req.user?.UserType,
+          DepartmentName:
+            req.user
+              ?.DepartmentName,
 
-        DepartmentName:
-          req.user?.DepartmentName,
+          LoginType:
+            req.user
+              ?.LoginType,
 
-        LoginType:
-          req.user?.LoginType,
-
-        AllOrganizationAccess:
-          req.user
-            ?.AllOrganizationAccess,
-      });
+          AllOrganizationAccess:
+            req.user
+              ?.AllOrganizationAccess,
+        });
 
     return res
       .status(
-        result.statusCode || 200,
+        result.statusCode ||
+          200,
       )
-      .json(result);
-
+      .json(
+        result,
+      );
   } catch (error) {
     console.error(
       "Get RGP List Report Controller Error:",
       error,
     );
 
-    return res.status(500).json({
-      success: false,
-      message:
-        "Unable to fetch RGP list report.",
-    });
+    return res
+      .status(500)
+      .json({
+        success:
+          false,
+
+        message:
+          "Unable to fetch RGP list report.",
+      });
   }
 };
 // ============================================================Department Wise Report

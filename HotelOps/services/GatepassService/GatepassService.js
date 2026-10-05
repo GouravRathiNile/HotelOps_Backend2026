@@ -7512,24 +7512,47 @@ const deleteRGPApprovalConfig = async (data) => {
 };
 // ========================================================================Reports
 // ============================================================RGP List Report
-// | Old Filter | New RGP me condition |
-// |---|---|
-// | **All RGP Open** | `PENDING` ya `APPROVED` |
-// | **All RGP Out** | `CHECKED OUT` ya `RETURN PENDING` |
-// | **All RGP Closed** | `RETURNED` |
-// | **All RGP Cancelled** | `CANCELLED` ya `REJECTED` |
-// | **All RGP Overdue** | Expected Return Date nikal chuki ho aur RGP abhi bahar ho |
+
+// RGP List Report
+//
+// All RGP Open
+//   -> APPROVED
+//
+// All RGP Out
+//   -> CHECKED OUT
+//
+// All RGP Closed
+//   -> RETURNED
+//
+// All RGP Cancelled
+//   -> CANCELLED
+//
+// All RGP Overdue
+//   -> ExpectedReturnDate < CURRENT_DATE
+//   -> Status = CHECKED OUT
+//
+// Date Filter Removed
+// ============================================================
 const getRGPListReport = async (data) => {
   try {
-    const page = Number(data.page) || 1;
-    const pageSize = Math.min(
-      Number(data.PageSize) || 10,
-      100,
-    );
+    // ============================================================
+    // Pagination
+    // ============================================================
 
-    const offset = (page - 1) * pageSize;
+    const page =
+      Number(data.page) || 1;
+
+    const pageSize =
+      Math.min(
+        Number(data.PageSize) || 10,
+        100,
+      );
+
+    const offset =
+      (page - 1) * pageSize;
 
     const values = [];
+
     const conditions = [
       "m.IsDeleted = FALSE",
     ];
@@ -7539,34 +7562,12 @@ const getRGPListReport = async (data) => {
     // ============================================================
 
     if (data.OrganizationID) {
-      values.push(data.OrganizationID);
+      values.push(
+        data.OrganizationID,
+      );
 
       conditions.push(
         `m.OrganizationID = $${values.length}`,
-      );
-    }
-
-    // ============================================================
-    // From Date
-    // ============================================================
-
-    if (data.FromDate) {
-      values.push(data.FromDate);
-
-      conditions.push(
-        `m.CreatedDate::DATE >= $${values.length}::DATE`,
-      );
-    }
-
-    // ============================================================
-    // To Date
-    // ============================================================
-
-    if (data.ToDate) {
-      values.push(data.ToDate);
-
-      conditions.push(
-        `m.CreatedDate::DATE <= $${values.length}::DATE`,
       );
     }
 
@@ -7575,7 +7576,9 @@ const getRGPListReport = async (data) => {
     // ============================================================
 
     if (data.DepartmentID) {
-      values.push(data.DepartmentID);
+      values.push(
+        data.DepartmentID,
+      );
 
       conditions.push(
         `m.DepartmentID = $${values.length}`,
@@ -7587,51 +7590,103 @@ const getRGPListReport = async (data) => {
     // ============================================================
 
     const reportStatus =
-      String(data.Status || "").trim();
+      String(
+        data.Status || "",
+      ).trim();
 
     switch (reportStatus) {
+      // ==========================================================
+      // All RGP Open
+      // Only Approved RGP
+      // ==========================================================
+
       case "All RGP Open":
         conditions.push(`
-          UPPER(m.Status) IN (
-            'PENDING',
-            'APPROVED'
-          )
+          UPPER(
+            TRIM(
+              COALESCE(
+                m.Status,
+                ''
+              )
+            )
+          ) = 'APPROVED'
         `);
         break;
+
+      // ==========================================================
+      // All RGP Out
+      // Only Checked Out RGP
+      // ==========================================================
 
       case "All RGP Out":
         conditions.push(`
-          UPPER(m.Status) IN (
-            'CHECKED OUT',
-            'RETURN PENDING'
-          )
+          UPPER(
+            TRIM(
+              COALESCE(
+                m.Status,
+                ''
+              )
+            )
+          ) = 'CHECKED OUT'
         `);
         break;
+
+      // ==========================================================
+      // All RGP Closed
+      // Only Returned RGP
+      // ==========================================================
 
       case "All RGP Closed":
         conditions.push(`
-          UPPER(m.Status) = 'RETURNED'
+          UPPER(
+            TRIM(
+              COALESCE(
+                m.Status,
+                ''
+              )
+            )
+          ) = 'RETURNED'
         `);
         break;
+
+      // ==========================================================
+      // All RGP Cancelled
+      // Only Cancelled RGP
+      // ==========================================================
 
       case "All RGP Cancelled":
         conditions.push(`
-          UPPER(m.Status) IN (
-            'CANCELLED',
-            'REJECTED'
-          )
+          UPPER(
+            TRIM(
+              COALESCE(
+                m.Status,
+                ''
+              )
+            )
+          ) = 'CANCELLED'
         `);
         break;
 
+      // ==========================================================
+      // All RGP Overdue
+      //
+      // Expected Return Date nikal chuki ho
+      // AND
+      // RGP abhi Checked Out ho
+      // ==========================================================
+
       case "All RGP Overdue":
         conditions.push(`
-          m.ExpectedReturnDate <
-            (CURRENT_DATE - INTERVAL '30 days')
+          m.ExpectedReturnDate::DATE < CURRENT_DATE
 
-          AND UPPER(m.Status) IN (
-            'CHECKED OUT',
-            'RETURN PENDING'
-          )
+          AND UPPER(
+            TRIM(
+              COALESCE(
+                m.Status,
+                ''
+              )
+            )
+          ) = 'CHECKED OUT'
         `);
         break;
     }
@@ -7641,7 +7696,9 @@ const getRGPListReport = async (data) => {
     // ============================================================
 
     if (data.RGPNumber) {
-      values.push(data.RGPNumber);
+      values.push(
+        data.RGPNumber,
+      );
 
       conditions.push(
         `m.RGPNumber = $${values.length}`,
@@ -7654,7 +7711,9 @@ const getRGPListReport = async (data) => {
 
     if (data.VendorName) {
       values.push(
-        `%${String(data.VendorName).trim()}%`,
+        `%${String(
+          data.VendorName,
+        ).trim()}%`,
       );
 
       conditions.push(
@@ -7668,46 +7727,74 @@ const getRGPListReport = async (data) => {
 
     if (data.Search) {
       values.push(
-        `%${String(data.Search).trim()}%`,
+        `%${String(
+          data.Search,
+        ).trim()}%`,
       );
 
-      const searchIndex = values.length;
+      const searchIndex =
+        values.length;
 
       conditions.push(`
         (
-          CAST(m.RGPNumber AS TEXT)
-            ILIKE $${searchIndex}
+          CAST(
+            m.RGPNumber AS TEXT
+          ) ILIKE $${searchIndex}
 
-          OR m.VendorName
-            ILIKE $${searchIndex}
+          OR COALESCE(
+            m.VendorName,
+            ''
+          ) ILIKE $${searchIndex}
 
-          OR m.Company
-            ILIKE $${searchIndex}
+          OR COALESCE(
+            m.Company,
+            ''
+          ) ILIKE $${searchIndex}
 
-          OR m.ContactNumber
-            ILIKE $${searchIndex}
+          OR COALESCE(
+            m.ContactNumber,
+            ''
+          ) ILIKE $${searchIndex}
 
-          OR m.TakenBy
-            ILIKE $${searchIndex}
+          OR COALESCE(
+            m.TakenBy,
+            ''
+          ) ILIKE $${searchIndex}
 
-          OR d.DepartmentName
-            ILIKE $${searchIndex}
+          OR COALESCE(
+            d.DepartmentName,
+            ''
+          ) ILIKE $${searchIndex}
 
           OR EXISTS (
             SELECT 1
+
             FROM Gatepass_RGP_Entry_Item_Details si
-            WHERE si.RGPID = m.RGPID
-              AND si.IsDeleted = FALSE
-              AND si.ItemName
-                ILIKE $${searchIndex}
+
+            WHERE si.RGPID =
+                    m.RGPID
+
+              AND si.IsDeleted =
+                    FALSE
+
+              AND COALESCE(
+                si.ItemName,
+                ''
+              ) ILIKE $${searchIndex}
           )
         )
       `);
     }
 
+    // ============================================================
+    // Where Clause
+    // ============================================================
+
     const whereClause =
       conditions.length
-        ? `WHERE ${conditions.join(" AND ")}`
+        ? `WHERE ${conditions.join(
+            " AND ",
+          )}`
         : "";
 
     // ============================================================
@@ -7733,24 +7820,34 @@ const getRGPListReport = async (data) => {
 
     const totalCount =
       Number(
-        countResult.rows[0]?.totalcount || 0,
+        countResult.rows[0]
+          ?.totalcount || 0,
       );
 
     // ============================================================
     // Pagination
     // ============================================================
 
-    const listValues = [...values];
+    const listValues = [
+      ...values,
+    ];
 
-    listValues.push(pageSize);
-    const limitIndex = listValues.length;
+    listValues.push(
+      pageSize,
+    );
 
-    listValues.push(offset);
-    const offsetIndex = listValues.length;
+    const limitIndex =
+      listValues.length;
+
+    listValues.push(
+      offset,
+    );
+
+    const offsetIndex =
+      listValues.length;
 
     // ============================================================
     // Report Data
-    // Paginate RGP masters before attaching their items and approvals
     // ============================================================
 
     const result =
@@ -7783,7 +7880,7 @@ const getRGPListReport = async (data) => {
           ON d.DepartmentID =
             m.DepartmentID
 
-${whereClause}
+        ${whereClause}
 
         ORDER BY
           m.CreatedDate DESC,
@@ -7795,25 +7892,65 @@ ${whereClause}
         listValues,
       );
 
-    const relatedRecords = await attachRGPRelatedData(result.rows);
-    const reportData = result.rows.map((row, index) => ({
-      ...row,
-      expectedreturndate: formatDate(row.expectedreturndate),
-      createddate: formatDate(row.createddate),
-      Items: relatedRecords[index].Items,
-      Approvals: relatedRecords[index].Approvals,
-    }));
+    // ============================================================
+    // Attach Items + Approvals
+    // ============================================================
+
+    const relatedRecords =
+      await attachRGPRelatedData(
+        result.rows,
+      );
+
+    // ============================================================
+    // Map Report Data
+    // ============================================================
+
+    const reportData =
+      result.rows.map(
+        (row, index) => ({
+          ...row,
+
+          expectedreturndate:
+            formatDate(
+              row.expectedreturndate,
+            ),
+
+          createddate:
+            formatDate(
+              row.createddate,
+            ),
+
+          Items:
+            relatedRecords[index]
+              .Items,
+
+          Approvals:
+            relatedRecords[index]
+              .Approvals,
+        }),
+      );
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return ok(
       "RGP list report fetched successfully.",
       reportData,
       {
-        TotalCount: totalCount,
-        Page: page,
-        PageSize: pageSize,
+        TotalCount:
+          totalCount,
+
+        Page:
+          page,
+
+        PageSize:
+          pageSize,
+
         TotalPages:
           Math.ceil(
-            totalCount / pageSize,
+            totalCount /
+              pageSize,
           ),
       },
     );
