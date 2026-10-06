@@ -4179,6 +4179,60 @@ exports.getNRGPList = async (req, res) => {
     });
   }
 };
+// ============================================================Total NRGP
+exports.getTotalNRGP = async (
+  req,
+  res,
+) => {
+  try {
+    const result =
+      await GatepassService.getTotalNRGP({
+        ...req.query,
+
+        UserID:
+          req.user.UserID,
+
+        UserType:
+          req.user.UserType,
+
+        DepartmentName:
+          req.user.DepartmentName,
+
+        LoginType:
+          req.user.LoginType,
+
+        AllOrganizationAccess:
+          req.user.AllOrganizationAccess,
+      });
+
+    return res
+      .status(
+        result.statusCode ||
+        (
+          result.success
+            ? 200
+            : 400
+        ),
+      )
+      .json(result);
+
+  } catch (error) {
+    console.error(
+      "Get Total NRGP Controller Error:",
+      error.message,
+    );
+
+    return res
+      .status(500)
+      .json({
+        success:
+          false,
+
+        message:
+          "Unable to fetch total NRGP at this time.",
+      });
+  }
+};
 // ============================================================ Get NRGP By ID
 exports.getNRGPById = async (req, res) => {
   try {

@@ -27,10 +27,11 @@ const {
   getRGPVendorWiseReportPdf,
   getRGPPendingReturnReportPdf,
   generateRGPDetailPdf,
-getRGPRedFlagReportPdf,
+  getRGPRedFlagReportPdf,
 
   createNRGP,
   getNRGPList,
+  getTotalNRGP,
   getNRGPById,
   getNRGPVendorNames,
   updateNRGP,
@@ -86,6 +87,7 @@ router.get("/RGPRedFlagReportPdf",authenticateToken,getRGPRedFlagReportPdf,);
 // ==================================================================================NRGP
 router.post("/CreateNRGP",authenticateToken,createNRGP,);
 router.get("/NRGPList",authenticateToken,getNRGPList,);
+router.get("/TotalNRGP",authenticateToken,getTotalNRGP,);
 router.get("/NRGPById",authenticateToken,getNRGPById,);
 router.get("/NRGPVendorNames",authenticateToken,getNRGPVendorNames,);
 router.put("/UpdateNRGP",authenticateToken,updateNRGP,);

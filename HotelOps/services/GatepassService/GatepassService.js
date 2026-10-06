@@ -8393,8 +8393,8 @@ const getRGPDepartmentWiseReport = async (data) => {
           -- ======================================================
           -- Pending RGP
           --
-          -- At least one approval is Pending.
-          -- Rejected / Cancelled RGP pending me count nahi honge.
+          -- At least one approval Pending hona chahiye.
+          -- Rejected / Cancelled pending me count nahi honge.
           -- ======================================================
 
           COUNT(
@@ -8450,16 +8450,29 @@ const getRGPDepartmentWiseReport = async (data) => {
           -- ======================================================
           -- Approved RGP
           --
-          -- Approval rows honi chahiye
-          -- AND
-          -- All approval rows Approved honi chahiye.
+          -- 1. Approval rows honi chahiye.
+          -- 2. Saare approval stages APPROVED hone chahiye.
+          -- 3. Master Status APPROVED hona chahiye.
+          --
+          -- CHECKED OUT / RETURN PENDING / RETURNED yahan
+          -- count nahi honge.
           -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
             WHERE
-              EXISTS (
+
+              UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
+                )
+              ) = 'APPROVED'
+
+              AND EXISTS (
                 SELECT 1
 
                 FROM Gatepass_RGP_Approval a
@@ -8495,8 +8508,6 @@ const getRGPDepartmentWiseReport = async (data) => {
 
           -- ======================================================
           -- Rejected RGP
-          --
-          -- Ek bhi approval Rejected hai to RejectedRGP.
           -- ======================================================
 
           COUNT(
@@ -8527,8 +8538,6 @@ const getRGPDepartmentWiseReport = async (data) => {
 
           -- ======================================================
           -- Cancelled RGP
-          --
-          -- Ek bhi approval Cancelled hai to CancelledRGP.
           -- ======================================================
 
           COUNT(
@@ -8578,7 +8587,6 @@ const getRGPDepartmentWiseReport = async (data) => {
 
           -- ======================================================
           -- Closed / Returned RGP
-          -- Master RETURNED means all items returned.
           -- ======================================================
 
           COUNT(
@@ -8597,7 +8605,7 @@ const getRGPDepartmentWiseReport = async (data) => {
 
           -- ======================================================
           -- Overdue RGP
-          -- Same Existing Condition
+          -- Existing 30 Days Condition
           -- ======================================================
 
           COUNT(
@@ -8726,6 +8734,7 @@ const getRGPDepartmentWiseReport = async (data) => {
           ),
       },
     );
+
   } catch (error) {
     return databaseFailure(
       error,
@@ -8909,9 +8918,6 @@ const getRGPVendorWiseReport = async (data) => {
 
           -- ======================================================
           -- Pending RGP
-          --
-          -- Ek bhi approval Pending hai.
-          -- Rejected / Cancelled nahi hona chahiye.
           -- ======================================================
 
           COUNT(
@@ -8967,15 +8973,29 @@ const getRGPVendorWiseReport = async (data) => {
           -- ======================================================
           -- Approved RGP
           --
-          -- Approval rows honi chahiye.
-          -- Saare approval stages Approved hone chahiye.
+          -- All approval stages APPROVED hone chahiye
+          -- AND
+          -- Master status APPROVED hona chahiye.
+          --
+          -- Checkout ke baad master CHECKED OUT ho jayega,
+          -- isliye ApprovedRGP me count nahi hoga.
           -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
             WHERE
-              EXISTS (
+
+              UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
+                )
+              ) = 'APPROVED'
+
+              AND EXISTS (
                 SELECT 1
 
                 FROM Gatepass_RGP_Approval a
@@ -9011,8 +9031,6 @@ const getRGPVendorWiseReport = async (data) => {
 
           -- ======================================================
           -- Rejected RGP
-          --
-          -- Ek bhi approval Rejected hai.
           -- ======================================================
 
           COUNT(
@@ -9043,8 +9061,6 @@ const getRGPVendorWiseReport = async (data) => {
 
           -- ======================================================
           -- Cancelled RGP
-          --
-          -- Ek bhi approval Cancelled hai.
           -- ======================================================
 
           COUNT(
@@ -9075,7 +9091,6 @@ const getRGPVendorWiseReport = async (data) => {
 
           -- ======================================================
           -- Out RGP
-          -- Master Status = CHECKED OUT
           -- ======================================================
 
           COUNT(
@@ -9094,8 +9109,6 @@ const getRGPVendorWiseReport = async (data) => {
 
           -- ======================================================
           -- Closed RGP
-          -- Master Status = RETURNED
-          -- All items returned
           -- ======================================================
 
           COUNT(
@@ -9114,7 +9127,7 @@ const getRGPVendorWiseReport = async (data) => {
 
           -- ======================================================
           -- Overdue RGP
-          -- Same Existing Logic
+          -- Existing 30 Days Condition
           -- ======================================================
 
           COUNT(
@@ -9233,6 +9246,7 @@ const getRGPVendorWiseReport = async (data) => {
           ),
       },
     );
+
   } catch (error) {
     return databaseFailure(
       error,
@@ -10992,7 +11006,6 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
             DISTINCT m.RGPID
           ) FILTER (
             WHERE
-
               EXISTS (
                 SELECT 1
 
@@ -11044,14 +11057,24 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
           --
           -- Approval rows must exist
           -- AND every active approval must be APPROVED
+          -- AND master status must still be APPROVED
+          -- CHECKED OUT RGP will not be counted here
           -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
             WHERE
+              UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
+                )
+              ) = 'APPROVED'
 
-              EXISTS (
+              AND EXISTS (
                 SELECT 1
 
                 FROM Gatepass_RGP_Approval a
@@ -11087,8 +11110,6 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
 
           -- ======================================================
           -- Rejected RGP
-          --
-          -- Any approval is REJECTED
           -- ======================================================
 
           COUNT(
@@ -11118,8 +11139,6 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
 
           -- ======================================================
           -- Cancelled RGP
-          --
-          -- Any approval is CANCELLED
           -- ======================================================
 
           COUNT(
@@ -11230,7 +11249,6 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
 
     // ============================================================
     // Response Mapping
-    // SAME AS UPDATED GET API
     // ============================================================
 
     const reportData =
@@ -11449,6 +11467,7 @@ const getRGPDepartmentWiseReportPdf = async (data) => {
       data:
         pdfBuffer,
     };
+
   } catch (error) {
     console.error(
       "RGP Department Wise Report PDF Error:",
@@ -11584,16 +11603,12 @@ const getRGPVendorWiseReportPdf = async (data) => {
 
           -- ======================================================
           -- Pending RGP
-          --
-          -- At least one active approval is Pending
-          -- AND no active approval is Rejected / Cancelled
           -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
             WHERE
-
               EXISTS (
                 SELECT 1
 
@@ -11643,16 +11658,25 @@ const getRGPVendorWiseReportPdf = async (data) => {
           -- ======================================================
           -- Approved RGP
           --
-          -- Approval rows must exist
-          -- AND all active approvals must be APPROVED
+          -- All active approvals APPROVED hone chahiye
+          -- AND master status APPROVED hona chahiye.
+          -- Checkout ho chuka RGP Approved me count nahi hoga.
           -- ======================================================
 
           COUNT(
             DISTINCT m.RGPID
           ) FILTER (
             WHERE
+              UPPER(
+                TRIM(
+                  COALESCE(
+                    m.Status,
+                    ''
+                  )
+                )
+              ) = 'APPROVED'
 
-              EXISTS (
+              AND EXISTS (
                 SELECT 1
 
                 FROM Gatepass_RGP_Approval a
@@ -11688,8 +11712,6 @@ const getRGPVendorWiseReportPdf = async (data) => {
 
           -- ======================================================
           -- Rejected RGP
-          --
-          -- Any active approval is REJECTED
           -- ======================================================
 
           COUNT(
@@ -11719,8 +11741,6 @@ const getRGPVendorWiseReportPdf = async (data) => {
 
           -- ======================================================
           -- Cancelled RGP
-          --
-          -- Any active approval is CANCELLED
           -- ======================================================
 
           COUNT(
@@ -11750,7 +11770,6 @@ const getRGPVendorWiseReportPdf = async (data) => {
 
           -- ======================================================
           -- Out RGP
-          -- Master Status = CHECKED OUT
           -- ======================================================
 
           COUNT(
@@ -11768,7 +11787,6 @@ const getRGPVendorWiseReportPdf = async (data) => {
 
           -- ======================================================
           -- Closed RGP
-          -- Master Status = RETURNED
           -- ======================================================
 
           COUNT(
@@ -12041,6 +12059,7 @@ const getRGPVendorWiseReportPdf = async (data) => {
       data:
         pdfBuffer,
     };
+
   } catch (error) {
     console.error(
       "RGP Vendor Wise Report PDF Error:",
@@ -15745,8 +15764,8 @@ const getNRGPList = async (data) => {
     //
     // HOD + Finance => FC
     // FC / DOF      => FC
-    // HOD           => HOD
-    // GM            => GM
+    // HOD            => HOD
+    // GM             => GM
     // ============================================================
 
     const userApprovalRole =
@@ -15898,10 +15917,32 @@ const getNRGPList = async (data) => {
     // ============================================================
     // Approver Visibility
     //
-    // Approver should only see NRGP where his approval role exists.
+    // IMPORTANT:
     //
-    // FC condition:
-    // ApprovalRole FC / DOF both treated as Finance.
+    // Approver ko NRGP tabhi dikhna chahiye jab:
+    //
+    // 1. Logged-in approver ka approval stage NRGP me exist kare.
+    //
+    // 2. Logged-in approver ke ApprovalOrder se pehle ke
+    //    SAARE approval stages APPROVED hon.
+    //
+    // Example:
+    //
+    // HOD -> DOF -> GM
+    //
+    // HOD Pending
+    // => DOF ko nahi dikhega
+    //
+    // HOD Approved
+    // => DOF ko dikhega
+    //
+    // DOF Pending
+    // => GM ko nahi dikhega
+    //
+    // HOD Approved + DOF Approved
+    // => GM ko dikhega
+    //
+    // FC / DOF are treated as same Finance role.
     // ============================================================
 
     if (isApprover) {
@@ -15920,6 +15961,10 @@ const getNRGPList = async (data) => {
 
           WHERE ua.NRGPID = m.NRGPID
             AND ua.IsDeleted = FALSE
+
+            -- ==================================================
+            -- Logged-In Approver Role
+            -- ==================================================
 
             AND (
               CASE
@@ -15943,6 +15988,38 @@ const getNRGPList = async (data) => {
                 )
               END
             ) = $${roleIndex}
+
+            -- ==================================================
+            -- Previous Approval Stages
+            --
+            -- Agar logged-in approver ke stage se pehle
+            -- koi bhi stage APPROVED nahi hai,
+            -- record visible nahi hoga.
+            -- ==================================================
+
+            AND NOT EXISTS (
+              SELECT 1
+
+              FROM Gatepass_NRGP_Approval prev
+
+              WHERE prev.NRGPID =
+                      ua.NRGPID
+
+                AND prev.IsDeleted =
+                      FALSE
+
+                AND prev.ApprovalOrder <
+                    ua.ApprovalOrder
+
+                AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      prev.Status,
+                      'PENDING'
+                    )
+                  )
+                ) <> 'APPROVED'
+            )
         )
       `);
     }
@@ -15975,6 +16052,7 @@ const getNRGPList = async (data) => {
         conditions.push(
           `UPPER(TRIM(COALESCE(m.Status, ''))) = $${values.length}`,
         );
+
       } else if (isApprover) {
         values.push(
           normalizedStatus,
@@ -16289,9 +16367,9 @@ const getNRGPList = async (data) => {
             CanAction,
 
             Approvals:
-  mapNRGPApprovalFlow(
-    rawApprovals,
-  ),
+              mapNRGPApprovalFlow(
+                rawApprovals,
+              ),
           };
         },
       );
@@ -16319,7 +16397,7 @@ const getNRGPList = async (data) => {
       TotalPages:
         Math.ceil(
           totalCount /
-          pageSize,
+            pageSize,
         ),
 
       data:
@@ -16330,6 +16408,465 @@ const getNRGPList = async (data) => {
     return databaseFailure(
       error,
       "Fetch NRGP list",
+    );
+  }
+};
+// ============================================================Total NRGP
+const getTotalNRGP = async (data) => {
+  try {
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const page =
+      Number(data.page) || 1;
+
+    const pageSize =
+      Math.min(
+        Number(data.PageSize) || 10,
+        100,
+      );
+
+    const offset =
+      (page - 1) * pageSize;
+
+
+    // ============================================================
+    // Organization Validation
+    // ============================================================
+
+    if (!data.OrganizationID) {
+      return fail(
+        "OrganizationID is required.",
+        400,
+      );
+    }
+
+    const organizationID =
+      Number(data.OrganizationID);
+
+    if (
+      !Number.isInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail(
+        "Valid OrganizationID is required.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Conditions
+    //
+    // NO DATE FILTER
+    // NO APPROVER VISIBILITY CONDITION
+    // ============================================================
+
+    const values = [
+      organizationID,
+    ];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+      `m.OrganizationID = $1`,
+    ];
+
+
+    // ============================================================
+    // NRGP Number
+    // ============================================================
+
+    if (data.NRGPNumber) {
+      const nrgpNumber =
+        Number(data.NRGPNumber);
+
+      if (
+        !Number.isInteger(nrgpNumber) ||
+        nrgpNumber <= 0
+      ) {
+        return fail(
+          "Valid NRGPNumber is required.",
+          400,
+        );
+      }
+
+      values.push(
+        nrgpNumber,
+      );
+
+      conditions.push(
+        `m.NRGPNumber = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // Department
+    // ============================================================
+
+    if (data.DepartmentID) {
+      const departmentID =
+        Number(data.DepartmentID);
+
+      if (
+        !Number.isInteger(departmentID) ||
+        departmentID <= 0
+      ) {
+        return fail(
+          "Valid DepartmentID is required.",
+          400,
+        );
+      }
+
+      values.push(
+        departmentID,
+      );
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // Status
+    // ============================================================
+
+    if (
+      data.Status &&
+      String(data.Status).trim()
+    ) {
+      values.push(
+        String(data.Status)
+          .trim()
+          .toUpperCase(),
+      );
+
+      conditions.push(
+        `UPPER(TRIM(COALESCE(m.Status, ''))) = $${values.length}`,
+      );
+    }
+
+
+    // ============================================================
+    // Search
+    // ============================================================
+
+    if (
+      data.Search &&
+      String(data.Search).trim()
+    ) {
+      values.push(
+        `%${String(data.Search).trim()}%`,
+      );
+
+      const searchIndex =
+        values.length;
+
+      conditions.push(`
+        (
+          CAST(
+            m.NRGPNumber AS TEXT
+          ) ILIKE $${searchIndex}
+
+          OR m.VendorName
+            ILIKE $${searchIndex}
+
+          OR m.ContactNumber
+            ILIKE $${searchIndex}
+
+          OR m.Company
+            ILIKE $${searchIndex}
+
+          OR m.SendTo
+            ILIKE $${searchIndex}
+
+          OR m.Address
+            ILIKE $${searchIndex}
+
+          OR m.TakenBy
+            ILIKE $${searchIndex}
+
+          OR d.DepartmentName
+            ILIKE $${searchIndex}
+        )
+      `);
+    }
+
+
+    // ============================================================
+    // Where Clause
+    // ============================================================
+
+    const whereClause =
+      `WHERE ${conditions.join(
+        " AND ",
+      )}`;
+
+
+    // ============================================================
+    // Total Count
+    // ============================================================
+
+    const countResult =
+      await pool.query(
+        `
+        SELECT
+          COUNT(*) AS TotalCount
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID =
+            m.DepartmentID
+
+        ${whereClause};
+        `,
+        values,
+      );
+
+    const totalCount =
+      Number(
+        countResult.rows[0]
+          ?.totalcount || 0,
+      );
+
+
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const queryValues = [
+      ...values,
+      pageSize,
+      offset,
+    ];
+
+    const limitIndex =
+      values.length + 1;
+
+    const offsetIndex =
+      values.length + 2;
+
+
+    // ============================================================
+    // Master Data
+    // ============================================================
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          m.NRGPID,
+          m.NRGPNumber,
+          m.OrganizationID,
+
+          m.VendorName,
+          m.ContactNumber,
+          m.Company,
+          m.SendTo,
+
+          m.DepartmentID,
+          d.DepartmentName,
+
+          m.Address,
+          m.TakenBy,
+
+          m.Status,
+
+          m.CreatedBy,
+          m.CreatedDate,
+
+          m.ModifiedBy,
+          m.ModifiedDate
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID =
+            m.DepartmentID
+
+        ${whereClause}
+
+        ORDER BY
+          m.NRGPID DESC
+
+        LIMIT $${limitIndex}
+        OFFSET $${offsetIndex};
+        `,
+        queryValues,
+      );
+
+
+    // ============================================================
+    // Approval Data
+    // ============================================================
+
+    const approvalsByNRGP =
+      new Map();
+
+    if (result.rows.length > 0) {
+      const NRGPIDs =
+        result.rows.map(
+          (row) =>
+            Number(row.nrgpid),
+        );
+
+      const approvalResult =
+        await pool.query(
+          `
+          SELECT
+            a.NRGPApprovalID,
+            a.NRGPID,
+            a.NRGPApprovalConfigID,
+
+            a.ApprovalLevel,
+            a.ApprovalRole,
+            a.ApprovalOrder,
+
+            a.Status,
+            a.StatusDateTime,
+
+            a.ActionBy,
+
+            actionUser.FullName
+              AS ActionByName,
+
+            a.Remarks
+
+          FROM Gatepass_NRGP_Approval a
+
+          LEFT JOIN user_master actionUser
+            ON actionUser.UserID =
+              a.ActionBy
+
+          WHERE a.NRGPID =
+            ANY($1::BIGINT[])
+
+            AND a.IsDeleted =
+              FALSE
+
+          ORDER BY
+            a.NRGPID ASC,
+            a.ApprovalOrder ASC,
+            a.ApprovalLevel ASC,
+            a.NRGPApprovalID ASC;
+          `,
+          [
+            NRGPIDs,
+          ],
+        );
+
+
+      // ==========================================================
+      // Group Approvals By NRGP
+      // ==========================================================
+
+      for (
+        const approval of
+        approvalResult.rows
+      ) {
+        const NRGPID =
+          String(
+            approval.nrgpid,
+          );
+
+        if (
+          !approvalsByNRGP.has(
+            NRGPID,
+          )
+        ) {
+          approvalsByNRGP.set(
+            NRGPID,
+            [],
+          );
+        }
+
+        approvalsByNRGP
+          .get(NRGPID)
+          .push(approval);
+      }
+    }
+
+
+    // ============================================================
+    // Final Mapping
+    // ============================================================
+
+    const records =
+      result.rows.map(
+        (row) => {
+          const rawApprovals =
+            approvalsByNRGP.get(
+              String(
+                row.nrgpid,
+              ),
+            ) || [];
+
+          return {
+            ...mapNRGPMaster(
+              row,
+            ),
+
+            // ====================================================
+            // IMPORTANT
+            //
+            // If any approval is REJECTED / CANCELLED,
+            // all approval stages AFTER that will return blank/null.
+            //
+            // DB data is NOT changed.
+            // Only response is changed.
+            // ====================================================
+
+            Approvals:
+              mapNRGPApprovalFlow(
+                rawApprovals,
+              ),
+          };
+        },
+      );
+
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return {
+      success:
+        true,
+
+      message:
+        "Total NRGP fetched successfully.",
+
+      TotalCount:
+        totalCount,
+
+      Page:
+        page,
+
+      PageSize:
+        pageSize,
+
+      TotalPages:
+        Math.ceil(
+          totalCount /
+            pageSize,
+        ),
+
+      data:
+        records,
+    };
+
+  } catch (error) {
+    console.error(
+      "Get Total NRGP Error:",
+      error.message,
+    );
+
+    return databaseFailure(
+      error,
+      "Fetch total NRGP",
     );
   }
 };
@@ -18422,12 +18959,12 @@ const getNRGPListReport = async (data) => {
     // Report Type / Status
     // ============================================================
 
-    if (data.ReportType) {
-      const reportType = String(data.ReportType)
+    if (data.Status) {
+      const status = String(data.Status)
         .trim()
         .toUpperCase();
 
-      switch (reportType) {
+      switch (status) {
         // ========================================================
         // Open
         // ========================================================
@@ -18463,7 +19000,7 @@ const getNRGPListReport = async (data) => {
 
         default:
           return fail(
-            "Invalid ReportType.",
+            "Invalid Status.",
             400,
           );
       }
@@ -19551,13 +20088,13 @@ const generateNRGPListReportPdf = async (data) => {
     // SAME AS GET API
     // ============================================================
 
-    if (data.ReportType) {
-      const reportType =
-        String(data.ReportType)
+    if (data.Status) {
+      const Status =
+        String(data.Status)
           .trim()
           .toUpperCase();
 
-      switch (reportType) {
+      switch (Status) {
         // ========================================================
         // Open
         // ========================================================
@@ -19593,7 +20130,7 @@ const generateNRGPListReportPdf = async (data) => {
 
         default:
           return fail(
-            "Invalid ReportType.",
+            "Invalid Status.",
             400,
           );
       }
@@ -19740,9 +20277,9 @@ const generateNRGPListReportPdf = async (data) => {
             : "All",
       },
       {
-        label: "Report Type",
+        label: "Status",
         value:
-          data.ReportType || "All",
+          data.Status || "All",
       },
       {
         label: "Department",
@@ -22353,6 +22890,7 @@ module.exports = {
 
   createNRGP,
   getNRGPList,
+  getTotalNRGP,
   getNRGPById,
   getNRGPVendorNames,
   updateNRGP,
