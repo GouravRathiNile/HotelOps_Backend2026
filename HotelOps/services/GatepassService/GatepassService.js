@@ -14965,6 +14965,41 @@ const normalizeNRGPApprovalRole = (role) => {
 
   return normalizedRole;
 };
+const getNRGPUserApprovalRole = (
+  userType,
+  departmentName,
+) => {
+  const normalizedUserType =
+    String(userType || "")
+      .trim()
+      .toUpperCase();
+
+  const normalizedDepartment =
+    String(departmentName || "")
+      .trim()
+      .toUpperCase();
+
+  // ============================================================
+  // Finance Controller
+  //
+  // Project condition:
+  // UserType = HOD
+  // DepartmentName = Finance
+  //
+  // FC and DOF are same approval role
+  // ============================================================
+
+  if (
+    normalizedUserType === "HOD" &&
+    normalizedDepartment === "FINANCE"
+  ) {
+    return "FC";
+  }
+
+  return normalizeNRGPApprovalRole(
+    normalizedUserType,
+  );
+};
 // ========================Attach NRGP Related Datax`
 const attachNRGPRelatedData = async (rows) => {
   if (!rows.length) {
@@ -16620,13 +16655,18 @@ const processNRGPApproval = async (data) => {
         .toUpperCase();
 
     // ============================================================
-    // User Role
-    // FC / DOF are treated as same Finance role
+    // Logged-In User Effective Approval Role
+    //
+    // HOD + Finance => FC
+    // FC / DOF      => FC
+    // HOD           => HOD
+    // GM            => GM
     // ============================================================
 
-    const userType =
-      normalizeNRGPApprovalRole(
+    const userApprovalRole =
+      getNRGPUserApprovalRole(
         data.UserType,
+        data.DepartmentName,
       );
 
     // ============================================================
@@ -16656,9 +16696,9 @@ const processNRGPApproval = async (data) => {
       );
     }
 
-    if (!userType) {
+    if (!userApprovalRole) {
       return fail(
-        "User type is required.",
+        "User approval role is required.",
         400,
       );
     }
@@ -16679,18 +16719,18 @@ const processNRGPApproval = async (data) => {
     const masterResult =
       await client.query(
         `
-        SELECT
-          NRGPID,
-          NRGPNumber,
-          OrganizationID,
-          Status
+          SELECT
+            NRGPID,
+            NRGPNumber,
+            OrganizationID,
+            Status
 
-        FROM Gatepass_NRGP_Entry_Master
+          FROM Gatepass_NRGP_Entry_Master
 
-        WHERE NRGPID = $1
-          AND IsDeleted = FALSE
+          WHERE NRGPID = $1
+            AND IsDeleted = FALSE
 
-        FOR UPDATE;
+          FOR UPDATE;
         `,
         [
           NRGPID,
@@ -16757,34 +16797,34 @@ const processNRGPApproval = async (data) => {
     const currentApprovalResult =
       await client.query(
         `
-        SELECT
-          NRGPApprovalID,
-          NRGPID,
-          NRGPApprovalConfigID,
-          ApprovalLevel,
-          ApprovalRole,
-          ApprovalOrder,
-          Status
+          SELECT
+            NRGPApprovalID,
+            NRGPID,
+            NRGPApprovalConfigID,
+            ApprovalLevel,
+            ApprovalRole,
+            ApprovalOrder,
+            Status
 
-        FROM Gatepass_NRGP_Approval
+          FROM Gatepass_NRGP_Approval
 
-        WHERE NRGPID = $1
-          AND IsDeleted = FALSE
-          AND UPPER(
-                TRIM(
-                  COALESCE(
-                    Status,
-                    'PENDING'
+          WHERE NRGPID = $1
+            AND IsDeleted = FALSE
+            AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      Status,
+                      'PENDING'
+                    )
                   )
-                )
-              ) = 'PENDING'
+                ) = 'PENDING'
 
-        ORDER BY
-          ApprovalOrder ASC
+          ORDER BY
+            ApprovalOrder ASC
 
-        LIMIT 1
+          LIMIT 1
 
-        FOR UPDATE;
+          FOR UPDATE;
         `,
         [
           NRGPID,
@@ -16816,11 +16856,10 @@ const processNRGPApproval = async (data) => {
     // ============================================================
     // Normalize Current Approval Role
     //
-    // Examples:
-    // FC  -> FC
-    // DOF -> FC
-    // HOD -> HOD
-    // GM  -> GM
+    // FC  => FC
+    // DOF => FC
+    // HOD => HOD
+    // GM  => GM
     // ============================================================
 
     const approvalRole =
@@ -16830,15 +16869,57 @@ const processNRGPApproval = async (data) => {
       );
 
     // ============================================================
+    // Debug
+    // ============================================================
+
+    console.log(
+      "========== NRGP APPROVAL ROLE CHECK ==========",
+    );
+
+    console.log(
+      "JWT UserType:",
+      data.UserType,
+    );
+
+    console.log(
+      "JWT DepartmentName:",
+      data.DepartmentName,
+    );
+
+    console.log(
+      "Effective User Approval Role:",
+      userApprovalRole,
+    );
+
+    console.log(
+      "DB ApprovalRole:",
+      currentApproval.approvalrole,
+    );
+
+    console.log(
+      "Normalized DB ApprovalRole:",
+      approvalRole,
+    );
+
+    console.log(
+      "==============================================",
+    );
+
+    // ============================================================
     // Role Validation
     //
-    // FC and DOF match each other.
-    // Other roles must match exactly.
+    // Examples:
+    //
+    // HOD + Finance => FC
+    // DB DOF        => FC
+    // FC === FC     => Allowed
+    //
+    // Normal HOD + other department => HOD
     // ============================================================
 
     if (
       approvalRole !==
-      userType
+      userApprovalRole
     ) {
       await client.query(
         "ROLLBACK",
@@ -16864,25 +16945,25 @@ const processNRGPApproval = async (data) => {
 
       await client.query(
         `
-        UPDATE Gatepass_NRGP_Approval
+          UPDATE Gatepass_NRGP_Approval
 
-        SET
-          Status = 'Approved',
+          SET
+            Status = 'Approved',
 
-          StatusDateTime =
-            CURRENT_TIMESTAMP,
+            StatusDateTime =
+              CURRENT_TIMESTAMP,
 
-          ActionBy = $1,
+            ActionBy = $1,
 
-          Remarks = $2,
+            Remarks = $2,
 
-          ModifiedBy = $1,
+            ModifiedBy = $1,
 
-          ModifiedDate =
-            CURRENT_TIMESTAMP
+            ModifiedDate =
+              CURRENT_TIMESTAMP
 
-        WHERE NRGPApprovalID = $3
-          AND IsDeleted = FALSE;
+          WHERE NRGPApprovalID = $3
+            AND IsDeleted = FALSE;
         `,
         [
           data.UserID ||
@@ -16906,27 +16987,27 @@ const processNRGPApproval = async (data) => {
       const pendingResult =
         await client.query(
           `
-          SELECT
-            NRGPApprovalID
+            SELECT
+              NRGPApprovalID
 
-          FROM Gatepass_NRGP_Approval
+            FROM Gatepass_NRGP_Approval
 
-          WHERE NRGPID = $1
-            AND IsDeleted = FALSE
+            WHERE NRGPID = $1
+              AND IsDeleted = FALSE
 
-            AND UPPER(
-                  TRIM(
-                    COALESCE(
-                      Status,
-                      'PENDING'
+              AND UPPER(
+                    TRIM(
+                      COALESCE(
+                        Status,
+                        'PENDING'
+                      )
                     )
-                  )
-                ) = 'PENDING'
+                  ) = 'PENDING'
 
-          ORDER BY
-            ApprovalOrder ASC
+            ORDER BY
+              ApprovalOrder ASC
 
-          LIMIT 1;
+            LIMIT 1;
           `,
           [
             NRGPID,
@@ -16944,18 +17025,18 @@ const processNRGPApproval = async (data) => {
       ) {
         await client.query(
           `
-          UPDATE Gatepass_NRGP_Entry_Master
+            UPDATE Gatepass_NRGP_Entry_Master
 
-          SET
-            Status = 'APPROVED',
+            SET
+              Status = 'APPROVED',
 
-            ModifiedBy = $1,
+              ModifiedBy = $1,
 
-            ModifiedDate =
-              CURRENT_TIMESTAMP
+              ModifiedDate =
+                CURRENT_TIMESTAMP
 
-          WHERE NRGPID = $2
-            AND IsDeleted = FALSE;
+            WHERE NRGPID = $2
+              AND IsDeleted = FALSE;
           `,
           [
             data.UserID ||
@@ -17011,25 +17092,25 @@ const processNRGPApproval = async (data) => {
 
       await client.query(
         `
-        UPDATE Gatepass_NRGP_Approval
+          UPDATE Gatepass_NRGP_Approval
 
-        SET
-          Status = 'Rejected',
+          SET
+            Status = 'Rejected',
 
-          StatusDateTime =
-            CURRENT_TIMESTAMP,
+            StatusDateTime =
+              CURRENT_TIMESTAMP,
 
-          ActionBy = $1,
+            ActionBy = $1,
 
-          Remarks = $2,
+            Remarks = $2,
 
-          ModifiedBy = $1,
+            ModifiedBy = $1,
 
-          ModifiedDate =
-            CURRENT_TIMESTAMP
+            ModifiedDate =
+              CURRENT_TIMESTAMP
 
-        WHERE NRGPApprovalID = $3
-          AND IsDeleted = FALSE;
+          WHERE NRGPApprovalID = $3
+            AND IsDeleted = FALSE;
         `,
         [
           data.UserID ||
@@ -17052,18 +17133,18 @@ const processNRGPApproval = async (data) => {
 
       await client.query(
         `
-        UPDATE Gatepass_NRGP_Entry_Master
+          UPDATE Gatepass_NRGP_Entry_Master
 
-        SET
-          Status = 'REJECTED',
+          SET
+            Status = 'REJECTED',
 
-          ModifiedBy = $1,
+            ModifiedBy = $1,
 
-          ModifiedDate =
-            CURRENT_TIMESTAMP
+            ModifiedDate =
+              CURRENT_TIMESTAMP
 
-        WHERE NRGPID = $2
-          AND IsDeleted = FALSE;
+          WHERE NRGPID = $2
+            AND IsDeleted = FALSE;
         `,
         [
           data.UserID ||
@@ -17109,25 +17190,25 @@ const processNRGPApproval = async (data) => {
 
       await client.query(
         `
-        UPDATE Gatepass_NRGP_Approval
+          UPDATE Gatepass_NRGP_Approval
 
-        SET
-          Status = 'Cancelled',
+          SET
+            Status = 'Cancelled',
 
-          StatusDateTime =
-            CURRENT_TIMESTAMP,
+            StatusDateTime =
+              CURRENT_TIMESTAMP,
 
-          ActionBy = $1,
+            ActionBy = $1,
 
-          Remarks = $2,
+            Remarks = $2,
 
-          ModifiedBy = $1,
+            ModifiedBy = $1,
 
-          ModifiedDate =
-            CURRENT_TIMESTAMP
+            ModifiedDate =
+              CURRENT_TIMESTAMP
 
-        WHERE NRGPApprovalID = $3
-          AND IsDeleted = FALSE;
+          WHERE NRGPApprovalID = $3
+            AND IsDeleted = FALSE;
         `,
         [
           data.UserID ||
@@ -17150,18 +17231,18 @@ const processNRGPApproval = async (data) => {
 
       await client.query(
         `
-        UPDATE Gatepass_NRGP_Entry_Master
+          UPDATE Gatepass_NRGP_Entry_Master
 
-        SET
-          Status = 'CANCELLED',
+          SET
+            Status = 'CANCELLED',
 
-          ModifiedBy = $1,
+            ModifiedBy = $1,
 
-          ModifiedDate =
-            CURRENT_TIMESTAMP
+            ModifiedDate =
+              CURRENT_TIMESTAMP
 
-        WHERE NRGPID = $2
-          AND IsDeleted = FALSE;
+          WHERE NRGPID = $2
+            AND IsDeleted = FALSE;
         `,
         [
           data.UserID ||
