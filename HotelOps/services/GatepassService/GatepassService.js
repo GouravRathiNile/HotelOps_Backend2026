@@ -8131,29 +8131,61 @@ const getRGPListReport = async (data) => {
     // ============================================================
 
     const reportData =
-      result.rows.map(
-        (row, index) => ({
-          ...row,
+  result.rows.map(
+    (row, index) => {
+      let displayStatus =
+        row.status;
 
-          expectedreturndate:
-            formatDate(
-              row.expectedreturndate,
-            ),
+      const normalizedStatus =
+        String(row.status || "")
+          .trim()
+          .toUpperCase();
 
-          createddate:
-            formatDate(
-              row.createddate,
-            ),
+      if (
+        normalizedStatus === "CHECKED OUT" &&
+        row.expectedreturndate
+      ) {
+        const expectedDate =
+          new Date(row.expectedreturndate);
 
-          Items:
-            relatedRecords[index]
-              .Items,
+        const today =
+          new Date();
 
-          Approvals:
-            relatedRecords[index]
-              .Approvals,
-        }),
-      );
+        expectedDate.setHours(0, 0, 0, 0);
+        today.setHours(0, 0, 0, 0);
+
+        if (expectedDate < today) {
+          displayStatus =
+            "OVERDUE";
+        }
+      }
+
+      return {
+        ...row,
+
+        status:
+          displayStatus,
+
+        expectedreturndate:
+          formatDate(
+            row.expectedreturndate,
+          ),
+
+        createddate:
+          formatDate(
+            row.createddate,
+          ),
+
+        Items:
+          relatedRecords[index]
+            .Items,
+
+        Approvals:
+          relatedRecords[index]
+            .Approvals,
+      };
+    },
+  );
 
     // ============================================================
     // Response
@@ -10438,33 +10470,89 @@ const getRGPListReportPdf = async (data) => {
     // ============================================================
 
     const reportData =
-      result.rows.map(
-        (row, index) => ({
-          ...row,
+  result.rows.map(
+    (row, index) => {
+      // ==========================================================
+      // Display Status
+      //
+      // CHECKED OUT + ExpectedReturnDate passed => OVERDUE
+      // Only PDF response/display status changes.
+      // Database status remains CHECKED OUT.
+      // ==========================================================
 
-          expectedreturndate:
-            row.expectedreturndate
-              ? formatDate(
-                  row.expectedreturndate,
-                )
-              : "-",
+      let displayStatus =
+        row.status;
 
-          createddate:
-            row.createddate
-              ? formatDate(
-                  row.createddate,
-                )
-              : "-",
+      const normalizedStatus =
+        String(row.status || "")
+          .trim()
+          .toUpperCase();
 
-          Items:
-            relatedRecords[index]
-              ?.Items || [],
+      if (
+        normalizedStatus === "CHECKED OUT" &&
+        row.expectedreturndate
+      ) {
+        const expectedDate =
+          new Date(
+            row.expectedreturndate,
+          );
 
-          Approvals:
-            relatedRecords[index]
-              ?.Approvals || [],
-        }),
-      );
+        const today =
+          new Date();
+
+        expectedDate.setHours(
+          0,
+          0,
+          0,
+          0,
+        );
+
+        today.setHours(
+          0,
+          0,
+          0,
+          0,
+        );
+
+        if (
+          expectedDate <
+          today
+        ) {
+          displayStatus =
+            "OVERDUE";
+        }
+      }
+
+      return {
+        ...row,
+
+        status:
+          displayStatus,
+
+        expectedreturndate:
+          row.expectedreturndate
+            ? formatDate(
+                row.expectedreturndate,
+              )
+            : "-",
+
+        createddate:
+          row.createddate
+            ? formatDate(
+                row.createddate,
+              )
+            : "-",
+
+        Items:
+          relatedRecords[index]
+            ?.Items || [],
+
+        Approvals:
+          relatedRecords[index]
+            ?.Approvals || [],
+      };
+    },
+  );
 
     // ============================================================
     // Total Records
@@ -14950,6 +15038,45 @@ ActionByName:
   Remarks:
     row.remarks,
 });
+const mapNRGPApprovalFlow = (approvalRows) => {
+  let flowStopped = false;
+
+  return approvalRows.map((row) => {
+    const mappedApproval =
+      mapNRGPApproval(row);
+
+    // Previous stage was Rejected / Cancelled
+    if (flowStopped) {
+      return {
+        ...mappedApproval,
+
+        Status: null,
+
+        ActionBy: null,
+
+        ActionByName: null,
+
+        Remarks: null,
+      };
+    }
+
+    const status =
+      String(row.status || "")
+        .trim()
+        .toUpperCase();
+
+    // Current rejected/cancelled stage itself
+    // will show its actual details.
+    if (
+      status === "REJECTED" ||
+      status === "CANCELLED"
+    ) {
+      flowStopped = true;
+    }
+
+    return mappedApproval;
+  });
+};
 const normalizeNRGPApprovalRole = (role) => {
   const normalizedRole =
     String(role || "")
@@ -15131,20 +15258,21 @@ const attachNRGPRelatedData = async (rows) => {
             record.NRGPID,
         );
 
-      record.Approvals =
-        approvalResult.rows
-          .filter(
-            (approval) =>
-              String(
-                approval.nrgpid,
-              ) ===
-              String(
-                row.nrgpid,
-              ),
-          )
-          .map(
-            mapNRGPApproval,
-          );
+    const recordApprovals =
+  approvalResult.rows.filter(
+    (approval) =>
+      String(
+        approval.nrgpid,
+      ) ===
+      String(
+        row.nrgpid,
+      ),
+  );
+
+record.Approvals =
+  mapNRGPApprovalFlow(
+    recordApprovals,
+  );
 
       return record;
     },
@@ -15538,6 +15666,10 @@ const createNRGP = async (data) => {
 // ============================================================NRGP List
 const getNRGPList = async (data) => {
   try {
+    // ============================================================
+    // Pagination
+    // ============================================================
+
     const page =
       Number(data.page) || 1;
 
@@ -15591,6 +15723,63 @@ const getNRGPList = async (data) => {
 
 
     // ============================================================
+    // Logged-In User
+    // ============================================================
+
+    const loggedInUserID =
+      Number(data.UserID);
+
+    const rawUserType =
+      String(data.UserType || "")
+        .trim()
+        .toUpperCase();
+
+    const departmentName =
+      String(data.DepartmentName || "")
+        .trim()
+        .toUpperCase();
+
+
+    // ============================================================
+    // Effective Approval Role
+    //
+    // HOD + Finance => FC
+    // FC / DOF      => FC
+    // HOD           => HOD
+    // GM            => GM
+    // ============================================================
+
+    const userApprovalRole =
+      getNRGPUserApprovalRole(
+        data.UserType,
+        data.DepartmentName,
+      );
+
+
+    // ============================================================
+    // Full List Users
+    //
+    // Security and CEO can see all NRGP records.
+    // ============================================================
+
+    const canViewAll =
+      rawUserType === "SECURITY" ||
+      rawUserType === "CEO";
+
+
+    // ============================================================
+    // Approver Detection
+    //
+    // Security / CEO => Full list
+    // Others         => Approval-based list
+    // ============================================================
+
+    const isApprover =
+      !canViewAll &&
+      Boolean(userApprovalRole);
+
+
+    // ============================================================
     // NRGP Number
     // ============================================================
 
@@ -15614,23 +15803,6 @@ const getNRGPList = async (data) => {
 
       conditions.push(
         `m.NRGPNumber = $${values.length}`,
-      );
-    }
-
-
-    // ============================================================
-    // Status
-    // ============================================================
-
-    if (data.Status) {
-      values.push(
-        String(data.Status)
-          .trim()
-          .toUpperCase(),
-      );
-
-      conditions.push(
-        `UPPER(m.Status) = $${values.length}`,
       );
     }
 
@@ -15723,23 +15895,172 @@ const getNRGPList = async (data) => {
     }
 
 
+    // ============================================================
+    // Approver Visibility
+    //
+    // Approver should only see NRGP where his approval role exists.
+    //
+    // FC condition:
+    // ApprovalRole FC / DOF both treated as Finance.
+    // ============================================================
+
+    if (isApprover) {
+      values.push(
+        userApprovalRole,
+      );
+
+      const roleIndex =
+        values.length;
+
+      conditions.push(`
+        EXISTS (
+          SELECT 1
+
+          FROM Gatepass_NRGP_Approval ua
+
+          WHERE ua.NRGPID = m.NRGPID
+            AND ua.IsDeleted = FALSE
+
+            AND (
+              CASE
+                WHEN UPPER(
+                  TRIM(
+                    COALESCE(
+                      ua.ApprovalRole,
+                      ''
+                    )
+                  )
+                ) IN ('FC', 'DOF')
+                  THEN 'FC'
+
+                ELSE UPPER(
+                  TRIM(
+                    COALESCE(
+                      ua.ApprovalRole,
+                      ''
+                    )
+                  )
+                )
+              END
+            ) = $${roleIndex}
+        )
+      `);
+    }
+
+
+    // ============================================================
+    // Status Filter
+    //
+    // Security / CEO:
+    //   Status filter works on Master Status.
+    //
+    // Approver:
+    //   Status filter works on HIS approval status.
+    // ============================================================
+
+    if (
+      data.Status &&
+      String(data.Status).trim()
+    ) {
+      const normalizedStatus =
+        String(data.Status)
+          .trim()
+          .toUpperCase();
+
+      if (canViewAll) {
+        values.push(
+          normalizedStatus,
+        );
+
+        conditions.push(
+          `UPPER(TRIM(COALESCE(m.Status, ''))) = $${values.length}`,
+        );
+      } else if (isApprover) {
+        values.push(
+          normalizedStatus,
+        );
+
+        const statusIndex =
+          values.length;
+
+        values.push(
+          userApprovalRole,
+        );
+
+        const statusRoleIndex =
+          values.length;
+
+        conditions.push(`
+          EXISTS (
+            SELECT 1
+
+            FROM Gatepass_NRGP_Approval sa
+
+            WHERE sa.NRGPID = m.NRGPID
+              AND sa.IsDeleted = FALSE
+
+              AND (
+                CASE
+                  WHEN UPPER(
+                    TRIM(
+                      COALESCE(
+                        sa.ApprovalRole,
+                        ''
+                      )
+                    )
+                  ) IN ('FC', 'DOF')
+                    THEN 'FC'
+
+                  ELSE UPPER(
+                    TRIM(
+                      COALESCE(
+                        sa.ApprovalRole,
+                        ''
+                      )
+                    )
+                  )
+                END
+              ) = $${statusRoleIndex}
+
+              AND UPPER(
+                TRIM(
+                  COALESCE(
+                    sa.Status,
+                    'PENDING'
+                  )
+                )
+              ) = $${statusIndex}
+          )
+        `);
+      }
+    }
+
+
+    // ============================================================
+    // Where Clause
+    // ============================================================
+
     const whereClause =
       `WHERE ${conditions.join(" AND ")}`;
 
 
     // ============================================================
     // Count
+    // Same conditions as list
     // ============================================================
 
     const countResult =
       await pool.query(
         `
-        SELECT
-          COUNT(*) AS TotalCount
-        FROM Gatepass_NRGP_Entry_Master m
-        LEFT JOIN department_master d
-          ON d.DepartmentID = m.DepartmentID
-        ${whereClause};
+          SELECT
+            COUNT(*) AS TotalCount
+
+          FROM Gatepass_NRGP_Entry_Master m
+
+          LEFT JOIN department_master d
+            ON d.DepartmentID = m.DepartmentID
+
+          ${whereClause};
         `,
         values,
       );
@@ -15747,7 +16068,8 @@ const getNRGPList = async (data) => {
 
     const totalCount =
       Number(
-        countResult.rows[0].totalcount,
+        countResult.rows[0]
+          .totalcount,
       );
 
 
@@ -15771,72 +16093,217 @@ const getNRGPList = async (data) => {
     const result =
       await pool.query(
         `
-        SELECT
-          m.NRGPID,
-          m.NRGPNumber,
-          m.OrganizationID,
-          m.VendorName,
-          m.ContactNumber,
-          m.Company,
-          m.SendTo,
-          m.DepartmentID,
-          d.DepartmentName,
-          m.Address,
-          m.TakenBy,
-          m.Status,
-          m.CreatedBy,
-          m.CreatedDate,
-          m.ModifiedBy,
-          m.ModifiedDate
+          SELECT
+            m.NRGPID,
+            m.NRGPNumber,
+            m.OrganizationID,
+            m.VendorName,
+            m.ContactNumber,
+            m.Company,
+            m.SendTo,
+            m.DepartmentID,
+            d.DepartmentName,
+            m.Address,
+            m.TakenBy,
+            m.Status,
+            m.CreatedBy,
+            m.CreatedDate,
+            m.ModifiedBy,
+            m.ModifiedDate
 
-        FROM Gatepass_NRGP_Entry_Master m
+          FROM Gatepass_NRGP_Entry_Master m
 
-        LEFT JOIN department_master d
-          ON d.DepartmentID = m.DepartmentID
+          LEFT JOIN department_master d
+            ON d.DepartmentID = m.DepartmentID
 
-        ${whereClause}
+          ${whereClause}
 
-        ORDER BY
-          m.NRGPID DESC
+          ORDER BY
+            m.NRGPID DESC
 
-        LIMIT $${limitIndex}
-        OFFSET $${offsetIndex};
+          LIMIT $${limitIndex}
+          OFFSET $${offsetIndex};
         `,
         queryValues,
       );
 
 
     // ============================================================
-    // Mapping
+    // Get Approvals For Current Page
     // ============================================================
 
-    const approvalsByNRGP = new Map();
+    const approvalsByNRGP =
+      new Map();
+
     if (result.rows.length) {
-      const approvalResult = await pool.query(
-        `SELECT NRGPApprovalID, NRGPID, NRGPApprovalConfigID,
-                ApprovalLevel, ApprovalRole, ApprovalOrder, Status,
-                StatusDateTime, ActionBy, Remarks
-         FROM Gatepass_NRGP_Approval
-         WHERE NRGPID = ANY($1::BIGINT[])
-           AND IsDeleted = FALSE
-         ORDER BY ApprovalOrder ASC, ApprovalLevel ASC, NRGPApprovalID ASC;`,
-        [result.rows.map((row) => row.nrgpid)],
-      );
-      for (const approval of approvalResult.rows) {
-        const id = String(approval.nrgpid);
-        if (!approvalsByNRGP.has(id)) approvalsByNRGP.set(id, []);
-        approvalsByNRGP.get(id).push(mapNRGPApproval(approval));
+      const approvalResult =
+        await pool.query(
+          `
+            SELECT
+              NRGPApprovalID,
+              NRGPID,
+              NRGPApprovalConfigID,
+              ApprovalLevel,
+              ApprovalRole,
+              ApprovalOrder,
+              Status,
+              StatusDateTime,
+              ActionBy,
+              Remarks
+
+            FROM Gatepass_NRGP_Approval
+
+            WHERE NRGPID = ANY($1::BIGINT[])
+              AND IsDeleted = FALSE
+
+            ORDER BY
+              NRGPID ASC,
+              ApprovalOrder ASC,
+              ApprovalLevel ASC,
+              NRGPApprovalID ASC;
+          `,
+          [
+            result.rows.map(
+              (row) =>
+                row.nrgpid,
+            ),
+          ],
+        );
+
+
+      for (
+        const approval of
+        approvalResult.rows
+      ) {
+        const id =
+          String(
+            approval.nrgpid,
+          );
+
+        if (
+          !approvalsByNRGP.has(
+            id,
+          )
+        ) {
+          approvalsByNRGP.set(
+            id,
+            [],
+          );
+        }
+
+        approvalsByNRGP
+          .get(id)
+          .push(approval);
       }
     }
 
-    const records = result.rows.map((row) => ({
-      ...mapNRGPMaster(row),
-      Approvals: approvalsByNRGP.get(String(row.nrgpid)) || [],
-    }));
 
+    // ============================================================
+    // Final Mapping
+    // ============================================================
+
+    const records =
+      result.rows.map(
+        (row) => {
+          const rawApprovals =
+            approvalsByNRGP.get(
+              String(
+                row.nrgpid,
+              ),
+            ) || [];
+
+
+          // ========================================================
+          // Current Sequential Pending Approval
+          //
+          // Approval rows are sorted by ApprovalOrder.
+          // First Pending row = current actionable approval.
+          // ========================================================
+
+          const currentApproval =
+            rawApprovals.find(
+              (approval) =>
+                String(
+                  approval.status ||
+                    "PENDING",
+                )
+                  .trim()
+                  .toUpperCase() ===
+                "PENDING",
+            );
+
+
+          // ========================================================
+          // CanApprove
+          //
+          // TRUE only if:
+          // - current approval is Pending
+          // - current approval belongs to logged-in approver
+          //
+          // FC / DOF are treated as same role.
+          // ========================================================
+
+          let CanApprove =
+            false;
+
+          if (
+            currentApproval &&
+            isApprover
+          ) {
+            const currentRole =
+              normalizeNRGPApprovalRole(
+                currentApproval
+                  .approvalrole,
+              );
+
+            CanApprove =
+              currentRole ===
+              userApprovalRole;
+          }
+
+
+          // ========================================================
+          // CanAction
+          //
+          // Only creator gets TRUE.
+          // ========================================================
+
+          const CanAction =
+            Number(
+              row.createdby,
+            ) ===
+            loggedInUserID;
+
+
+          // ========================================================
+          // Response
+          // ========================================================
+
+          return {
+            ...mapNRGPMaster(
+              row,
+            ),
+
+            CanApprove,
+
+            CanAction,
+
+            Approvals:
+  mapNRGPApprovalFlow(
+    rawApprovals,
+  ),
+          };
+        },
+      );
+
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return {
       success: true,
+
       message:
         "NRGP list fetched successfully.",
 
@@ -15851,7 +16318,8 @@ const getNRGPList = async (data) => {
 
       TotalPages:
         Math.ceil(
-          totalCount / pageSize,
+          totalCount /
+          pageSize,
         ),
 
       data:
@@ -21121,7 +21589,7 @@ const generateNRGPDetailPdf = async (data) => {
 
                 {
                   text:
-                    "NRGP Detail Report",
+                    "Non Returnable Gate Pass ",
 
                   style:
                     "title",
