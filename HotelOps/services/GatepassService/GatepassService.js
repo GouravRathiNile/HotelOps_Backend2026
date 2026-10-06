@@ -14870,9 +14870,14 @@ CreatedDate:
       ? formatDate(
           row.createddate,
         )
-      : null
+      : null,
+CreatedBy:
+    row.createdby
+      ? Number(row.createdby)
+      : null,
 
- 
+ CreatedByName:
+    row.createdbyname || null,
 });
 // ========================NRGP Item Mapping
 const mapNRGPItem = (row) => ({
@@ -14904,13 +14909,13 @@ const mapNRGPItem = (row) => ({
 
   SerialNumber:
     row.serialnumber,
-
+  
 CreatedDate:
     row.createddate
       ? formatDate(
           row.createddate,
         )
-      : null
+      : null,
 
   
 
@@ -14935,9 +14940,13 @@ const mapNRGPApproval = (row) => ({
 
   Status:
     row.status,
-
+ActionBy:
+    row.actionby
+      ? Number(row.actionby)
+      : null,
  
-
+ActionByName:
+    row.actionbyname || null,
   Remarks:
     row.remarks,
 });
@@ -14956,7 +14965,7 @@ const normalizeNRGPApprovalRole = (role) => {
 
   return normalizedRole;
 };
-// ========================Attach NRGP Related Data
+// ========================Attach NRGP Related Datax`
 const attachNRGPRelatedData = async (rows) => {
   if (!rows.length) {
     return [];
@@ -14978,54 +14987,86 @@ const attachNRGPRelatedData = async (rows) => {
         NRGPItemID,
         NRGPID,
         OrganizationID,
+
         ItemName,
         Specification,
         Quantity,
         Rate,
         MakeModel,
         SerialNumber,
+
         CreatedBy,
         CreatedDate,
         ModifiedBy,
         ModifiedDate
+
       FROM Gatepass_NRGP_Entry_Item_Details
-      WHERE NRGPID = ANY($1::BIGINT[])
-        AND IsDeleted = FALSE
-      ORDER BY NRGPItemID ASC;
+
+      WHERE NRGPID =
+        ANY($1::BIGINT[])
+
+        AND IsDeleted =
+          FALSE
+
+      ORDER BY
+        NRGPItemID ASC;
       `,
-      [NRGPIDs],
+      [
+        NRGPIDs,
+      ],
     );
 
   // ============================================================
   // Approvals
+  // ActionByName added from user_master
   // ============================================================
 
   const approvalResult =
     await pool.query(
       `
       SELECT
-        NRGPApprovalID,
-        NRGPID,
-        NRGPApprovalConfigID,
-        ApprovalLevel,
-        ApprovalRole,
-        ApprovalOrder,
-        Status,
-        StatusDateTime,
-        ActionBy,
-        Remarks,
-        CreatedBy,
-        CreatedDate,
-        ModifiedBy,
-        ModifiedDate
-      FROM Gatepass_NRGP_Approval
-      WHERE NRGPID = ANY($1::BIGINT[])
-        AND IsDeleted = FALSE
+        a.NRGPApprovalID,
+        a.NRGPID,
+        a.NRGPApprovalConfigID,
+
+        a.ApprovalLevel,
+        a.ApprovalRole,
+        a.ApprovalOrder,
+
+        a.Status,
+        a.StatusDateTime,
+
+        a.ActionBy,
+
+        actionUser.FullName
+          AS ActionByName,
+
+        a.Remarks,
+
+        a.CreatedBy,
+        a.CreatedDate,
+        a.ModifiedBy,
+        a.ModifiedDate
+
+      FROM Gatepass_NRGP_Approval a
+
+      LEFT JOIN user_master actionUser
+        ON actionUser.UserID =
+          a.ActionBy
+
+      WHERE a.NRGPID =
+        ANY($1::BIGINT[])
+
+        AND a.IsDeleted =
+          FALSE
+
       ORDER BY
-        NRGPID ASC,
-        ApprovalOrder ASC;
+        a.NRGPID ASC,
+        a.ApprovalOrder ASC;
       `,
-      [NRGPIDs],
+      [
+        NRGPIDs,
+      ],
     );
 
   // ============================================================
@@ -15041,23 +15082,38 @@ const attachNRGPRelatedData = async (rows) => {
   // Attach
   // ============================================================
 
-  return rows.map((row) => {
-    const record =
-      mapNRGPMaster(row);
+  return rows.map(
+    (row) => {
+      const record =
+        mapNRGPMaster(
+          row,
+        );
 
-    record.Items =
-      items.filter(
-        (item) =>
-          item.NRGPID ===
-          record.NRGPID,
-      );
+      record.Items =
+        items.filter(
+          (item) =>
+            item.NRGPID ===
+            record.NRGPID,
+        );
 
-    record.Approvals = approvalResult.rows
-      .filter((approval) => String(approval.nrgpid) === String(row.nrgpid))
-      .map(mapNRGPApproval);
+      record.Approvals =
+        approvalResult.rows
+          .filter(
+            (approval) =>
+              String(
+                approval.nrgpid,
+              ) ===
+              String(
+                row.nrgpid,
+              ),
+          )
+          .map(
+            mapNRGPApproval,
+          );
 
-    return record;
-  });
+      return record;
+    },
+  );
 };
 // ============================================================Create NRGP
 const createNRGP = async (data) => {
@@ -15820,6 +15876,9 @@ const getNRGPById = async (data) => {
           m.Status,
 
           m.CreatedBy,
+          createdUser.FullName
+            AS CreatedByName,
+
           m.CreatedDate,
           m.ModifiedBy,
           m.ModifiedDate
@@ -15827,14 +15886,21 @@ const getNRGPById = async (data) => {
         FROM Gatepass_NRGP_Entry_Master m
 
         LEFT JOIN department_master d
-          ON d.DepartmentID = m.DepartmentID
+          ON d.DepartmentID =
+            m.DepartmentID
+
+        LEFT JOIN user_master createdUser
+          ON createdUser.UserID =
+            m.CreatedBy
 
         WHERE m.NRGPID = $1
           AND m.IsDeleted = FALSE
 
         LIMIT 1;
         `,
-        [NRGPID],
+        [
+          NRGPID,
+        ],
       );
 
     // ============================================================
@@ -15863,7 +15929,6 @@ const getNRGPById = async (data) => {
       "NRGP record fetched successfully.",
       NRGP,
     );
-
   } catch (error) {
     return databaseFailure(
       error,
@@ -20358,13 +20423,25 @@ const generateNRGPDetailPdf = async (data) => {
         location: [
           ellipse(9, 7, 5),
           ellipse(9, 7, 1.5),
+
           {
             type: "polyline",
+
             points: [
-              { x: 5, y: 10 },
-              { x: 9, y: 18 },
-              { x: 13, y: 10 },
+              {
+                x: 5,
+                y: 10,
+              },
+              {
+                x: 9,
+                y: 18,
+              },
+              {
+                x: 13,
+                y: 10,
+              },
             ],
+
             lineWidth: 1.1,
             lineColor: COLORS.navy,
           },
@@ -20383,7 +20460,8 @@ const generateNRGPDetailPdf = async (data) => {
         ],
       };
 
-      const iconScale = 0.82;
+      const iconScale =
+        0.82;
 
       return (
         icons[type] ||
@@ -20708,10 +20786,8 @@ const generateNRGPDetailPdf = async (data) => {
 
             {
               text:
-                item.Rate !==
-                  null &&
-                item.Rate !==
-                  undefined
+                item.Rate !== null &&
+                item.Rate !== undefined
                   ? Number(
                       item.Rate,
                     ).toFixed(2)
@@ -20768,6 +20844,7 @@ const generateNRGPDetailPdf = async (data) => {
             8,
           ],
         },
+
         {},
         {},
         {},
@@ -20780,12 +20857,12 @@ const generateNRGPDetailPdf = async (data) => {
     // ============================================================
     // Approval Details
     //
-    // Same concept as RGP:
-    // Only actioned approval stages are displayed.
-    // Pending/null stages are NOT displayed.
+    // Only actioned approvals will show.
+    // Pending approvals will not show.
     // ============================================================
 
-    const approvalActionRows = [];
+    const approvalActionRows =
+      [];
 
     if (
       Array.isArray(
@@ -20802,6 +20879,10 @@ const generateNRGPDetailPdf = async (data) => {
               .trim()
               .toUpperCase();
 
+          // ======================================================
+          // Do not show Pending approval stages
+          // ======================================================
+
           if (
             ![
               "APPROVED",
@@ -20817,34 +20898,40 @@ const generateNRGPDetailPdf = async (data) => {
               approval.ApprovalRole,
             );
 
-          // getNRGPById should return ActionByName.
-          // Fallback to ActionBy only so existing data does not break.
-          const actionBy =
+          // ======================================================
+          // Actual User Name
+          // ======================================================
+
+          const actionByName =
             displayValue(
-              approval.ActionByName ??
-                approval.ActionBy,
+              approval.ActionByName,
             );
 
-          let actionText = "";
+          let actionText =
+            "";
+
+          // ======================================================
+          // Approval Text
+          // ======================================================
 
           if (
             status ===
             "APPROVED"
           ) {
             actionText =
-              `Approved by ${role} - ${actionBy}`;
+              `Approved by ${role} - ${actionByName}`;
           } else if (
             status ===
             "REJECTED"
           ) {
             actionText =
-              `Rejected by ${role} - ${actionBy}`;
+              `Rejected by ${role} - ${actionByName}`;
           } else if (
             status ===
             "CANCELLED"
           ) {
             actionText =
-              `Cancelled by ${role} - ${actionBy}`;
+              `Cancelled by ${role} - ${actionByName}`;
           }
 
           approvalActionRows.push({
@@ -20869,14 +20956,14 @@ const generateNRGPDetailPdf = async (data) => {
     }
 
     // ============================================================
-    // Prepared By
+    // Prepare By
+    // Created By Name only
     // ============================================================
 
     const preparedBy =
-      detail.CreatedByName ??
-      detail.PreparedByName ??
-      detail.CreatedBy ??
-      "-";
+      displayValue(
+        detail.CreatedByName,
+      );
 
     // ============================================================
     // Document Definition
@@ -21051,7 +21138,10 @@ const generateNRGPDetailPdf = async (data) => {
             ],
 
             body: [
+              // ==================================================
               // Row 1
+              // ==================================================
+
               [
                 labelCell(
                   "NRGP No.",
@@ -21072,7 +21162,10 @@ const generateNRGPDetailPdf = async (data) => {
                 ),
               ],
 
+              // ==================================================
               // Row 2
+              // ==================================================
+
               [
                 labelCell(
                   "Vendor Name",
@@ -21093,7 +21186,10 @@ const generateNRGPDetailPdf = async (data) => {
                 ),
               ],
 
+              // ==================================================
               // Row 3
+              // ==================================================
+
               [
                 labelCell(
                   "Company",
@@ -21114,7 +21210,12 @@ const generateNRGPDetailPdf = async (data) => {
                 ),
               ],
 
+              // ==================================================
               // Row 4
+              // Status removed
+              // Created Date added
+              // ==================================================
+
               [
                 labelCell(
                   "Taken By",
@@ -21126,16 +21227,19 @@ const generateNRGPDetailPdf = async (data) => {
                 ),
 
                 labelCell(
-                  "Status",
+                  "Created Date",
                   "status",
                 ),
 
                 valueCell(
-                  detail.Status,
+                  detail.CreatedDate,
                 ),
               ],
 
+              // ==================================================
               // Row 5
+              // ==================================================
+
               [
                 labelCell(
                   "Address",
@@ -21234,7 +21338,6 @@ const generateNRGPDetailPdf = async (data) => {
 
         // ========================================================
         // Signature / Approval Section
-        // Same style as RGP
         // ========================================================
 
         {
@@ -21247,7 +21350,7 @@ const generateNRGPDetailPdf = async (data) => {
 
           columns: [
             // ====================================================
-            // LEFT SIDE
+            // Left Side
             // ====================================================
 
             {
@@ -21308,6 +21411,11 @@ const generateNRGPDetailPdf = async (data) => {
                   ],
                 },
 
+                // ==================================================
+                // Checked & Approved By
+                // NO UNDERLINE
+                // ==================================================
+
                 {
                   text:
                     "Checked & Approved By",
@@ -21317,9 +21425,6 @@ const generateNRGPDetailPdf = async (data) => {
 
                   bold:
                     true,
-
-                  decoration:
-                    "underline",
 
                   color:
                     COLORS.text,
@@ -21331,6 +21436,10 @@ const generateNRGPDetailPdf = async (data) => {
                     10,
                   ],
                 },
+
+                // ==================================================
+                // Actual Actioned Approval Stages
+                // ==================================================
 
                 ...(
                   approvalActionRows.length >
@@ -21353,7 +21462,7 @@ const generateNRGPDetailPdf = async (data) => {
             },
 
             // ====================================================
-            // RIGHT SIDE
+            // Right Side
             // ====================================================
 
             {
@@ -21373,9 +21482,7 @@ const generateNRGPDetailPdf = async (data) => {
 
                     {
                       text:
-                        displayValue(
-                          preparedBy,
-                        ),
+                        preparedBy,
                     },
                   ],
 
@@ -21598,7 +21705,8 @@ const generateNRGPDetailPdf = async (data) => {
                 documentDefinition,
               );
 
-            const chunks = [];
+            const chunks =
+              [];
 
             pdfDocument.on(
               "data",
