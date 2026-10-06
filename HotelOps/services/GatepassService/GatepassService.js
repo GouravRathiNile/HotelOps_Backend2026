@@ -16044,7 +16044,21 @@ const getNRGPList = async (data) => {
           .trim()
           .toUpperCase();
 
-      if (canViewAll) {
+      const reportStatuses = {
+        "ALL NRGP OPEN": ["PENDING"],
+        "ALL NRGP CLOSED": ["APPROVED"],
+        "ALL NRGP CANCELLED": ["CANCELLED", "REJECTED"],
+      };
+      const masterStatuses = reportStatuses[normalizedStatus];
+
+      if (["ALL", "ALL NRGP"].includes(normalizedStatus)) {
+        // No status restriction; visibility and other filters still apply.
+      } else if (masterStatuses) {
+        values.push(masterStatuses);
+        conditions.push(
+          `UPPER(TRIM(COALESCE(m.Status, ''))) = ANY($${values.length}::TEXT[])`,
+        );
+      } else if (canViewAll || !isApprover) {
         values.push(
           normalizedStatus,
         );
