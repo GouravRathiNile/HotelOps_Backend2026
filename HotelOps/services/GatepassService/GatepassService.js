@@ -16616,7 +16616,7 @@ const getTotalNRGP = async (data) => {
     // ============================================================
     // Conditions
     //
-    // NO DATE FILTER
+    // Month/Year filters on CreatedDate
     // NO APPROVER VISIBILITY CONDITION
     // ============================================================
 
@@ -16685,6 +16685,39 @@ const getTotalNRGP = async (data) => {
       );
     }
 
+
+    // Month and Year accept single values, comma-separated values, or arrays.
+    for (const [field, max] of [["Month", 12], ["Year", 9999]]) {
+      const input = data[field];
+      if (
+        input === undefined ||
+        input === null ||
+        (typeof input === "string" && input.trim() === "")
+      ) continue;
+
+      const entries = (Array.isArray(input) ? input : [input])
+        .flatMap((value) => String(value).split(","))
+        .map((value) => value.trim());
+
+      if (
+        entries.length === 0 ||
+        entries.some((value) =>
+          !/^\d+$/.test(value) ||
+          Number(value) < 1 ||
+          Number(value) > max
+        )
+      ) {
+        return fail(
+          `${field} must contain integers between 1 and ${max}.`,
+          400,
+        );
+      }
+
+      values.push([...new Set(entries.map(Number))]);
+      conditions.push(
+        `EXTRACT(${field.toUpperCase()} FROM m.CreatedDate)::INTEGER = ANY($${values.length}::INTEGER[])`,
+      );
+    }
 
     // ============================================================
     // Status
