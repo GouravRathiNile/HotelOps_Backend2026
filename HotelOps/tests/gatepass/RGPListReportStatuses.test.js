@@ -12,7 +12,7 @@ test('RGP report separates approval and lifecycle statuses', async () => {
     ['PENDING', null, 'Pending', 'Open'],
     ['APPROVED', null, 'Approved', 'Open'],
     ['CHECKED OUT', '2999-01-01', 'Approved', 'Checkout'],
-    ['RETURN PENDING', '2000-01-01', 'Approved', 'Return Pending'],
+    ['RETURN PENDING', '2000-01-01', 'Approved', 'Partial Return'],
     ['CHECKED OUT', '2000-01-01', 'Approved', 'Overdue'],
     ['RETURNED', '2000-01-01', 'Approved', 'Returned'],
     ['REJECTED', null, 'Rejected', 'Rejected'],

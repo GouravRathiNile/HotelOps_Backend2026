@@ -54,3 +54,17 @@ test('RGP total rejects invalid month/year before querying the database', async 
     assert.equal(queries.length, 0);
   }
 });
+
+test('RGP total ignores empty month/year query parameters', async () => {
+  for (const [input, expected] of [
+    [{ Month: '', Year: '2025,2026' }, [1, [2025, 2026]]],
+    [{ Month: '', Year: '' }, [1]],
+    [{ Month: '  ', Year: '  ' }, [1]],
+    [{ Month: '10', Year: '' }, [1, [10]]],
+  ]) {
+    const { queries } = await filters(input);
+    assert.equal(queries.length, 1);
+    assert.deepEqual(queries[0].values, expected);
+    if (expected.length === 1) assert.doesNotMatch(queries[0].sql, /EXTRACT/);
+  }
+});

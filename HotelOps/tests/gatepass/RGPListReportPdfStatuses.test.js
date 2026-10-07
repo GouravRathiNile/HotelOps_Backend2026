@@ -10,7 +10,7 @@ test('PDF renders split statuses, pending duration and modified date on parent i
     ['PENDING', null, 'Pending from GM since 5 day(s)', 'Open'],
     ['APPROVED', null, 'Approved', 'Open'],
     ['CHECKED OUT', '2999-01-01', 'Approved', 'Checkout'],
-    ['RETURN PENDING', null, 'Approved', 'Return Pending'],
+    ['RETURN PENDING', null, 'Approved', 'Partial Return'],
     ['CHECKED OUT', '2000-01-01', 'Approved', 'Overdue'],
     ['RETURNED', null, 'Approved', 'Returned'],
     ['REJECTED', null, 'Rejected', 'Rejected'],

@@ -2097,7 +2097,11 @@ const getRGPTotalList = async (data) => {
     // Month and Year accept single values, comma-separated values, or arrays.
     for (const [field, max] of [["Month", 12], ["Year", 9999]]) {
       const input = data[field];
-      if (input === undefined || input === null) continue;
+      if (
+        input === undefined ||
+        input === null ||
+        (typeof input === "string" && input.trim() === "")
+      ) continue;
 
       const entries = (Array.isArray(input) ? input : [input])
         .flatMap((value) => String(value).split(","))
@@ -8232,7 +8236,7 @@ const getRGPListReport = async (data) => {
         PENDING: "Open",
         APPROVED: "Open",
         "CHECKED OUT": "Checkout",
-        "RETURN PENDING": "Return Pending",
+        "RETURN PENDING": "Partial Return",
         RETURNED: "Returned",
         OVERDUE: "Overdue",
         REJECTED: "Rejected",
@@ -10688,7 +10692,7 @@ const getRGPListReportPdf = async (data) => {
         PENDING: "Open",
         APPROVED: "Open",
         "CHECKED OUT": "Checkout",
-        "RETURN PENDING": "Return Pending",
+        "RETURN PENDING": "Partial Return",
         RETURNED: "Returned",
         OVERDUE: "Overdue",
         REJECTED: "Rejected",
