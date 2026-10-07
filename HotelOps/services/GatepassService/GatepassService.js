@@ -2094,31 +2094,32 @@ const getRGPTotalList = async (data) => {
       );
     }
 
-    // ============================================================
-    // From Date
-    // ============================================================
+    // Month and Year accept single values, comma-separated values, or arrays.
+    for (const [field, max] of [["Month", 12], ["Year", 9999]]) {
+      const input = data[field];
+      if (input === undefined || input === null) continue;
 
-    if (data.FromDate) {
-      values.push(
-        data.FromDate,
-      );
+      const entries = (Array.isArray(input) ? input : [input])
+        .flatMap((value) => String(value).split(","))
+        .map((value) => value.trim());
 
+      if (
+        entries.length === 0 ||
+        entries.some((value) =>
+          !/^\d+$/.test(value) ||
+          Number(value) < 1 ||
+          Number(value) > max
+        )
+      ) {
+        return fail(
+          `${field} must contain integers between 1 and ${max}.`,
+          400,
+        );
+      }
+
+      values.push([...new Set(entries.map(Number))]);
       conditions.push(
-        `m.CreatedDate::DATE >= $${values.length}::DATE`,
-      );
-    }
-
-    // ============================================================
-    // To Date
-    // ============================================================
-
-    if (data.ToDate) {
-      values.push(
-        data.ToDate,
-      );
-
-      conditions.push(
-        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+        `EXTRACT(${field.toUpperCase()} FROM m.CreatedDate)::INTEGER = ANY($${values.length}::INTEGER[])`,
       );
     }
 
@@ -7810,6 +7811,30 @@ const getRGPListReport = async (data) => {
       );
     }
 
+    // Inclusive date range on the RGP creation date.
+    const dateFilters = {};
+    for (const [field, operator] of [["FromDate", ">="], ["ToDate", "<="]]) {
+      const input = data[field];
+      if (input === undefined || input === null || input === "") continue;
+
+      if (typeof input !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(input)) {
+        return fail(`${field} must be a valid date in YYYY-MM-DD format.`, 400);
+      }
+
+      const parsed = new Date(`${input}T00:00:00.000Z`);
+      if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== input) {
+        return fail(`${field} must be a valid date in YYYY-MM-DD format.`, 400);
+      }
+
+      dateFilters[field] = input;
+      values.push(input);
+      conditions.push(`m.CreatedDate::DATE ${operator} $${values.length}::DATE`);
+    }
+
+    if (dateFilters.FromDate && dateFilters.ToDate && dateFilters.FromDate > dateFilters.ToDate) {
+      return fail("FromDate must be on or before ToDate.", 400);
+    }
+
     // ============================================================
     // RGP Status Report Filter
     // ============================================================
@@ -7822,7 +7847,7 @@ const getRGPListReport = async (data) => {
     switch (reportStatus) {
       // ==========================================================
       // All RGP Open
-      // Only Approved RGP
+      // Pending and approved RGP awaiting checkout
       // ==========================================================
 
       case "All RGP Open":
@@ -7834,7 +7859,7 @@ const getRGPListReport = async (data) => {
                 ''
               )
             )
-          ) = 'APPROVED'
+          ) IN ('PENDING', 'APPROVED')
         `);
         break;
 
@@ -8097,13 +8122,39 @@ const getRGPListReport = async (data) => {
 
           m.Status,
 
-          m.CreatedDate
+          m.CreatedDate,
+          m.ModifiedDate,
+          pendingApproval.ApprovalRole AS PendingApprovalRole,
+          GREATEST(
+            CURRENT_DATE - COALESCE(
+              (
+                SELECT MAX(previousApproval.StatusDateTime)::DATE
+                FROM Gatepass_RGP_Approval previousApproval
+                WHERE previousApproval.RGPID = m.RGPID
+                  AND previousApproval.IsDeleted = FALSE
+                  AND UPPER(TRIM(previousApproval.Status)) = 'APPROVED'
+                  AND previousApproval.ApprovalOrder < pendingApproval.ApprovalOrder
+              ),
+              m.CreatedDate::DATE
+            ),
+            0
+          ) AS PendingApprovalDays
 
         FROM Gatepass_RGP_Entry_Master m
 
         LEFT JOIN department_master d
           ON d.DepartmentID =
             m.DepartmentID
+
+        LEFT JOIN LATERAL (
+          SELECT a.ApprovalRole, a.ApprovalOrder
+          FROM Gatepass_RGP_Approval a
+          WHERE a.RGPID = m.RGPID
+            AND a.IsDeleted = FALSE
+            AND UPPER(TRIM(COALESCE(a.Status, 'Pending'))) = 'PENDING'
+          ORDER BY a.ApprovalOrder ASC, a.ApprovalLevel ASC, a.RGPApprovalID ASC
+          LIMIT 1
+        ) pendingApproval ON TRUE
 
         ${whereClause}
 
@@ -8160,8 +8211,39 @@ const getRGPListReport = async (data) => {
         }
       }
 
+      let approvalStatus = {
+        PENDING: "Pending",
+        APPROVED: "Approved",
+        "CHECKED OUT": "Approved",
+        "RETURN PENDING": "Approved",
+        RETURNED: "Approved",
+        OVERDUE: "Approved",
+        REJECTED: "Rejected",
+        CANCELLED: "Cancelled",
+      }[normalizedStatus] || row.status;
+
+      if (normalizedStatus === "PENDING" && row.pendingapprovalrole) {
+        approvalStatus = `Pending from ${String(row.pendingapprovalrole).trim()} since ${Number(row.pendingapprovaldays) || 0} day(s)`;
+      }
+
+      const { pendingapprovalrole, pendingapprovaldays, ...reportRow } = row;
+
+      const rgpStatus = {
+        PENDING: "Open",
+        APPROVED: "Open",
+        "CHECKED OUT": "Checkout",
+        "RETURN PENDING": "Return Pending",
+        RETURNED: "Returned",
+        OVERDUE: "Overdue",
+        REJECTED: "Rejected",
+        CANCELLED: "Cancelled",
+      }[String(displayStatus || "").trim().toUpperCase()] || displayStatus;
+
       return {
-        ...row,
+        ...reportRow,
+
+        ApprovalStatus: approvalStatus,
+        RGPStatus: rgpStatus,
 
         status:
           displayStatus,
@@ -8174,6 +8256,11 @@ const getRGPListReport = async (data) => {
         createddate:
           formatDate(
             row.createddate,
+          ),
+
+        modifieddate:
+          formatDate(
+            row.modifieddate,
           ),
 
         Items:
@@ -10217,6 +10304,30 @@ const getRGPListReportPdf = async (data) => {
       );
     }
 
+    // Inclusive date range on the RGP creation date.
+    const dateFilters = {};
+    for (const [field, operator] of [["FromDate", ">="], ["ToDate", "<="]]) {
+      const input = data[field];
+      if (input === undefined || input === null || input === "") continue;
+
+      if (typeof input !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(input)) {
+        return fail(`${field} must be a valid date in YYYY-MM-DD format.`, 400);
+      }
+
+      const parsed = new Date(`${input}T00:00:00.000Z`);
+      if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== input) {
+        return fail(`${field} must be a valid date in YYYY-MM-DD format.`, 400);
+      }
+
+      dateFilters[field] = input;
+      values.push(input);
+      conditions.push(`m.CreatedDate::DATE ${operator} $${values.length}::DATE`);
+    }
+
+    if (dateFilters.FromDate && dateFilters.ToDate && dateFilters.FromDate > dateFilters.ToDate) {
+      return fail("FromDate must be on or before ToDate.", 400);
+    }
+
     // ============================================================
     // RGP Status Report Filter
     // ============================================================
@@ -10229,7 +10340,7 @@ const getRGPListReportPdf = async (data) => {
     switch (reportStatus) {
       // ==========================================================
       // All RGP Open
-      // Only APPROVED
+      // Pending and approved RGP awaiting checkout
       // ==========================================================
 
       case "All RGP Open":
@@ -10241,7 +10352,7 @@ const getRGPListReportPdf = async (data) => {
                 ''
               )
             )
-          ) = 'APPROVED'
+          ) IN ('PENDING', 'APPROVED')
         `);
         break;
 
@@ -10453,13 +10564,51 @@ const getRGPListReportPdf = async (data) => {
 
           m.Status,
 
-          m.CreatedDate
+          m.CreatedDate,
+          m.ModifiedDate,
+          pendingApproval.ApprovalRole AS PendingApprovalRole,
+          GREATEST(
+            CURRENT_DATE - COALESCE(
+              (
+                SELECT MAX(previousApproval.StatusDateTime)::DATE
+                FROM Gatepass_RGP_Approval previousApproval
+                WHERE previousApproval.RGPID = m.RGPID
+                  AND previousApproval.IsDeleted = FALSE
+                  AND UPPER(TRIM(previousApproval.Status)) = 'APPROVED'
+                  AND previousApproval.ApprovalOrder < pendingApproval.ApprovalOrder
+              ),
+              m.CreatedDate::DATE
+            ),
+            0
+          ) AS PendingApprovalDays,
+          lastApproval.Remarks AS LastApprovalRemarks
 
         FROM Gatepass_RGP_Entry_Master m
 
         LEFT JOIN department_master d
           ON d.DepartmentID =
             m.DepartmentID
+
+        LEFT JOIN LATERAL (
+          SELECT a.ApprovalRole, a.ApprovalOrder
+          FROM Gatepass_RGP_Approval a
+          WHERE a.RGPID = m.RGPID
+            AND a.IsDeleted = FALSE
+            AND UPPER(TRIM(COALESCE(a.Status, 'Pending'))) = 'PENDING'
+          ORDER BY a.ApprovalOrder ASC, a.ApprovalLevel ASC, a.RGPApprovalID ASC
+          LIMIT 1
+        ) pendingApproval ON TRUE
+
+        LEFT JOIN LATERAL (
+          SELECT a.Remarks
+          FROM Gatepass_RGP_Approval a
+          WHERE a.RGPID = m.RGPID
+            AND a.IsDeleted = FALSE
+            AND UPPER(TRIM(a.Status)) IN ('APPROVED', 'REJECTED', 'CANCELLED')
+          ORDER BY a.StatusDateTime DESC NULLS LAST,
+                   a.ApprovalOrder DESC, a.RGPApprovalID DESC
+          LIMIT 1
+        ) lastApproval ON TRUE
 
         ${whereClause}
 
@@ -10486,14 +10635,6 @@ const getRGPListReportPdf = async (data) => {
     const reportData =
   result.rows.map(
     (row, index) => {
-      // ==========================================================
-      // Display Status
-      //
-      // CHECKED OUT + ExpectedReturnDate passed => OVERDUE
-      // Only PDF response/display status changes.
-      // Database status remains CHECKED OUT.
-      // ==========================================================
-
       let displayStatus =
         row.status;
 
@@ -10507,63 +10648,84 @@ const getRGPListReportPdf = async (data) => {
         row.expectedreturndate
       ) {
         const expectedDate =
-          new Date(
-            row.expectedreturndate,
-          );
+          new Date(row.expectedreturndate);
 
         const today =
           new Date();
 
-        expectedDate.setHours(
-          0,
-          0,
-          0,
-          0,
-        );
+        expectedDate.setHours(0, 0, 0, 0);
+        today.setHours(0, 0, 0, 0);
 
-        today.setHours(
-          0,
-          0,
-          0,
-          0,
-        );
-
-        if (
-          expectedDate <
-          today
-        ) {
+        if (expectedDate < today) {
           displayStatus =
             "OVERDUE";
         }
       }
 
+      let approvalStatus = {
+        PENDING: "Pending",
+        APPROVED: "Approved",
+        "CHECKED OUT": "Approved",
+        "RETURN PENDING": "Approved",
+        RETURNED: "Approved",
+        OVERDUE: "Approved",
+        REJECTED: "Rejected",
+        CANCELLED: "Cancelled",
+      }[normalizedStatus] || row.status;
+
+      if (normalizedStatus === "PENDING" && row.pendingapprovalrole) {
+        approvalStatus = `Pending from ${String(row.pendingapprovalrole).trim()} since ${Number(row.pendingapprovaldays) || 0} day(s)`;
+      }
+
+      const lastApprovalRemarks = String(row.lastapprovalremarks || "").trim();
+      if (lastApprovalRemarks) {
+        approvalStatus += `\nRemarks: ${lastApprovalRemarks}`;
+      }
+
+      const { pendingapprovalrole, pendingapprovaldays, lastapprovalremarks, ...reportRow } = row;
+
+      const rgpStatus = {
+        PENDING: "Open",
+        APPROVED: "Open",
+        "CHECKED OUT": "Checkout",
+        "RETURN PENDING": "Return Pending",
+        RETURNED: "Returned",
+        OVERDUE: "Overdue",
+        REJECTED: "Rejected",
+        CANCELLED: "Cancelled",
+      }[String(displayStatus || "").trim().toUpperCase()] || displayStatus;
+
       return {
-        ...row,
+        ...reportRow,
+
+        ApprovalStatus: approvalStatus,
+        RGPStatus: rgpStatus,
 
         status:
           displayStatus,
 
         expectedreturndate:
-          row.expectedreturndate
-            ? formatDate(
-                row.expectedreturndate,
-              )
-            : "-",
+          formatDate(
+            row.expectedreturndate,
+          ),
 
         createddate:
-          row.createddate
-            ? formatDate(
-                row.createddate,
-              )
-            : "-",
+          formatDate(
+            row.createddate,
+          ),
+
+        modifieddate:
+          formatDate(
+            row.modifieddate,
+          ),
 
         Items:
           relatedRecords[index]
-            ?.Items || [],
+            .Items,
 
         Approvals:
           relatedRecords[index]
-            ?.Approvals || [],
+            .Approvals,
       };
     },
   );
@@ -10689,11 +10851,14 @@ const getRGPListReportPdf = async (data) => {
                       : ""
                   }`,
 
-                Status:
-                  index === 0
-                    ? rgp.status ||
-                      "-"
-                    : "",
+                ApprovalStatus:
+                  index === 0 ? rgp.ApprovalStatus || "-" : "",
+
+                RGPStatus:
+                  index === 0 ? rgp.RGPStatus || "-" : "",
+
+                ModifiedOn:
+                  index === 0 ? rgp.modifieddate || "-" : "",
 
                 CreatedOn:
                   index === 0
@@ -10765,92 +10930,66 @@ const getRGPListReportPdf = async (data) => {
 
         columns: [
           {
-            header:
-              "#SR",
-            key:
-              "SR",
-            width:
-              28,
-            align:
-              "center",
+                    "header": "SR#",
+                    "key": "SR",
+                    "width": 20
           },
           {
-            header:
-              "RGP No.",
-            key:
-              "RGPNumber",
-            width:
-              45,
-            align:
-              "center",
+                    "header": "RGP No.",
+                    "key": "RGPNumber",
+                    "width": 35
           },
           {
-            header:
-              "Vendor / Company",
-            key:
-              "VendorCompany",
-            width:
-              95,
+                    "header": "Vendor / Company",
+                    "key": "VendorCompany",
+                    "width": 70
           },
           {
-            header:
-              "Contact",
-            key:
-              "Contact",
-            width:
-              65,
+                    "header": "Contact",
+                    "key": "Contact",
+                    "width": 50
           },
           {
-            header:
-              "Department",
-            key:
-              "DepartmentName",
-            width:
-              70,
+                    "header": "Department",
+                    "key": "DepartmentName",
+                    "width": 50
           },
           {
-            header:
-              "Taken By",
-            key:
-              "TakenBy",
-            width:
-              65,
+                    "header": "Taken By",
+                    "key": "TakenBy",
+                    "width": 45
           },
           {
-            header:
-              "Expected Return",
-            key:
-              "ExpectedReturnDate",
-            width:
-              70,
+                    "header": "Items - Qty",
+                    "key": "Item",
+                    "width": "*"
           },
           {
-            header:
-              "Items",
-            key:
-              "Item",
-            width:
-              "*",
+                    "header": "Approval Status",
+                    "key": "ApprovalStatus",
+                    "width": 95
           },
           {
-            header:
-              "Status",
-            key:
-              "Status",
-            width:
-              65,
-            align:
-              "center",
+                    "header": "RGP Status",
+                    "key": "RGPStatus",
+                    "width": 50
           },
           {
-            header:
-              "Created On",
-            key:
-              "CreatedOn",
-            width:
-              70,
+                    "header": "Expected Return",
+                    "key": "ExpectedReturnDate",
+                    "width": 55
           },
-        ],
+          {
+                    "header": "Last Updated",
+                    "key": "ModifiedOn",
+                    "width": 55
+          },
+          {
+                    "header": "Created On",
+                    "key": "CreatedOn",
+                    "width": 55
+          }
+],
 
         rows:
           pdfRows,

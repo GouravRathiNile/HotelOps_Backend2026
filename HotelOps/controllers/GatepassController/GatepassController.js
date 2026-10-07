@@ -516,8 +516,8 @@ exports.getRGPTotalList = async (req, res) => {
       RGPNumber,
       DepartmentID,
       Status,
-      FromDate,
-      ToDate,
+      Month,
+      Year,
       Search,
       page,
       PageSize,
@@ -630,11 +630,8 @@ exports.getRGPTotalList = async (req, res) => {
             ? String(Status).trim()
             : null,
 
-        FromDate:
-          FromDate || null,
-
-        ToDate:
-          ToDate || null,
+        Month,
+        Year,
 
         Search:
           Search
@@ -2098,6 +2095,8 @@ exports.getRGPListReport = async (
       DepartmentID,
       RGPNumber,
       VendorName,
+      FromDate,
+      ToDate,
       Search,
       page = 1,
       PageSize = 10,
@@ -2258,6 +2257,9 @@ exports.getRGPListReport = async (
                   RGPNumber,
                 )
               : null,
+
+          FromDate,
+          ToDate,
 
           VendorName:
             VendorName ||
@@ -3057,6 +3059,8 @@ exports.getRGPListReportPdf = async (
       DepartmentID,
       RGPNumber,
       VendorName,
+      FromDate,
+      ToDate,
       Search,
       DepartmentName,
     } = req.query;
@@ -3172,6 +3176,9 @@ exports.getRGPListReportPdf = async (
                   RGPNumber,
                 )
               : null,
+
+          FromDate,
+          ToDate,
 
           VendorName:
             VendorName ||
