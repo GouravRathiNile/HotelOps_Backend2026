@@ -289,7 +289,7 @@ exports.logout = async (req, res) => {
 
   }
 };
-// ============================================================Forgot Password
+// ============================================================Forgot Passwordnn
 exports.forgotPassword = async (req, res) => {
   try {
     const { OrganizationCode, Username } = req.body || {};
