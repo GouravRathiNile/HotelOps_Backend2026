@@ -1,3 +1,4 @@
+const { normalizeRGPApprovalRole } = require("../../services/GatepassService/RGPApprovalRoles");
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -6,17 +7,18 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../../services/GatepassService/GatepassService.js'), 'utf8');
 
-async function list({ status = 'PENDING', flow = [], user = {}, empty = false }) {
+async function list({ status = 'PENDING', flow = [], user = {}, empty = false, expectedFailure = false }) {
   let calls = 0;
   const context = {
-    console, formatDate: value => value,
+    normalizeRGPApprovalRole, console, formatDate: value => value,
     pool: { query: async (sql, values) => {
       calls++;
+      sql = sql.replace(/\s+/g, ' ');
       if (sql.includes('AS TotalCount')) return { rows: [{ totalcount: empty ? 0 : 1 }] };
-      if (sql.includes('FROM Gatepass_RGP_Approval')) {
+      if (/^\s*SELECT RGPApprovalID,/.test(sql)) {
         assert.deepEqual(Array.from(values[0]), [1]);
         assert.match(sql, /IsDeleted = FALSE/);
-        assert.match(sql, /ORDER BY ApprovalOrder ASC, ApprovalLevel ASC, RGPApprovalID ASC/);
+        assert.match(sql, /ORDER BY (RGPID ASC, )?ApprovalOrder ASC, ApprovalLevel ASC, RGPApprovalID ASC/);
         return { rows: flow.map(row => ({ rgpid: 1, ...row })) };
       }
       return { rows: empty ? [] : [{ rgpid: 1, departmentid: 7, status }] };
@@ -29,6 +31,13 @@ async function list({ status = 'PENDING', flow = [], user = {}, empty = false })
     source.slice(source.indexOf('const getRGPList ='), source.indexOf('const getRGPById =')) +
     '\nthis.run = getRGPList;', context);
   const result = await context.run({ OrganizationID: 1, UserID: 9, UserType: 'HOD', UserDepartmentID: 7, ...user });
+  if (expectedFailure) {
+    assert.equal(result.success, false);
+    assert.equal(result.statusCode, 400);
+    assert.match(result.message, /User DepartmentID is required for HOD/);
+    assert.equal(calls, 0);
+    return [];
+  }
   assert.equal(result.success, true);
   assert.equal(calls, empty ? 2 : 3);
   return result.data;
@@ -40,7 +49,6 @@ test('RGP approval flags follow current stage and logged-in approver', async () 
   for (const scenario of [
     { flow: [pending], expected: true },
     { flow: [pending], user: { UserDepartmentID: 8 }, expected: false },
-    { flow: [pending], user: { UserDepartmentID: undefined }, expected: false },
     { flow: [pending], user: { UserType: 'GM' }, expected: false },
     { flow: [approved, { approvalrole: 'FC', status: 'Pending' }], expected: false },
     { flow: [approved, pending], expected: false },
@@ -70,4 +78,8 @@ test('RGP checkout flag requires Security and completed approvals before gate ac
     assert.equal(row.cancheckout, false);
   }
   assert.equal((await list({ empty: true })).length, 0);
+});
+
+test("HOD list requires the department claim before querying", async () => {
+  await list({ user: { UserDepartmentID: undefined }, expectedFailure: true });
 });

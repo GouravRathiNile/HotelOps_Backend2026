@@ -7,7 +7,7 @@ const escapeHtml = (value) => String(value ?? "").replace(/&/g, "&amp;")
   .replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 const display = (value) => value == null || String(value).trim() === "" ? "-" : String(value);
 const amcPageUrl = () => process.env.ENGINEERING_AMC_FRONTEND_URL
-  || `${String(process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "")}/Hotelops/Pages/AMCRenewal/Pages/List`;
+  || `${String(process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "")}/AMCRenewal/List`;
 
 const ensureDeliveryLog = (queryable) => queryable.query(`
   CREATE TABLE IF NOT EXISTS Engineering_Email_Delivery_Log (
