@@ -9,6 +9,67 @@ const STATUS_CODES = require("../../utils/statusCodes");
 const AppError = require("../../utils/AppError");
 const handleError = require("../../utils/errorHandler");
 
+
+// ============================================================VERIFY ORGANIZATION
+exports.verifyOrganization = async (req, res) => {
+  try {
+    const {
+      OrganizationCode,
+    } = req.body;
+
+    // ========================================================
+    // Validation
+    // ========================================================
+
+    if (!OrganizationCode) {
+      throw new AppError(
+        "Organization Code is required",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // Send To RabbitMQ
+    // ========================================================
+
+    const response = await producer.sendMessage(
+      QUEUE.AUTH.REQUEST,
+      QUEUE.AUTH.RESPONSE,
+      {
+        action: "VERIFY_ORGANIZATION",
+
+        data: {
+          OrganizationCode:
+            OrganizationCode.trim(),
+        },
+      }
+    );
+
+    // ========================================================
+    // RabbitMQ Error
+    // ========================================================
+
+    if (!response.success) {
+      throw new AppError(
+        response.message ||
+          "Organization verification failed",
+        response.statusCode ||
+          STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // Response
+    // ========================================================
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(response);
+
+  } catch (error) {
+    handleError(error, res);
+  }
+};
 // ============================================================Login
 exports.login = async (req, res) => {
   try {
@@ -108,12 +169,7 @@ exports.login = async (req, res) => {
     handleError(error, res);
   }
 };
-
-
-// ============================================================
-// Logout
-// ============================================================
-
+// ============================================================Logout
 exports.logout = async (req, res) => {
   try {
 
@@ -226,7 +282,6 @@ exports.logout = async (req, res) => {
 
   }
 };
-
 // ============================================================Forgot Password
 exports.forgotPassword = async (req, res) => {
   try {
@@ -257,7 +312,6 @@ exports.forgotPassword = async (req, res) => {
     handleError(error, res);
   }
 };
-
 // ============================================================Verify Forgot Password OTP
 exports.verifyForgotPasswordOTP = async (req, res) => {
   try {
@@ -294,7 +348,6 @@ exports.verifyForgotPasswordOTP = async (req, res) => {
     handleError(error, res);
   }
 };
-
 // ============================================================Reset Password
 exports.resetPassword = async (req, res) => {
   try {
@@ -332,7 +385,6 @@ exports.resetPassword = async (req, res) => {
     handleError(error, res);
   }
 };
-
 // ============================================================Change Password
 exports.changePassword = async (req, res) => {
   try {

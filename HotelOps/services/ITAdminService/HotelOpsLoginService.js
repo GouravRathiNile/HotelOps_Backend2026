@@ -4,11 +4,144 @@ const crypto = require("crypto");
 const { pool } = require("../../db");
 const formatDate = require("../../utils/dateFormatter");
 const { sendPasswordResetOTP } = require("../../utils/emailService");
-
+const generateUrl = require("../../AzurConfigration/ITAdmin/OrganizationMaster/AzureGetData");
 const FORGOT_PASSWORD_MESSAGE = "A verification OTP has been sent to your registered email.";
 const FORGOT_PASSWORD_OTP_PURPOSE = "FORGOT_PASSWORD_OTP";
 const PASSWORD_RESET_VERIFIED_PURPOSE = "PASSWORD_RESET_VERIFIED";
 
+
+// ============================================================VERIFY ORGANIZATION
+const verifyOrganization = async (data) => {
+  try {
+    const OrganizationCode = String(
+      data?.OrganizationCode || ""
+    ).trim();
+
+    // ========================================================
+    // Validation
+    // ========================================================
+
+    if (!OrganizationCode) {
+      return {
+        success: false,
+        statusCode: 400,
+        message:
+          "Organization Code is required",
+      };
+    }
+
+    // ========================================================
+    // Get Organization
+    // ========================================================
+
+    const organizationResult =
+      await pool.query(
+        `
+        SELECT
+          organizationid AS "OrganizationID",
+          organizationcode AS "OrganizationCode",
+          organizationname AS "OrganizationName"
+        FROM organization_master
+        WHERE
+          LOWER(TRIM(organizationcode)) =
+          LOWER(TRIM($1))
+          AND isdeleted = FALSE
+          AND isactive = TRUE
+          AND activationstatus = TRUE
+        LIMIT 1
+        `,
+        [OrganizationCode]
+      );
+
+    if (
+      organizationResult.rows.length === 0
+    ) {
+      return {
+        success: false,
+        statusCode: 404,
+        message:
+          "Invalid Organization Code",
+      };
+    }
+
+    const organization =
+      organizationResult.rows[0];
+
+    // ========================================================
+    // Get Organization Logos
+    // ========================================================
+
+    const logoResult = await pool.query(
+      `
+      SELECT
+        logoid AS "LogoID",
+        logotype AS "LogoType",
+        logoname AS "LogoName",
+        width AS "Width",
+        height AS "Height"
+      FROM organization_master_logo
+      WHERE
+        organizationid = $1
+        AND isdeleted = FALSE
+      ORDER BY logoid ASC
+      `,
+      [
+        organization.OrganizationID,
+      ]
+    );
+
+    // ========================================================
+    // Generate Logo URLs
+    // ========================================================
+
+    const Logos =
+      logoResult.rows.map((logo) => ({
+        LogoID: logo.LogoID,
+        LogoType: logo.LogoType,
+        LogoUrl: logo.LogoName
+          ? generateUrl(
+              logo.LogoName
+            )
+          : null,
+      }));
+
+    // ========================================================
+    // Response
+    // ========================================================
+
+    return {
+      success: true,
+      statusCode: 200,
+      message:
+        "Organization verified successfully",
+      data: {
+        OrganizationID:
+          organization.OrganizationID,
+
+        OrganizationCode:
+          organization.OrganizationCode,
+
+        OrganizationName:
+          organization.OrganizationName,
+
+        Logos,
+      },
+    };
+
+  } catch (error) {
+    console.log(
+      "Verify Organization Service Error:",
+      error.message
+    );
+
+    return {
+      success: false,
+      statusCode: 500,
+      message:
+        "Internal server error",
+    };
+  }
+};
 // ============================================================Login
 const login = async (data) => {
   try {
@@ -642,12 +775,8 @@ const resetPassword = async (data) => {
   } finally {
     if (client) client.release();
   }
-};
-
-// ============================================================
-// Logout
-// ============================================================
-
+}; 
+// ============================================================Logout
 const logout = async (data) => {
   try {
 
@@ -791,6 +920,7 @@ const logout = async (data) => {
 };
 
 module.exports = {
+  verifyOrganization,
   login,
   logout,
   changePassword,

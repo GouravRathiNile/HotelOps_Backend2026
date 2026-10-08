@@ -2,24 +2,22 @@ const HotelOpsLoginService = require("../../services/ITAdminService/HotelOpsLogi
 
 const HotelOpsLoginHandler = async (message) => {
   try {
-    const {
-      action,
-      data,
-    } = message;
+    const { action, data } = message;
 
     switch (action) {
-
+      // ======================================================
+      // VERIFY ORGANIZATION
+      // ======================================================
+      case "VERIFY_ORGANIZATION":
+        return await HotelOpsLoginService.verifyOrganization(data);
       // ======================================================
       // LOGIN
       // ======================================================
-
       case "LOGIN":
         return await HotelOpsLoginService.login(data);
-
       // ======================================================
       // CHANGE PASSWORD
       // ======================================================
-
       case "CHANGE_PASSWORD":
         return await HotelOpsLoginService.changePassword(data);
 
@@ -45,13 +43,8 @@ const HotelOpsLoginHandler = async (message) => {
           message: `Unknown Login Action: ${action}`,
         };
     }
-
   } catch (error) {
-
-    console.log(
-      "Login Consumer Error:",
-      error.message
-    );
+    console.log("Login Consumer Error:", error.message);
 
     return {
       success: false,

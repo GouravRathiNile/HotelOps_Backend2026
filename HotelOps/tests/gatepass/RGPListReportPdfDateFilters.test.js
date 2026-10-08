@@ -50,3 +50,8 @@ test('PDF Open filter includes Pending and Approved', async () => {
   const { queries } = await filters({ Status: 'All RGP Open' });
   assert.ok(queries[0].sql.includes("IN ('PENDING', 'APPROVED')"));
 });
+
+test('PDF Out filter includes checked out and partial returns', async () => {
+  const { queries } = await filters({ Status: 'All RGP Out' });
+  assert.ok(queries[0].sql.includes("IN ('CHECKED OUT', 'RETURN PENDING')"));
+});

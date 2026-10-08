@@ -7869,7 +7869,7 @@ const getRGPListReport = async (data) => {
 
       // ==========================================================
       // All RGP Out
-      // Only Checked Out RGP
+      // Checked out and partially returned RGP
       // ==========================================================
 
       case "All RGP Out":
@@ -7881,7 +7881,7 @@ const getRGPListReport = async (data) => {
                 ''
               )
             )
-          ) = 'CHECKED OUT'
+          ) IN ('CHECKED OUT', 'RETURN PENDING')
         `);
         break;
 
@@ -10362,7 +10362,7 @@ const getRGPListReportPdf = async (data) => {
 
       // ==========================================================
       // All RGP Out
-      // Only CHECKED OUT
+      // Checked out and partially returned RGP
       // ==========================================================
 
       case "All RGP Out":
@@ -10374,7 +10374,7 @@ const getRGPListReportPdf = async (data) => {
                 ''
               )
             )
-          ) = 'CHECKED OUT'
+          ) IN ('CHECKED OUT', 'RETURN PENDING')
         `);
         break;
 

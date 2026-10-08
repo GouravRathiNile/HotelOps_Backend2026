@@ -47,7 +47,7 @@ test('RGP report rejects invalid dates and reversed ranges before querying', asy
 test('RGP report status filters are shared by count and paginated list queries', async () => {
   for (const [Status, expected] of [
     ['All RGP Open', "IN ('PENDING', 'APPROVED')"],
-    ['All RGP Out', "= 'CHECKED OUT'"],
+    ['All RGP Out', "IN ('CHECKED OUT', 'RETURN PENDING')"],
     ['All RGP Closed', "= 'RETURNED'"],
     ['All RGP Cancelled', "= 'CANCELLED'"],
     ['All RGP Overdue', "= 'CHECKED OUT'"],
