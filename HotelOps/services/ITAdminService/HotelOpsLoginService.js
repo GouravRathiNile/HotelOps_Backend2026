@@ -145,7 +145,38 @@ const verifyOrganization = async (data) => {
 // ============================================================Login
 const login = async (data) => {
   try {
-    const { Username, Password, DeviceID, DeviceToken, DeviceType } = data;
+    const {OrganizationCode, Username, Password, DeviceID, DeviceToken, DeviceType } = data;
+   // =============================
+    // Validate & Set Username
+    // =============================
+
+    const organizationCode = String(
+      OrganizationCode || ""
+    ).trim();
+
+    const baseUsername = String(
+      Username || ""
+    ).trim();
+
+    if (!organizationCode) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Organization Code is required",
+      };
+    }
+
+    if (!baseUsername) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Username is required",
+      };
+    }
+
+    const finalUsername =
+      `${baseUsername}@${organizationCode}`;
+          // console.log('login data:', data, finalUsername);
 
     // ========================================================
     // FIND USER
@@ -196,12 +227,12 @@ LEFT JOIN Department_Master dm
 LEFT JOIN Division_Master dv
     ON um.DivisionID = dv.DivisionID
 
-WHERE um.Username = $1
+WHERE LOWER(um.Username) = LOWER($1)
   AND um.IsDeleted = FALSE
   AND um.IsActive = TRUE
 LIMIT 1;
       `,
-      [Username],
+      [finalUsername],
     );
 
     // ========================================================
@@ -597,12 +628,38 @@ const changePassword = async (data) => {
 // ============================================================Forgot Password
 const forgotPassword = async (data) => {
   try {
+    const organizationCode = String(
+      data?.OrganizationCode || ""
+    ).trim();
+
+    const baseUsername = String(
+      data?.Username || ""
+    ).trim();
+
+    if (!organizationCode) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Organization Code is required",
+      };
+    }
+
+    if (!baseUsername) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Username is required",
+      };
+    }
+
+    const finalUsername =
+      `${baseUsername}@${organizationCode}`;
     const userResult = await pool.query(
       `SELECT UserID, Username, Email, IsActive, IsDeleted, IsLocked
        FROM user_master
-       WHERE Username = $1
+       WHERE LOWER(Username) = LOWER($1)
        LIMIT 1;`,
-      [data.Username],
+      [finalUsername],
     );
 
     const user = userResult.rows[0];

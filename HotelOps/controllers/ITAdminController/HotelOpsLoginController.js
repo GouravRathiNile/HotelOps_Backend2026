@@ -74,6 +74,7 @@ exports.verifyOrganization = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const {
+      OrganizationCode,
       Username,
       Password,
     } = req.body;
@@ -89,7 +90,12 @@ exports.login = async (req, res) => {
     // ========================================================
     // Validation
     // ========================================================
-
+if (!OrganizationCode) {
+  throw new AppError(
+    "Organization Code is required",
+    STATUS_CODES.BAD_REQUEST
+  );
+}
     if (!Username) {
       throw new AppError(
         "Username is required",
@@ -136,6 +142,7 @@ exports.login = async (req, res) => {
         action: "LOGIN",
 
         data: {
+          OrganizationCode: OrganizationCode.trim(),
           Username: Username.trim(),
           Password,
 
@@ -285,8 +292,21 @@ exports.logout = async (req, res) => {
 // ============================================================Forgot Password
 exports.forgotPassword = async (req, res) => {
   try {
-    const { Username } = req.body || {};
+    const { OrganizationCode, Username } = req.body || {};
 
+    // ========================================================
+    // Validation
+    // ========================================================
+
+    if (
+      !OrganizationCode ||
+      !String(OrganizationCode).trim()
+    ) {
+      throw new AppError(
+        "Organization Code is required",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
     if (!Username || !String(Username).trim()) {
       throw new AppError("Username is required", STATUS_CODES.BAD_REQUEST);
     }
@@ -296,7 +316,9 @@ exports.forgotPassword = async (req, res) => {
       QUEUE.AUTH.RESPONSE,
       {
         action: "FORGOT_PASSWORD",
-        data: { Username: String(Username).trim() },
+        data: {  OrganizationCode:
+            String(OrganizationCode).trim(),
+              Username: String(Username).trim() },
       }
     );
 
