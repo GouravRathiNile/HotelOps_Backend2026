@@ -18,11 +18,12 @@ const NOTIFICATION_MODULE_NAMES = Object.freeze({
     engineering: "Engineering",
     minutesofmeeting: "Minutes of Meeting",
     creditapplication: "Credit Application",
+    gatepass: "Gatepass",
 });
 
 // Modules using the shared Firebase dispatcher. Recipient selection remains in
 // each module service; this set only enables generic post-persistence delivery.
-const PUSH_NOTIFICATION_MODULES = new Set(["Capex", "Guest Glitch", "Incident Report", "Opex", "Engineering", "Minutes of Meeting", "Credit Application"]);
+const PUSH_NOTIFICATION_MODULES = new Set(["Capex", "Guest Glitch", "Incident Report", "Opex", "Engineering", "Minutes of Meeting", "Credit Application", "Gatepass"]);
 
 // Email rollout is intentionally limited to CAPEX. Other modules keep their
 // existing notification delivery until they are explicitly enabled here.
@@ -224,6 +225,31 @@ const createNotification = async (data) => {
                 "At least one valid recipient user is required.",
                 400
             );
+        }
+
+        // Gatepass events are immutable: creation or one terminal action per approval
+        // row. Serialize check/insert so concurrent queue redelivery cannot create
+        // duplicate rows or repeat Firebase dispatch. Other modules are unaffected.
+        if (moduleName === "Gatepass" && ["RGP", "NRGP"].includes(data.entityType) &&
+            (data.action === `${data.entityType}_CREATED` ||
+                new RegExp(`^${data.entityType}_APPROVAL_[1-9]\\d*_(APPROVE|REJECT|CANCEL)$`).test(data.action)) &&
+            data.entityId !== undefined && data.entityId !== null) {
+            const entityId = String(data.entityId);
+            const lockKey = `${moduleName}:${data.organizationId}:${data.entityType}:${entityId}:${data.action}`;
+            await client.query("SELECT pg_advisory_xact_lock(hashtext($1));", [lockKey]);
+            const existing = await client.query(`
+                SELECT id FROM notifications
+                WHERE organization_id = $1 AND module_name = $2
+                  AND entity_type = $3 AND entity_id = $4 AND action = $5
+                ORDER BY id ASC LIMIT 1;`,
+            [data.organizationId, moduleName, data.entityType, entityId, data.action]);
+            if (existing.rows.length) {
+                await client.query("COMMIT");
+                transactionStarted = false;
+                return { success: true, statusCode: 200,
+                    message: "Notification already exists.",
+                    data: { id: Number(existing.rows[0].id) } };
+            }
         }
 
         // Warranty summaries are scheduled and may arrive from more than one

@@ -1380,17 +1380,18 @@ exports.processRGPApproval = async (
       ![
         "APPROVE",
         "REJECT",
+        "CANCEL",
       ].includes(action)
     ) {
       throw new AppError(
-        "Action must be APPROVE or REJECT",
+        "Action must be APPROVE, REJECT or CANCEL",
         STATUS_CODES.BAD_REQUEST,
       );
     }
 
     // ============================================================
     // Remarks
-    // REJECT ke liye compulsory
+    // Both terminal approval actions require a reason.
     // ============================================================
 
     const remarks =
@@ -1399,11 +1400,11 @@ exports.processRGPApproval = async (
       ).trim();
 
     if (
-      action === "REJECT" &&
+      ["REJECT", "CANCEL"].includes(action) &&
       !remarks
     ) {
       throw new AppError(
-        "Remarks are required for REJECT",
+        `Remarks are required for ${action}`,
         STATUS_CODES.BAD_REQUEST,
       );
     }

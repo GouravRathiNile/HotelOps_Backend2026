@@ -1,4 +1,7 @@
 const { pool } = require("../../db");
+const { normalizeRGPApprovalRole } = require("./RGPApprovalRoles");
+const { notifyCommittedRGPEvent } = require("./GatepassNotificationService");
+const { notifyCommittedNRGPEvent } = require("./NRGPNotificationService");
 const {retryableDatabaseResponse,} = require("../../utils/retryableDatabaseError");
 const { formatDate } = require("../../utils/dateFormatter");
 const generateUrl = require("../../AzurConfigration/Gatepass/AzureGetData");
@@ -66,22 +69,6 @@ const DEFAULT_RGP_APPROVALS = Object.freeze([
   { LevelNo: 3, ApprovalRole: "GM" },
 ]);
 // ======================== Normalize RGP Approval Role
-const normalizeRGPApprovalRole = (role) => {
-  const normalizedRole =
-    String(role || "")
-      .trim()
-      .toUpperCase();
-
-  // FC and DOF are treated as the same approval role
-  if (
-    normalizedRole === "FC" ||
-    normalizedRole === "DOF"
-  ) {
-    return "FC";
-  }
-
-  return normalizedRole;
-};
 // ======================= Approval Role Condition Helper
 const resolveRGPApprovalRole = ({
   UserType,
@@ -486,6 +473,8 @@ rgp.Approvals =
 // ============================================================ CREATE RGP
 const createRGP = async (data) => {
   const client = await pool.connect();
+  let committed = false;
+  let notificationEvent;
 
   try {
     await client.query("BEGIN");
@@ -644,7 +633,7 @@ const createRGP = async (data) => {
 
       RETURNING
         RGPID,
-        RGPNumber;
+        RGPNumber, OrganizationID, DepartmentID, CreatedBy;
       `,
       [
         data.OrganizationID,
@@ -800,11 +789,12 @@ const createRGP = async (data) => {
     // Create Approval Rows
     // ==========================================================
 
+    const createdApprovals = [];
     for (
       const approval of
       approvalLevels
     ) {
-      await client.query(
+      const approvalResult = await client.query(
         `
         INSERT INTO Gatepass_RGP_Approval
         (
@@ -839,7 +829,8 @@ const createRGP = async (data) => {
 
           $7,
           CURRENT_TIMESTAMP
-        );
+        )
+        RETURNING RGPApprovalID, ApprovalRole, ApprovalOrder, ApprovalLevel, Status;
         `,
         [
           rgpID,
@@ -853,13 +844,16 @@ const createRGP = async (data) => {
           data.UserID,
         ],
       );
+      createdApprovals.push(approvalResult.rows[0]);
     }
 
     // ==========================================================
     // Commit
     // ==========================================================
 
+    notificationEvent = { master: masterResult.rows[0], approvals: createdApprovals, action: "CREATE" };
     await client.query("COMMIT");
+    committed = true;
 
     return ok(
       "RGP created successfully."
@@ -875,6 +869,8 @@ const createRGP = async (data) => {
     );
   } finally {
     client.release();
+    // Keep delivery outside transaction error handling and release the connection first.
+    if (committed) notifyCommittedRGPEvent(notificationEvent);
   }
 };
 // ============================================================Get RGP List
@@ -5223,6 +5219,8 @@ const deleteRGP = async (data) => {
 // ============================================================RGP APPROVAL
 const processRGPApproval = async (data) => {
   const client = await pool.connect();
+  let committed = false;
+  let notificationEvent;
 
   try {
     await client.query("BEGIN");
@@ -5230,12 +5228,14 @@ const processRGPApproval = async (data) => {
     const {
       RGPID,
       Action,
-      Remarks,
+      Remarks: requestedRemarks,
 
       UserID,
       UserType,
       DepartmentName,
     } = data;
+
+    const Remarks = String(requestedRemarks || "").trim();
 
     // ============================================================
     // Validate RGPID
@@ -5287,6 +5287,13 @@ const processRGPApproval = async (data) => {
       );
     }
 
+    // Queue consumers can bypass HTTP validation; retain the controller's
+    // required reason for both terminal approval actions.
+    if (["REJECT", "CANCEL"].includes(normalizedAction) && !Remarks) {
+      await client.query("ROLLBACK");
+      return fail(`Remarks are required for ${normalizedAction}.`, 400);
+    }
+
     // ============================================================
     // Logged-In Approval Role
     // ============================================================
@@ -5318,6 +5325,7 @@ const processRGPApproval = async (data) => {
           OrganizationID,
           RGPNumber,
           DepartmentID,
+          CreatedBy,
           Status
 
         FROM Gatepass_RGP_Entry_Master
@@ -5594,6 +5602,11 @@ const processRGPApproval = async (data) => {
         normalizedAction
       ];
 
+    // Capture the persisted creator and ordered history while the rows are locked.
+    // Dispatch only if this transaction commits; never reconstruct a later stage.
+    notificationEvent = { master, approvals: approvalResult.rows,
+      approvalID: currentStage.rgpapprovalid, action: normalizedAction, remarks: Remarks };
+
     // ============================================================
     // Update Current Approval Row
     //
@@ -5684,6 +5697,7 @@ const processRGPApproval = async (data) => {
       await client.query(
         "COMMIT",
       );
+      committed = true;
 
       return ok(
         "RGP cancelled successfully.",
@@ -5746,6 +5760,7 @@ const processRGPApproval = async (data) => {
       await client.query(
         "COMMIT",
       );
+      committed = true;
 
       return ok(
         "RGP rejected successfully.",
@@ -5838,6 +5853,7 @@ const processRGPApproval = async (data) => {
       await client.query(
         "COMMIT",
       );
+      committed = true;
 
       return ok(
         "RGP fully approved successfully.",
@@ -5894,6 +5910,7 @@ const processRGPApproval = async (data) => {
     await client.query(
       "COMMIT",
     );
+    committed = true;
 
     return ok(
       "RGP approval processed successfully.",
@@ -5933,6 +5950,7 @@ const processRGPApproval = async (data) => {
     );
   } finally {
     client.release();
+    if (committed) notifyCommittedRGPEvent(notificationEvent);
   }
 };
 // ============================================================PROCESS RGP GATE ACTION,CHECKOUT / CANCEL
@@ -15443,6 +15461,8 @@ record.Approvals =
 // ============================================================Create NRGP
 const createNRGP = async (data) => {
   const client = await pool.connect();
+  let committed = false;
+  let notificationEvent;
 
   try {
     // ============================================================
@@ -15595,7 +15615,7 @@ const createNRGP = async (data) => {
       )
       RETURNING
         NRGPID,
-        NRGPNumber;
+        NRGPNumber, OrganizationID, DepartmentID, CreatedBy;
       `,
       [
         organizationID,
@@ -15760,8 +15780,9 @@ const createNRGP = async (data) => {
     // Insert Approval Flow
     // ============================================================
 
+    const createdApprovals = [];
     for (const approval of approvalFlow) {
-      await client.query(
+      const approvalResult = await client.query(
         `
         INSERT INTO Gatepass_NRGP_Approval
         (
@@ -15784,7 +15805,8 @@ const createNRGP = async (data) => {
           'Pending',
           $6,
           CURRENT_TIMESTAMP
-        );
+        )
+        RETURNING NRGPApprovalID, ApprovalRole, ApprovalOrder, ApprovalLevel, Status;
         `,
         [
           NRGPID,
@@ -15795,13 +15817,16 @@ const createNRGP = async (data) => {
           data.UserID || null,
         ],
       );
+      createdApprovals.push(approvalResult.rows[0]);
     }
 
     // ============================================================
     // Commit
     // ============================================================
 
+    notificationEvent = { master: masterResult.rows[0], approvals: createdApprovals, action: "CREATE" };
     await client.query("COMMIT");
+    committed = true;
 
     return ok(
       "NRGP created successfully."
@@ -15823,6 +15848,7 @@ const createNRGP = async (data) => {
     );
   } finally {
     client.release();
+    if (committed) notifyCommittedNRGPEvent(notificationEvent);
   }
 };
 // ============================================================NRGP List
@@ -17839,6 +17865,8 @@ const deleteNRGP = async (data) => {
 // ============================================================ NRGP Approval
 const processNRGPApproval = async (data) => {
   const client = await pool.connect();
+  let committed = false;
+  let notificationEvent;
 
   try {
     const NRGPID =
@@ -17918,6 +17946,8 @@ const processNRGPApproval = async (data) => {
             NRGPID,
             NRGPNumber,
             OrganizationID,
+            DepartmentID,
+            CreatedBy,
             Status
 
           FROM Gatepass_NRGP_Entry_Master
@@ -18126,6 +18156,16 @@ const processNRGPApproval = async (data) => {
       );
     }
 
+    // The master lock serializes approvals. Snapshot history before updating
+    // the current row so previous-approver notifications use the recorded actor.
+    const historyResult = await client.query(`
+      SELECT NRGPApprovalID, ApprovalRole, ApprovalOrder, ApprovalLevel, Status, ActionBy
+      FROM Gatepass_NRGP_Approval
+      WHERE NRGPID = $1 AND IsDeleted = FALSE
+      ORDER BY ApprovalOrder ASC, ApprovalLevel ASC, NRGPApprovalID ASC;`, [NRGPID]);
+    notificationEvent = { master, approvals: historyResult.rows,
+      approvalID: currentApproval.nrgpapprovalid, action, remarks: data.Remarks };
+
     // ============================================================
     // APPROVE
     // ============================================================
@@ -18209,6 +18249,8 @@ const processNRGPApproval = async (data) => {
           ],
         );
 
+      notificationEvent.nextApprovalID = pendingResult.rows[0]?.nrgpapprovalid ?? null;
+
       // ==========================================================
       // No Pending Approval
       // All Approval Stages Completed
@@ -18249,6 +18291,7 @@ const processNRGPApproval = async (data) => {
       await client.query(
         "COMMIT",
       );
+      committed = true;
 
       // ==========================================================
       // Response
@@ -18356,6 +18399,7 @@ const processNRGPApproval = async (data) => {
       await client.query(
         "COMMIT",
       );
+      committed = true;
 
       return ok(
         "NRGP rejected successfully.",
@@ -18454,6 +18498,7 @@ const processNRGPApproval = async (data) => {
       await client.query(
         "COMMIT",
       );
+      committed = true;
 
       return ok(
         "NRGP cancelled successfully.",
@@ -18515,6 +18560,7 @@ const processNRGPApproval = async (data) => {
     // ============================================================
 
     client.release();
+    if (committed) notifyCommittedNRGPEvent(notificationEvent);
   }
 };
 // ============================================================ Get NRGP Approval Config List
