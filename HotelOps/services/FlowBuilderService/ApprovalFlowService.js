@@ -141,6 +141,95 @@ const getApprovalFlowList = async (data = {}) => {
         };
     } catch (error) { return failure(error); }
 };
+
+//=========================================================================
+// Get Module-wise Approval Configurations
+const getModuleApprovalConfigurations = async (data = {}) => {
+    try {
+        let { OrganizationID, ModuleName } = data;
+
+        // Validate OrganizationID if provided
+        if (
+            OrganizationID !== undefined &&
+            OrganizationID !== null &&
+            OrganizationID !== ""
+        ) {
+            OrganizationID = String(OrganizationID).trim();
+
+            if (!/^\d+$/.test(OrganizationID) || Number(OrganizationID) <= 0) {
+                throw new AppError(
+                    "OrganizationID must be a valid positive integer",
+                    400
+                );
+            }
+        } else {
+            OrganizationID = null;
+        }
+
+        // Validate ModuleName if provided
+        if (ModuleName !== undefined && ModuleName !== null) {
+            ModuleName = String(ModuleName).trim();
+
+            if (!ModuleName) {
+                ModuleName = null;
+            }
+        } else {
+            ModuleName = null;
+        }
+
+        const result = await pool.query(
+            `
+            SELECT
+                am.organizationid AS "OrganizationID",
+                am.modulename AS "ModuleName",
+                am.flowname AS "FlowName",
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'Level', d.level,
+                            'ApproverType', d.approvertype,
+                            'Role', d.role,
+                            'ApprovalType', d.approvaltype,
+                            'IsMandatory', d.ismandatory
+                        )
+                        ORDER BY d.level ASC, d.approvalid ASC
+                    ) FILTER (WHERE d.approvalid IS NOT NULL),
+                    '[]'::jsonb
+                ) AS "Details"
+            FROM public.approval_master am
+            LEFT JOIN public.approval_master_details d
+                ON d.approvalmasterid = am.approvalmasterid
+                AND d.isdelete = FALSE
+            WHERE
+                am.isdelete = FALSE
+                AND ($1::BIGINT IS NULL OR am.organizationid = $1::BIGINT)
+                AND (
+                    $2::VARCHAR IS NULL
+                    OR LOWER(TRIM(am.modulename)) = LOWER($2::VARCHAR)
+                )
+            GROUP BY
+                am.approvalmasterid,
+                am.organizationid,
+                am.modulename,
+                am.flowname
+            ORDER BY
+                am.organizationid ASC,
+                am.modulename ASC,
+                am.approvalmasterid DESC
+            `,
+            [OrganizationID, ModuleName]
+        );
+
+        return {
+            success: true,
+            message: "Module-wise approval configurations fetched successfully",
+            data: result.rows
+        };
+    } catch (error) {
+        return failure(error);
+    }
+};
+
 //========================================================================= Delete Approval Flow
 const deleteApprovalFlow = async (data = {}) => {
     try {
@@ -156,4 +245,4 @@ const deleteApprovalFlow = async (data = {}) => {
     } catch (error) { return failure(error); }
 };
 
-module.exports = { saveApprovalFlow, getApprovalFlowList, deleteApprovalFlow };
+module.exports = { saveApprovalFlow, getApprovalFlowList, getModuleApprovalConfigurations, deleteApprovalFlow };
