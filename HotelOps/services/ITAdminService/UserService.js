@@ -3457,7 +3457,9 @@ const getAllUsersTabel = async (
           row.employeecode,
 
         Username:
-          row.username,
+  row.username
+    ? String(row.username).split("@")[0]
+    : null,
 
         FullName:
           row.fullname,

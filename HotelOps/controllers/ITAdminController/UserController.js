@@ -36,6 +36,8 @@ exports.createUser = async (req, res) => {
       AllOrganizationAccess,
       Organizations,
       Products,
+      PrimaryOrganizationID,
+  OrganizationCode,
     } = req.body;
 
 
@@ -314,7 +316,8 @@ exports.createUser = async (req, res) => {
             PasswordHash,
             FullName,
             Designation,
-
+PrimaryOrganizationID,
+  OrganizationCode,
             DepartmentID,
             DivisionID,
 
@@ -1180,6 +1183,8 @@ exports.updateUser = async (req, res) => {
     const {
       Organizations,
       Products,
+      PrimaryOrganizationID,
+      OrganizationCode,
       ...userData
     } = req.body;
 
@@ -1312,6 +1317,9 @@ exports.updateUser = async (req, res) => {
               Number(UserID),
 
             ...userData,
+
+            PrimaryOrganizationID,
+            OrganizationCode,
 
 
             // ==================================================
