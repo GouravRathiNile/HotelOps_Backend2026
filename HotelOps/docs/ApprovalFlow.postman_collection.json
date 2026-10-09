@@ -1,0 +1,201 @@
+{
+  "info": {
+    "name": "Approval Flow Builder",
+    "description": "Save, list complete flows, and delete, scoped by OrganizationID. Set approval-type variables to values supported by your existing configuration. Update requires the complete Details array.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "OrganizationID",
+      "value": "2"
+    },
+    {
+      "key": "ApprovalMasterID",
+      "value": "7"
+    },
+    {
+      "key": "ApproverType",
+      "value": ""
+    },
+    {
+      "key": "Role",
+      "value": "HOD"
+    },
+    {
+      "key": "ApprovalType",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Save - create",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/ApprovalFlow/save",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"OrganizationID\": \"{{OrganizationID}}\",\n  \"FlowName\": \"Gatepass approvals\",\n  \"ModuleName\": \"Gatepass\",\n  \"Description\": \"Department and finance approvals\",\n  \"IsActive\": true,\n  \"Details\": [\n    {\n      \"Level\": 1,\n      \"ApproverType\": \"{{ApproverType}}\",\n      \"Role\": \"{{Role}}\",\n      \"ApprovalType\": \"{{ApprovalType}}\",\n      \"IsMandatory\": true\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": [
+        {
+          "name": "Success",
+          "status": "Created",
+          "code": 201,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"success\": true,\n  \"statusCode\": 201,\n  \"message\": \"Approval Flow Created Successfully\",\n  \"ApprovalMasterID\": 7,\n  \"data\": {\n    \"organizationid\": 2,\n    \"approvalmasterid\": 7,\n    \"flowname\": \"Gatepass approvals\",\n    \"modulename\": \"Gatepass\",\n    \"description\": \"Department and finance approvals\",\n    \"isactive\": true,\n    \"createdby\": 9,\n    \"createddatetime\": \"2026-10-08T10:00:00.000Z\",\n    \"modifiedby\": null,\n    \"modifieddatetime\": null,\n    \"details\": [\n      {\n        \"approvalid\": 11,\n        \"approvalmasterid\": 7,\n        \"level\": 1,\n        \"approvertype\": \"Role\",\n        \"role\": \"HOD\",\n        \"approvaltype\": \"Sequential\",\n        \"ismandatory\": true,\n        \"createdby\": 9,\n        \"createddatetime\": \"2026-10-08T10:00:00.000Z\",\n        \"modifiedby\": null,\n        \"modifieddatetime\": null\n      }\n    ]\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "Save - update and deactivate",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/ApprovalFlow/save",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"OrganizationID\": \"{{OrganizationID}}\",\n  \"FlowName\": \"Gatepass approvals\",\n  \"ModuleName\": \"Gatepass\",\n  \"Description\": \"Department and finance approvals\",\n  \"IsActive\": false,\n  \"Details\": [\n    {\n      \"Level\": 1,\n      \"ApproverType\": \"{{ApproverType}}\",\n      \"Role\": \"{{Role}}\",\n      \"ApprovalType\": \"{{ApprovalType}}\",\n      \"IsMandatory\": true\n    }\n  ],\n  \"ApprovalMasterID\": \"{{ApprovalMasterID}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": [
+        {
+          "name": "Success",
+          "status": "OK",
+          "code": 200,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"success\": true,\n  \"statusCode\": 200,\n  \"message\": \"Approval Flow Updated Successfully\",\n  \"ApprovalMasterID\": 7,\n  \"data\": {\n    \"organizationid\": 2,\n    \"approvalmasterid\": 7,\n    \"flowname\": \"Gatepass approvals\",\n    \"modulename\": \"Gatepass\",\n    \"description\": \"Department and finance approvals\",\n    \"isactive\": false,\n    \"createdby\": 9,\n    \"createddatetime\": \"2026-10-08T10:00:00.000Z\",\n    \"modifiedby\": null,\n    \"modifieddatetime\": null,\n    \"details\": [\n      {\n        \"approvalid\": 11,\n        \"approvalmasterid\": 7,\n        \"level\": 1,\n        \"approvertype\": \"Role\",\n        \"role\": \"HOD\",\n        \"approvaltype\": \"Sequential\",\n        \"ismandatory\": true,\n        \"createdby\": 9,\n        \"createddatetime\": \"2026-10-08T10:00:00.000Z\",\n        \"modifiedby\": null,\n        \"modifieddatetime\": null\n      }\n    ]\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "List - complete flows",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/ApprovalFlow/list?OrganizationID={{OrganizationID}}&page=1&PageSize=10"
+      },
+      "response": [
+        {
+          "name": "Success",
+          "status": "OK",
+          "code": 200,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"success\": true,\n  \"message\": \"Approval Flow List fetched successfully\",\n  \"TotalCount\": 1,\n  \"PageCount\": 1,\n  \"CurrentPage\": 1,\n  \"PageSize\": 10,\n  \"TotalPages\": 1,\n  \"data\": [\n    {\n      \"organizationid\": 2,\n      \"approvalmasterid\": 7,\n      \"flowname\": \"Gatepass approvals\",\n      \"modulename\": \"Gatepass\",\n      \"description\": \"Department and finance approvals\",\n      \"isactive\": true,\n      \"createddatetime\": \"2026-10-08T10:00:00.000Z\",\n      \"details\": [\n        {\n          \"level\": 1,\n          \"approvertype\": \"Role\",\n          \"role\": \"HOD\",\n          \"approvaltype\": \"Sequential\",\n          \"ismandatory\": true,\n          \"createddatetime\": \"2026-10-08T10:00:00.000Z\"\n        }\n      ]\n    }\n  ]\n}"
+        }
+      ]
+    },
+    {
+      "name": "List - one flow",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/ApprovalFlow/list?OrganizationID={{OrganizationID}}&ApprovalMasterID={{ApprovalMasterID}}"
+      },
+      "response": [
+        {
+          "name": "Success",
+          "status": "OK",
+          "code": 200,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"success\": true,\n  \"message\": \"Approval Flow List fetched successfully\",\n  \"TotalCount\": 1,\n  \"PageCount\": 1,\n  \"CurrentPage\": 1,\n  \"PageSize\": 10,\n  \"TotalPages\": 1,\n  \"data\": [\n    {\n      \"organizationid\": 2,\n      \"approvalmasterid\": 7,\n      \"flowname\": \"Gatepass approvals\",\n      \"modulename\": \"Gatepass\",\n      \"description\": \"Department and finance approvals\",\n      \"isactive\": true,\n      \"createddatetime\": \"2026-10-08T10:00:00.000Z\",\n      \"details\": [\n        {\n          \"level\": 1,\n          \"approvertype\": \"Role\",\n          \"role\": \"HOD\",\n          \"approvaltype\": \"Sequential\",\n          \"ismandatory\": true,\n          \"createddatetime\": \"2026-10-08T10:00:00.000Z\"\n        }\n      ]\n    }\n  ]\n}"
+        }
+      ]
+    },
+    {
+      "name": "Delete",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/ApprovalFlow/delete",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"OrganizationID\": \"{{OrganizationID}}\",\n  \"ApprovalMasterID\": \"{{ApprovalMasterID}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": [
+        {
+          "name": "Success",
+          "status": "OK",
+          "code": 200,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"success\": true,\n  \"message\": \"Approval Flow Deleted Successfully\"\n}"
+        }
+      ]
+    }
+  ]
+}
