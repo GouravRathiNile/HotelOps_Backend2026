@@ -8,6 +8,9 @@ const { retryableDatabaseResponse } = require("../../utils/retryableDatabaseErro
 // ============================================================
 // CREATE USER
 // ============================================================
+// ============================================================
+// CREATE USER
+// ============================================================
 const createUser = async (data) => {
 
   const client = await pool.connect();
@@ -15,7 +18,6 @@ const createUser = async (data) => {
   try {
 
     await client.query("BEGIN");
-
 
     const {
       EmployeeCode,
@@ -51,6 +53,12 @@ const createUser = async (data) => {
 
       AllOrganizationAccess,
 
+      // ======================================================
+      // NEW
+      // ======================================================
+      PrimaryOrganizationID,
+      OrganizationCode,
+
       Organizations,
       Products,
 
@@ -72,7 +80,93 @@ const createUser = async (data) => {
 
 
     // ========================================================
-    // 2. HASH PASSWORD
+    // 2. VALIDATE USERNAME
+    // ========================================================
+
+    const baseUsername = String(
+      Username || ""
+    ).trim();
+
+    if (!baseUsername) {
+      throw new Error(
+        "Username is required"
+      );
+    }
+
+
+    // ========================================================
+    // 3. VALIDATE PRIMARY ORGANIZATION
+    // ========================================================
+
+    const primaryOrganizationID =
+      Number(PrimaryOrganizationID);
+
+    if (
+      !Number.isInteger(primaryOrganizationID) ||
+      primaryOrganizationID <= 0
+    ) {
+      throw new Error(
+        "Valid PrimaryOrganizationID is required"
+      );
+    }
+
+
+    const organizationCode = String(
+      OrganizationCode || ""
+    ).trim();
+
+    if (!organizationCode) {
+      throw new Error(
+        "OrganizationCode is required"
+      );
+    }
+
+
+    const primaryOrganizationResult =
+      await client.query(
+        `
+        SELECT
+          OrganizationID,
+          OrganizationCode,
+          OrganizationName,
+          BrandID
+
+        FROM Organization_Master
+
+        WHERE OrganizationID = $1
+          AND LOWER(OrganizationCode) = LOWER($2)
+          AND IsDeleted = FALSE
+          AND IsActive = TRUE
+
+        LIMIT 1;
+        `,
+        [
+          primaryOrganizationID,
+          organizationCode,
+        ]
+      );
+
+
+    if (
+      primaryOrganizationResult.rows.length === 0
+    ) {
+      throw new Error(
+        "Invalid PrimaryOrganizationID or OrganizationCode"
+      );
+    }
+
+
+    // ========================================================
+    // 4. CREATE FINAL USERNAME
+    // Example: gangadhar@Hojo
+    // ========================================================
+
+    const finalUsername =
+      `${baseUsername}@${organizationCode}`;
+
+
+    // ========================================================
+    // 5. HASH PASSWORD
     // ========================================================
 
     const hashedPassword =
@@ -83,14 +177,13 @@ const createUser = async (data) => {
 
 
     // ========================================================
-    // 3. VALIDATE DEPARTMENT + DIVISION
+    // 6. VALIDATE DEPARTMENT + DIVISION
     // ========================================================
 
     const departmentCheck =
       await client.query(
         `
         SELECT
-
           DepartmentID,
           DepartmentName,
           OrganizationID,
@@ -111,7 +204,9 @@ const createUser = async (data) => {
       );
 
 
-    if (departmentCheck.rows.length === 0) {
+    if (
+      departmentCheck.rows.length === 0
+    ) {
 
       throw new Error(
         "Invalid DepartmentID or Department does not belong to selected Division"
@@ -127,13 +222,11 @@ const createUser = async (data) => {
     //
     // A user from any department can be assigned
     // any active product.
-    //
-    // ProductID validation against department is NOT done here.
     // ========================================================
 
 
     // ========================================================
-    // 4. INSERT USER
+    // 7. INSERT USER
     // ========================================================
 
     const userResult =
@@ -218,8 +311,14 @@ const createUser = async (data) => {
           UserID,
 
           EmployeeCode || null,
-          Username,
+
+          // ==================================================
+          // NEW FINAL USERNAME
+          // ==================================================
+          finalUsername,
+
           hashedPassword,
+
           FullName,
 
           Designation || null,
@@ -254,6 +353,51 @@ const createUser = async (data) => {
 
 
     // ========================================================
+    // 8. INSERT PRIMARY ORGANIZATION
+    // ========================================================
+
+    await client.query(
+      `
+      INSERT INTO user_primary_organization
+      (
+        UserID,
+        OrganizationID,
+        BaseUsername,
+
+        IsActive,
+        IsDeleted,
+
+        CreatedBy,
+        CreatedDate
+      )
+
+      VALUES
+      (
+        $1,
+        $2,
+        $3,
+
+        TRUE,
+        FALSE,
+
+        $4,
+        CURRENT_TIMESTAMP
+      );
+      `,
+      [
+        UserID,
+        primaryOrganizationID,
+
+        // Current decision:
+        // full username store kar rahe hain
+        finalUsername,
+
+        CreatedBy || null,
+      ]
+    );
+
+
+    // ========================================================
     // BRAND MAPPING ID
     // ========================================================
 
@@ -261,7 +405,7 @@ const createUser = async (data) => {
 
 
     // ========================================================
-    // 5. SUPER ADMIN
+    // 9. SUPER ADMIN
     // ========================================================
 
     if (LoginType === "SuperAdmin") {
@@ -390,7 +534,7 @@ const createUser = async (data) => {
 
 
     // ========================================================
-    // 6. BRAND USER
+    // 10. BRAND USER
     // ========================================================
 
     if (LoginType === "Brand") {
@@ -463,7 +607,12 @@ const createUser = async (data) => {
           [
             UserID,
             BrandID,
-            Username,
+
+            // =================================================
+            // Use final username here also
+            // =================================================
+            finalUsername,
+
             CreatedBy || null
           ]
         );
@@ -478,7 +627,7 @@ const createUser = async (data) => {
 
 
     // ========================================================
-    // 7. ORGANIZATION MAPPING
+    // 11. ORGANIZATION MAPPING
     // ========================================================
 
     if (
@@ -527,7 +676,6 @@ const createUser = async (data) => {
           await client.query(
             `
             SELECT
-
               OrganizationID,
               BrandID,
               OrganizationName
@@ -640,17 +788,7 @@ const createUser = async (data) => {
 
 
     // ========================================================
-    // 8. PRODUCT MAPPING
-    // ========================================================
-    //
-    // IMPORTANT:
-    // Product is NOT department restricted.
-    //
-    // Example:
-    // Front Office user
-    // can have Housekeeping product.
-    //
-    // Only the selected ProductID is stored.
+    // 12. PRODUCT MAPPING
     // ========================================================
 
     if (
@@ -754,7 +892,7 @@ const createUser = async (data) => {
 
 
     // ========================================================
-    // 9. COMMIT
+    // 13. COMMIT
     // ========================================================
 
     await client.query("COMMIT");
@@ -775,6 +913,15 @@ const createUser = async (data) => {
 
         UserID:
           userResult.rows[0].userid,
+
+        Username:
+          finalUsername,
+
+        PrimaryOrganizationID:
+          primaryOrganizationID,
+
+        OrganizationCode:
+          organizationCode,
 
       },
 
@@ -806,6 +953,7 @@ const createUser = async (data) => {
     const retryResponse =
       retryableDatabaseResponse(error);
 
+
     if (retryResponse) {
 
       return retryResponse;
@@ -826,7 +974,7 @@ const createUser = async (data) => {
         success: false,
 
         message:
-          "Username, or Employee Code already exists",
+          "Username, Employee Code, or Primary Organization Username already exists",
 
       };
 
@@ -906,6 +1054,7 @@ const createUser = async (data) => {
         error.message,
 
     };
+
 
   } finally {
 
@@ -2180,23 +2329,37 @@ const getUserOrganizations = async (UserID) => {
         `
         SELECT
           om.OrganizationID,
+          om.OrganizationCode,
           om.OrganizationName,
           om.ShortName,
 
           om.BrandID,
-          bm.BrandName
+          bm.BrandName,
+
+          CASE
+            WHEN upo.OrganizationID IS NOT NULL
+            THEN TRUE
+            ELSE FALSE
+          END AS IsPrimary
 
         FROM Organization_Master om
 
         LEFT JOIN Brand_Master bm
           ON om.BrandID = bm.BrandID
 
+        LEFT JOIN user_primary_organization upo
+          ON upo.OrganizationID = om.OrganizationID
+          AND upo.UserID = $1
+          AND upo.IsActive = TRUE
+          AND upo.IsDeleted = FALSE
+
         WHERE om.IsDeleted = FALSE
           AND om.IsActive = TRUE
 
         ORDER BY
           om.OrganizationName ASC;
-        `
+        `,
+        [UserID]
       );
 
       return {
@@ -2208,10 +2371,20 @@ const getUserOrganizations = async (UserID) => {
         Count: result.rows.length,
 
         data: result.rows.map((row) => ({
-          UserID: user.userid,
+          UserID:
+            user.userid,
+
+          UserOrgMapID:
+            null,
+
+          UserBrandMapID:
+            null,
 
           OrganizationID:
             row.organizationid,
+
+          OrganizationCode:
+            row.organizationcode,
 
           OrganizationName:
             row.organizationname,
@@ -2224,44 +2397,123 @@ const getUserOrganizations = async (UserID) => {
 
           BrandName:
             row.brandname,
+
+          IsPrimary:
+            row.isprimary,
         })),
       };
     }
 
     // ========================================================
-    // 3. LIMITED ACCESS
-    // SuperAdmin + Organization + Brand
+    // 3. LIMITED ORGANIZATION ACCESS
+    // Primary Organization + Additional Organization Access
     // ========================================================
 
     const result = await pool.query(
       `
-  SELECT
+      WITH UserOrganizations AS
+      (
+        -- ====================================================
+        -- PRIMARY ORGANIZATION
+        -- ====================================================
 
-    uom.UserID,
-    uom.UserOrgMapID,
-    uom.UserBrandMapID,
+        SELECT
+          upo.UserID,
 
-    uom.OrganizationID,
-    om.OrganizationName,
-    om.ShortName,
+          NULL::BIGINT AS UserOrgMapID,
+          NULL::BIGINT AS UserBrandMapID,
 
-    om.BrandID,
-    bm.BrandName
+          upo.OrganizationID,
 
-  FROM user_org_mapping uom
+          TRUE AS IsPrimary
 
-  LEFT JOIN Organization_Master om
-    ON uom.OrganizationID = om.OrganizationID
+        FROM user_primary_organization upo
 
-  LEFT JOIN Brand_Master bm
-    ON om.BrandID = bm.BrandID
+        WHERE upo.UserID = $1
+          AND upo.IsActive = TRUE
+          AND upo.IsDeleted = FALSE
 
-  WHERE uom.UserID = $1
-    AND uom.IsActive = TRUE
-    AND uom.IsDeleted = FALSE
 
-  ORDER BY om.OrganizationName ASC;
-  `,
+        UNION ALL
+
+
+        -- ====================================================
+        -- ADDITIONAL ORGANIZATION ACCESS
+        -- ====================================================
+
+        SELECT
+          uom.UserID,
+
+          uom.UserOrgMapID,
+          uom.UserBrandMapID,
+
+          uom.OrganizationID,
+
+          FALSE AS IsPrimary
+
+        FROM user_org_mapping uom
+
+        WHERE uom.UserID = $1
+          AND uom.IsActive = TRUE
+          AND uom.IsDeleted = FALSE
+      ),
+
+      RankedOrganizations AS
+      (
+        SELECT
+          uo.UserID,
+          uo.UserOrgMapID,
+          uo.UserBrandMapID,
+
+          uo.OrganizationID,
+
+          om.OrganizationCode,
+          om.OrganizationName,
+          om.ShortName,
+
+          om.BrandID,
+          bm.BrandName,
+
+          uo.IsPrimary,
+
+          ROW_NUMBER() OVER (
+            PARTITION BY uo.OrganizationID
+            ORDER BY uo.IsPrimary DESC
+          ) AS RowNumber
+
+        FROM UserOrganizations uo
+
+        INNER JOIN Organization_Master om
+          ON uo.OrganizationID = om.OrganizationID
+          AND om.IsDeleted = FALSE
+          AND om.IsActive = TRUE
+
+        LEFT JOIN Brand_Master bm
+          ON om.BrandID = bm.BrandID
+      )
+
+      SELECT
+        UserID,
+        UserOrgMapID,
+        UserBrandMapID,
+
+        OrganizationID,
+        OrganizationCode,
+        OrganizationName,
+        ShortName,
+
+        BrandID,
+        BrandName,
+
+        IsPrimary
+
+      FROM RankedOrganizations
+
+      WHERE RowNumber = 1
+
+      ORDER BY
+        OrganizationName ASC;
+      `,
       [UserID]
     );
 
@@ -2290,6 +2542,9 @@ const getUserOrganizations = async (UserID) => {
         OrganizationID:
           row.organizationid,
 
+        OrganizationCode:
+          row.organizationcode,
+
         OrganizationName:
           row.organizationname,
 
@@ -2301,6 +2556,9 @@ const getUserOrganizations = async (UserID) => {
 
         BrandName:
           row.brandname,
+
+        IsPrimary:
+          row.isprimary,
       })),
     };
 
@@ -2659,7 +2917,6 @@ const getUserPersonalDetails = async (UserID) => {
 // GET ALL USERS TABLE
 // Pagination + Filters
 // ============================================================
-
 const getAllUsersTabel = async (
   page = 1,
   limit = 10,
@@ -2669,6 +2926,7 @@ const getAllUsersTabel = async (
   OrganizationID
 ) => {
   try {
+
     // ========================================================
     // PAGINATION
     // ========================================================
@@ -2681,6 +2939,7 @@ const getAllUsersTabel = async (
 
     const offset = (page - 1) * limit;
 
+
     // ========================================================
     // FILTERS
     // ========================================================
@@ -2691,6 +2950,7 @@ const getAllUsersTabel = async (
 
     const filterValues = [];
 
+
     // ========================================================
     // FULL NAME FILTER
     // ========================================================
@@ -2700,12 +2960,16 @@ const getAllUsersTabel = async (
       FullName !== null &&
       String(FullName).trim() !== ""
     ) {
-      filterValues.push(`%${String(FullName).trim()}%`);
+
+      filterValues.push(
+        `%${String(FullName).trim()}%`
+      );
 
       filters.push(
         `um.FullName ILIKE $${filterValues.length}`
       );
     }
+
 
     // ========================================================
     // DEPARTMENT FILTER
@@ -2716,12 +2980,16 @@ const getAllUsersTabel = async (
       DepartmentID !== null &&
       String(DepartmentID).trim() !== ""
     ) {
-      filterValues.push(Number(DepartmentID));
+
+      filterValues.push(
+        Number(DepartmentID)
+      );
 
       filters.push(
         `um.DepartmentID = $${filterValues.length}`
       );
     }
+
 
     // ========================================================
     // USER TYPE FILTER
@@ -2732,15 +3000,23 @@ const getAllUsersTabel = async (
       UserType !== null &&
       String(UserType).trim() !== ""
     ) {
-      filterValues.push(String(UserType).trim());
+
+      filterValues.push(
+        String(UserType).trim()
+      );
 
       filters.push(
         `um.UserType = $${filterValues.length}`
       );
     }
 
+
     // ========================================================
     // ORGANIZATION FILTER
+    //
+    // Primary Organization
+    // OR
+    // Organization Access
     // ========================================================
 
     if (
@@ -2748,32 +3024,76 @@ const getAllUsersTabel = async (
       OrganizationID !== null &&
       String(OrganizationID).trim() !== ""
     ) {
-      filterValues.push(Number(OrganizationID));
+
+      filterValues.push(
+        Number(OrganizationID)
+      );
+
+      const organizationParam =
+        `$${filterValues.length}`;
 
       filters.push(`
-        EXISTS (
-          SELECT 1
-          FROM user_org_mapping uom_filter
-          WHERE uom_filter.UserID = um.UserID
-            AND uom_filter.OrganizationID = $${filterValues.length}
-            AND uom_filter.IsDeleted = FALSE
-            AND uom_filter.IsActive = TRUE
+        (
+          EXISTS
+          (
+            SELECT 1
+
+            FROM user_primary_organization upo_filter
+
+            INNER JOIN Organization_Master om_filter
+              ON om_filter.OrganizationID =
+                 upo_filter.OrganizationID
+              AND om_filter.IsDeleted = FALSE
+              AND om_filter.IsActive = TRUE
+
+            WHERE upo_filter.UserID = um.UserID
+              AND upo_filter.OrganizationID = ${organizationParam}
+              AND upo_filter.IsDeleted = FALSE
+              AND upo_filter.IsActive = TRUE
+          )
+
+          OR
+
+          EXISTS
+          (
+            SELECT 1
+
+            FROM user_org_mapping uom_filter
+
+            INNER JOIN Organization_Master om_filter
+              ON om_filter.OrganizationID =
+                 uom_filter.OrganizationID
+              AND om_filter.IsDeleted = FALSE
+              AND om_filter.IsActive = TRUE
+
+            WHERE uom_filter.UserID = um.UserID
+              AND uom_filter.OrganizationID = ${organizationParam}
+              AND uom_filter.IsDeleted = FALSE
+              AND uom_filter.IsActive = TRUE
+          )
         )
       `);
     }
+
 
     // ========================================================
     // WHERE
     // ========================================================
 
-    const whereClause = filters.join(" AND ");
+    const whereClause =
+      filters.join(" AND ");
+
 
     // ========================================================
     // PAGINATION PARAMETERS
     // ========================================================
 
-    const limitParameter = filterValues.length + 1;
-    const offsetParameter = filterValues.length + 2;
+    const limitParameter =
+      filterValues.length + 1;
+
+    const offsetParameter =
+      filterValues.length + 2;
+
 
     // ========================================================
     // MAIN USER QUERY
@@ -2810,6 +3130,7 @@ const getAllUsersTabel = async (
 
         um.ProfilePhoto,
 
+
         -- ====================================================
         -- LOGIN / PASSWORD DETAILS
         -- ====================================================
@@ -2821,11 +3142,13 @@ const getAllUsersTabel = async (
         um.IsLocked,
         um.IsActive,
 
+
         -- ====================================================
         -- EMPLOYEE DETAILS
         -- ====================================================
 
         um.DateOfJoining,
+
 
         -- ====================================================
         -- AUDIT DETAILS
@@ -2839,59 +3162,162 @@ const getAllUsersTabel = async (
         -- ====================================================
 
         CASE
+
+          -- ==================================================
+          -- SUPER ADMIN WITH ALL ORGANIZATION ACCESS
+          -- ==================================================
+
           WHEN
             um.LoginType = 'SuperAdmin'
             AND um.AllOrganizationAccess = TRUE
+
           THEN
-            (
-              SELECT COALESCE(
-                json_agg(
-                  json_build_object(
-                    
-                    'OrganizationID', om.OrganizationID,
-                    'ShortName', om.ShortName
-                  )
-                  ORDER BY om.OrganizationName ASC
-                ),
-                '[]'::json
-              )
+          (
+            SELECT COALESCE(
 
-              FROM Organization_Master om
+              json_agg(
+                json_build_object(
 
-              LEFT JOIN Brand_Master bm
-                ON om.BrandID = bm.BrandID
+                  'OrganizationID',
+                    om.OrganizationID,
 
-              WHERE om.IsDeleted = FALSE
-                AND om.IsActive = TRUE
+                  'ShortName',
+                    om.ShortName,
+
+                  'IsPrimary',
+                    CASE
+                      WHEN upo.OrganizationID =
+                           om.OrganizationID
+                      THEN TRUE
+                      ELSE FALSE
+                    END
+
+                )
+                ORDER BY
+                  CASE
+                    WHEN upo.OrganizationID =
+                         om.OrganizationID
+                    THEN 0
+                    ELSE 1
+                  END,
+
+                  om.OrganizationName ASC
+              ),
+
+              '[]'::json
             )
+
+            FROM Organization_Master om
+
+            LEFT JOIN user_primary_organization upo
+              ON upo.UserID = um.UserID
+              AND upo.OrganizationID = om.OrganizationID
+              AND upo.IsDeleted = FALSE
+              AND upo.IsActive = TRUE
+
+            WHERE om.IsDeleted = FALSE
+              AND om.IsActive = TRUE
+          )
+
+
+          -- ==================================================
+          -- ALL OTHER USERS
+          -- Primary Organization + Organization Access
+          -- ==================================================
 
           ELSE
-            (
-              SELECT COALESCE(
-                json_agg(
-                  json_build_object(
-                   
-                    'OrganizationID', uom.OrganizationID,
-                    'ShortName', om.ShortName
-                  )
-                  ORDER BY om.OrganizationName ASC
-                ),
-                '[]'::json
-              )
+          (
+            SELECT COALESCE(
 
-              FROM user_org_mapping uom
+              json_agg(
+                json_build_object(
 
-              LEFT JOIN Organization_Master om
-                ON uom.OrganizationID = om.OrganizationID
+                  'OrganizationID',
+                    organization_data.OrganizationID,
 
-              LEFT JOIN Brand_Master bm
-                ON om.BrandID = bm.BrandID
+                  'ShortName',
+                    organization_data.ShortName,
 
-              WHERE uom.UserID = um.UserID
-                AND uom.IsDeleted = FALSE
-                AND uom.IsActive = TRUE
+                  'IsPrimary',
+                    organization_data.IsPrimary
+
+                )
+
+                ORDER BY
+                  organization_data.IsPrimary DESC,
+                  organization_data.OrganizationName ASC
+              ),
+
+              '[]'::json
             )
+
+            FROM
+            (
+              SELECT
+                combined.OrganizationID,
+
+                om.OrganizationName,
+                om.ShortName,
+
+                BOOL_OR(
+                  combined.IsPrimary
+                ) AS IsPrimary
+
+              FROM
+              (
+                -- ============================================
+                -- PRIMARY ORGANIZATION
+                -- ============================================
+
+                SELECT
+                  upo.OrganizationID,
+                  TRUE AS IsPrimary
+
+                FROM user_primary_organization upo
+
+                WHERE upo.UserID = um.UserID
+                  AND upo.IsDeleted = FALSE
+                  AND upo.IsActive = TRUE
+
+
+                UNION ALL
+
+
+                -- ============================================
+                -- ADDITIONAL ORGANIZATION ACCESS
+                -- ============================================
+
+                SELECT
+                  uom.OrganizationID,
+                  FALSE AS IsPrimary
+
+                FROM user_org_mapping uom
+
+                WHERE uom.UserID = um.UserID
+                  AND uom.IsDeleted = FALSE
+                  AND uom.IsActive = TRUE
+
+              ) combined
+
+
+              INNER JOIN Organization_Master om
+                ON om.OrganizationID =
+                   combined.OrganizationID
+
+                AND om.IsDeleted = FALSE
+                AND om.IsActive = TRUE
+
+
+              GROUP BY
+                combined.OrganizationID,
+                om.OrganizationName,
+                om.ShortName
+
+            ) organization_data
+          )
+
         END AS Organizations,
+
 
         -- ====================================================
         -- PRODUCTS
@@ -2899,188 +3325,260 @@ const getAllUsersTabel = async (
 
         (
           SELECT COALESCE(
+
             json_agg(
               json_build_object(
-                'ProductID', pm.ProductID,
-                'ProductName', pm.ProductName
-               
+
+                'ProductID',
+                  pm.ProductID,
+
+                'ProductName',
+                  pm.ProductName
+
               )
-              ORDER BY pm.ProductName ASC
+              ORDER BY
+                pm.ProductName ASC
             ),
+
             '[]'::json
           )
 
           FROM user_product_mapping upm
 
           LEFT JOIN Product_Master pm
-            ON upm.ProductID = pm.ProductID
+            ON upm.ProductID =
+               pm.ProductID
 
           LEFT JOIN product_category_master pcm
-            ON pm.ProductCategoryID = pcm.ProductCategoryID
+            ON pm.ProductCategoryID =
+               pcm.ProductCategoryID
 
-          WHERE upm.UserID = um.UserID
+          WHERE upm.UserID =
+                um.UserID
+
             AND upm.IsDeleted = FALSE
             AND upm.IsActive = TRUE
+
+            AND pm.IsDeleted = FALSE
+            AND pm.IsActive = TRUE
+
         ) AS Products
+
 
       FROM user_master um
 
+
       LEFT JOIN Department_Master dm
-        ON um.DepartmentID = dm.DepartmentID
+        ON um.DepartmentID =
+           dm.DepartmentID
+
 
       LEFT JOIN Division_Master dv
-        ON um.DivisionID = dv.DivisionID
+        ON um.DivisionID =
+           dv.DivisionID
+
 
       WHERE ${whereClause}
 
-      ORDER BY um.FullName ASC
+
+      ORDER BY
+        um.FullName ASC
+
 
       LIMIT $${limitParameter}
+
       OFFSET $${offsetParameter};
     `;
+
 
     // ========================================================
     // COUNT QUERY
     // ========================================================
 
     const countQuery = `
-      SELECT COUNT(*) AS TotalCount
+      SELECT
+        COUNT(*) AS TotalCount
 
       FROM user_master um
 
       WHERE ${whereClause};
     `;
 
+
     // ========================================================
     // EXECUTE
     // ========================================================
 
-    const [result, countResult] = await Promise.all([
-      pool.query(
-        query,
-        [
-          ...filterValues,
-          limit,
-          offset
-        ]
-      ),
+    const [result, countResult] =
+      await Promise.all([
 
-      pool.query(
-        countQuery,
-        filterValues
-      )
-    ]);
+        pool.query(
+          query,
+          [
+            ...filterValues,
+            limit,
+            offset
+          ]
+        ),
+
+        pool.query(
+          countQuery,
+          filterValues
+        )
+
+      ]);
+
 
     // ========================================================
     // TOTAL COUNT
     // ========================================================
 
-    const totalCount = Number(
-      countResult.rows[0].totalcount
-    );
+    const totalCount =
+      Number(
+        countResult.rows[0].totalcount
+      );
+
 
     // ========================================================
     // RESPONSE
     // ========================================================
 
-    const users = result.rows.map((row) => ({
+    const users =
+      result.rows.map((row) => ({
 
-      // ======================================================
-      // BASIC USER DETAILS
-      // ======================================================
+        // ====================================================
+        // BASIC USER DETAILS
+        // ====================================================
 
-      UserID: row.userid,
+        UserID:
+          row.userid,
 
-      EmployeeCode: row.employeecode,
+        EmployeeCode:
+          row.employeecode,
 
-      Username: row.username,
+        Username:
+          row.username,
 
-      FullName: row.fullname,
+        FullName:
+          row.fullname,
 
-      Designation: row.designation,
-
-      DepartmentID: row.departmentid,
-
-      DepartmentName: row.departmentname,
-
-      DivisionID: row.divisionid,
-
-      DivisionName: row.divisionname,
-
-      LoginType: row.logintype,
-
-      UserType: row.usertype,
-
-      AllOrganizationAccess:
-        row.allorganizationaccess,
-
-      Email: row.email,
-
-      PhoneNumber: row.phonenumber,
-
-      Gender: row.gender,
-
-      // ======================================================
-      // PROFILE
-      // ======================================================
-
-      ProfilePhoto: row.profilephoto
-        ? generateUrl(row.profilephoto)
-        : null,
-
-      // ======================================================
-      // PASSWORD / LOGIN
-      // ======================================================
-
-      LastPasswordChangedDate:
-        formatDate(row.lastpasswordchangeddate),
-
-      PasswordExpiryDate:
-        formatDate(row.passwordexpirydate),
-
-      LastLogin:
-        formatDate(row.lastlogin),
-
-      IsLocked:
-        row.islocked,
-
-      IsActive:
-        row.isactive,
-
-      // ======================================================
-      // EMPLOYEE
-      // ======================================================
-
-      DateOfJoining:
-        row.dateofjoining
-          ? formatDate(row.dateofjoining)
-          : null,
-
-      // ======================================================
-      // AUDIT
-      // ======================================================
-
-      
-
-      CreatedDate:
-        formatDate(row.createddate),
+        Designation:
+          row.designation,
 
 
-      // ======================================================
-      // ORGANIZATIONS
-      // ======================================================
+        DepartmentID:
+          row.departmentid,
 
-      Organizations:
-        row.organizations || [],
+        DepartmentName:
+          row.departmentname,
 
-      // ======================================================
-      // PRODUCTS
-      // ======================================================
 
-      Products:
-        row.products || []
+        DivisionID:
+          row.divisionid,
 
-    }));
+        DivisionName:
+          row.divisionname,
+
+
+        LoginType:
+          row.logintype,
+
+        UserType:
+          row.usertype,
+
+
+        AllOrganizationAccess:
+          row.allorganizationaccess,
+
+
+        Email:
+          row.email,
+
+        PhoneNumber:
+          row.phonenumber,
+
+        Gender:
+          row.gender,
+
+
+        // ====================================================
+        // PROFILE
+        // ====================================================
+
+        ProfilePhoto:
+          row.profilephoto
+            ? generateUrl(
+                row.profilephoto
+              )
+            : null,
+
+
+        // ====================================================
+        // PASSWORD / LOGIN
+        // ====================================================
+
+        LastPasswordChangedDate:
+          formatDate(
+            row.lastpasswordchangeddate
+          ),
+
+        PasswordExpiryDate:
+          formatDate(
+            row.passwordexpirydate
+          ),
+
+        LastLogin:
+          formatDate(
+            row.lastlogin
+          ),
+
+
+        IsLocked:
+          row.islocked,
+
+        IsActive:
+          row.isactive,
+
+
+        // ====================================================
+        // EMPLOYEE
+        // ====================================================
+
+        DateOfJoining:
+          row.dateofjoining
+            ? formatDate(
+                row.dateofjoining
+              )
+            : null,
+
+
+        // ====================================================
+        // AUDIT
+        // ====================================================
+
+        CreatedDate:
+          formatDate(
+            row.createddate
+          ),
+
+
+        // ====================================================
+        // ORGANIZATIONS
+        // ====================================================
+
+        Organizations:
+          row.organizations || [],
+
+
+        // ====================================================
+        // PRODUCTS
+        // ====================================================
+
+        Products:
+          row.products || []
+
+      }));
+
 
     // ========================================================
     // FINAL RESPONSE
@@ -3115,12 +3613,14 @@ const getAllUsersTabel = async (
 
     };
 
+
   } catch (error) {
 
     console.log(
       "Get All Users Table Error:",
       error.message
     );
+
 
     return {
 
@@ -3130,6 +3630,7 @@ const getAllUsersTabel = async (
         error.message
 
     };
+
   }
 };
 // // ============================================================UPDATE USER
@@ -4186,6 +4687,9 @@ const getAllUsersTabel = async (
 // ============================================================
 // UPDATE USER
 // ============================================================
+// ============================================================
+// UPDATE USER
+// ============================================================
 const updateUser = async (data) => {
 
   const client = await pool.connect();
@@ -4227,13 +4731,22 @@ const updateUser = async (data) => {
 
       ModifiedBy,
 
+      // ======================================================
+      // NEW
+      // ======================================================
+      PrimaryOrganizationID,
+      OrganizationCode,
+
       Organizations,
       Products,
 
     } = data;
 
-const finalAllOrganizationAccess =
-  AllOrganizationAccess === true;
+
+    const finalAllOrganizationAccess =
+      AllOrganizationAccess === true;
+
+
     // ========================================================
     // 1. CHECK USER
     // ========================================================
@@ -4242,13 +4755,17 @@ const finalAllOrganizationAccess =
       `
       SELECT
         UserID,
+        Username,
         ProfilePhoto,
         PasswordHash,
         LoginType,
         AllOrganizationAccess
+
       FROM user_master
+
       WHERE UserID = $1
         AND IsDeleted = FALSE
+
       LIMIT 1;
       `,
       [UserID]
@@ -4263,15 +4780,115 @@ const finalAllOrganizationAccess =
         success: false,
         message: "User Not Found",
       };
+    }
+
+
+    const existingUser =
+      userCheck.rows[0];
+
+
+    // ========================================================
+    // 2. USERNAME VALIDATION
+    // ========================================================
+
+    const baseUsername = String(
+      Username || ""
+    ).trim();
+
+
+    if (!baseUsername) {
+
+      throw new Error(
+        "Username is required"
+      );
 
     }
 
 
-    const existingUser = userCheck.rows[0];
+    // ========================================================
+    // 3. PRIMARY ORGANIZATION VALIDATION
+    // ========================================================
+
+    const primaryOrganizationID =
+      Number(PrimaryOrganizationID);
+
+
+    if (
+      !Number.isInteger(primaryOrganizationID) ||
+      primaryOrganizationID <= 0
+    ) {
+
+      throw new Error(
+        "Valid PrimaryOrganizationID is required"
+      );
+
+    }
+
+
+    const organizationCode = String(
+      OrganizationCode || ""
+    ).trim();
+
+
+    if (!organizationCode) {
+
+      throw new Error(
+        "OrganizationCode is required"
+      );
+
+    }
+
+
+    const primaryOrganizationResult =
+      await client.query(
+        `
+        SELECT
+          OrganizationID,
+          OrganizationCode,
+          OrganizationName,
+          BrandID
+
+        FROM Organization_Master
+
+        WHERE OrganizationID = $1
+          AND LOWER(OrganizationCode) = LOWER($2)
+          AND IsDeleted = FALSE
+          AND IsActive = TRUE
+
+        LIMIT 1;
+        `,
+        [
+          primaryOrganizationID,
+          organizationCode,
+        ]
+      );
+
+
+    if (
+      primaryOrganizationResult.rows.length === 0
+    ) {
+
+      throw new Error(
+        "Invalid PrimaryOrganizationID or OrganizationCode"
+      );
+
+    }
 
 
     // ========================================================
-    // 2. PROFILE PHOTO
+    // 4. CREATE FINAL USERNAME
+    //
+    // Example:
+    // gangadhar + Hojo
+    // gangadhar@Hojo
+    // ========================================================
+
+    const finalUsername =
+      `${baseUsername}@${organizationCode}`;
+
+
+    // ========================================================
+    // 5. PROFILE PHOTO
     // ========================================================
 
     const finalProfilePhoto =
@@ -4281,7 +4898,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 3. PASSWORD
+    // 6. PASSWORD
     // ========================================================
 
     let finalPasswordHash =
@@ -4304,7 +4921,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 4. LOGIN TYPE VALIDATION
+    // 7. LOGIN TYPE VALIDATION
     // ========================================================
 
     if (
@@ -4323,7 +4940,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 5. DEPARTMENT + DIVISION VALIDATION
+    // 8. DEPARTMENT + DIVISION VALIDATION
     // ========================================================
 
     if (
@@ -4382,17 +4999,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 6. PRODUCT VALIDATION
-    //
-    // IMPORTANT:
-    // Product is NOT restricted by Department.
-    //
-    // Example:
-    // Front Office user can have
-    // Housekeeping product.
-    //
-    // We only check that ProductID exists
-    // and is active.
+    // 9. PRODUCT VALIDATION
     // ========================================================
 
     if (Array.isArray(Products)) {
@@ -4446,16 +5053,12 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 7. SUPER ADMIN VALIDATION
+    // 10. SUPER ADMIN VALIDATION
     // ========================================================
 
     if (
       LoginType === "SuperAdmin"
     ) {
-
-      // ------------------------------------------
-      // ALL ORGANIZATION ACCESS
-      // ------------------------------------------
 
       if (
         finalAllOrganizationAccess === true
@@ -4464,10 +5067,6 @@ const finalAllOrganizationAccess =
         // No organization mapping required.
 
       }
-
-      // ------------------------------------------
-      // LIMITED ORGANIZATION ACCESS
-      // ------------------------------------------
 
       else {
 
@@ -4488,7 +5087,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 8. ORGANIZATION LOGIN
+    // 11. ORGANIZATION LOGIN VALIDATION
     // ========================================================
 
     if (
@@ -4521,7 +5120,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 9. BRAND LOGIN
+    // 12. BRAND LOGIN VALIDATION
     // ========================================================
 
     if (
@@ -4560,10 +5159,6 @@ const finalAllOrganizationAccess =
       }
 
 
-      // ------------------------------------------
-      // Validate Brand
-      // ------------------------------------------
-
       const brandCheck =
         await client.query(
           `
@@ -4596,7 +5191,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 10. UPDATE USER MASTER
+    // 13. UPDATE USER MASTER
     // ========================================================
 
     const result =
@@ -4605,21 +5200,28 @@ const finalAllOrganizationAccess =
         UPDATE user_master
 
         SET
-
           EmployeeCode = $1,
+
           Username = $2,
+
           PasswordHash = $3,
+
           FullName = $4,
 
           Designation = $5,
+
           DepartmentID = $6,
+
           DivisionID = $7,
 
           LoginType = $8,
+
           UserType = $9,
 
           Email = $10,
+
           PhoneNumber = $11,
+
           Gender = $12,
 
           ProfilePhoto = $13,
@@ -4627,14 +5229,17 @@ const finalAllOrganizationAccess =
           AllOrganizationAccess = $14,
 
           LastPasswordChangedDate = $15,
+
           PasswordExpiryDate = $16,
 
           IsLocked = $17,
+
           IsActive = $18,
 
           DateOfJoining = $19,
 
           ModifiedBy = $20,
+
           ModifiedDate = CURRENT_TIMESTAMP
 
         WHERE UserID = $21
@@ -4643,21 +5248,31 @@ const finalAllOrganizationAccess =
         RETURNING UserID;
         `,
         [
-
           EmployeeCode,
-          Username,
+
+          // ================================================
+          // NEW FINAL USERNAME
+          // ================================================
+          finalUsername,
+
           finalPasswordHash,
+
           FullName,
 
           Designation || null,
+
           DepartmentID || null,
+
           DivisionID || null,
 
           LoginType,
+
           UserType || null,
 
           Email || null,
+
           PhoneNumber || null,
+
           Gender || null,
 
           finalProfilePhoto,
@@ -4667,9 +5282,11 @@ const finalAllOrganizationAccess =
             : false,
 
           LastPasswordChangedDate || null,
+
           PasswordExpiryDate || null,
 
           IsLocked ?? false,
+
           IsActive ?? true,
 
           DateOfJoining || null,
@@ -4677,7 +5294,6 @@ const finalAllOrganizationAccess =
           ModifiedBy || UserID,
 
           UserID,
-
         ]
       );
 
@@ -4697,7 +5313,75 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 11. BRAND MAPPING
+    // 14. CREATE / UPDATE PRIMARY ORGANIZATION
+    // ========================================================
+
+    await client.query(
+      `
+      INSERT INTO user_primary_organization
+      (
+        UserID,
+        OrganizationID,
+        BaseUsername,
+
+        IsActive,
+        IsDeleted,
+
+        CreatedBy,
+        CreatedDate
+      )
+
+      VALUES
+      (
+        $1,
+        $2,
+        $3,
+
+        TRUE,
+        FALSE,
+
+        $4,
+        CURRENT_TIMESTAMP
+      )
+
+      ON CONFLICT (UserID)
+
+      DO UPDATE SET
+
+        OrganizationID =
+          EXCLUDED.OrganizationID,
+
+        BaseUsername =
+          EXCLUDED.BaseUsername,
+
+        IsActive = TRUE,
+
+        IsDeleted = FALSE,
+
+        ModifiedBy = $4,
+
+        ModifiedDate =
+          CURRENT_TIMESTAMP,
+
+        DeletedBy = NULL,
+
+        DeletedDate = NULL;
+      `,
+      [
+        UserID,
+
+        primaryOrganizationID,
+
+        // Current system me full username store ho raha hai
+        finalUsername,
+
+        ModifiedBy || UserID,
+      ]
+    );
+
+
+    // ========================================================
+    // 15. DEACTIVATE OLD BRAND MAPPING
     // ========================================================
 
     await client.query(
@@ -4705,7 +5389,6 @@ const finalAllOrganizationAccess =
       UPDATE user_brand_mapping
 
       SET
-
         IsActive = FALSE,
         IsDeleted = TRUE,
 
@@ -4729,7 +5412,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // CREATE / REACTIVATE BRAND
+    // 16. CREATE / REACTIVATE BRAND
     // ========================================================
 
     if (
@@ -4770,7 +5453,6 @@ const finalAllOrganizationAccess =
           UPDATE user_brand_mapping
 
           SET
-
             Username = $1,
 
             IsActive = TRUE,
@@ -4785,8 +5467,10 @@ const finalAllOrganizationAccess =
           WHERE UserBrandMapID = $3;
           `,
           [
-            Username,
+            finalUsername,
+
             ModifiedBy || UserID,
+
             userBrandMapID
           ]
         );
@@ -4827,14 +5511,17 @@ const finalAllOrganizationAccess =
             [
               UserID,
               BrandID,
-              Username,
+
+              finalUsername,
+
               ModifiedBy || UserID
             ]
           );
 
 
         userBrandMapID =
-          brandMappingResult.rows[0]
+          brandMappingResult
+            .rows[0]
             .userbrandmapid;
 
       }
@@ -4843,7 +5530,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 12. ORGANIZATION MAPPING
+    // 17. DEACTIVATE OLD ORGANIZATION MAPPINGS
     // ========================================================
 
     await client.query(
@@ -4851,7 +5538,6 @@ const finalAllOrganizationAccess =
       UPDATE user_org_mapping
 
       SET
-
         IsActive = FALSE,
         IsDeleted = TRUE,
 
@@ -4872,7 +5558,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // SUPER ADMIN - ALL ORGANIZATIONS
+    // 18. SUPER ADMIN - ALL ORGANIZATIONS
     // ========================================================
 
     if (
@@ -4886,7 +5572,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // SUPER ADMIN - LIMITED
+    // 19. SUPER ADMIN - LIMITED
     // ========================================================
 
     else if (
@@ -4977,14 +5663,14 @@ const finalAllOrganizationAccess =
             UPDATE user_org_mapping
 
             SET
-
               UserBrandMapID = NULL,
 
               IsActive = TRUE,
               IsDeleted = FALSE,
 
               ModifiedBy = $1,
-              ModifiedDate = CURRENT_TIMESTAMP,
+              ModifiedDate =
+                CURRENT_TIMESTAMP,
 
               DeletedBy = NULL,
               DeletedDate = NULL
@@ -5042,14 +5728,17 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // ORGANIZATION USER
+    // 20. ORGANIZATION USER
     // ========================================================
 
     else if (
       LoginType === "Organization"
     ) {
 
-      for (const organization of Organizations) {
+      for (
+        const organization
+        of Organizations
+      ) {
 
         const OrganizationID =
           Number(
@@ -5057,130 +5746,132 @@ const finalAllOrganizationAccess =
           );
 
 
-      if (!OrganizationID) {
+        if (!OrganizationID) {
 
-        throw new Error(
-          "OrganizationID is required"
-        );
-
-      }
-
-
-      const organizationCheck =
-        await client.query(
-          `
-          SELECT
-            OrganizationID
-
-          FROM Organization_Master
-
-          WHERE OrganizationID = $1
-            AND IsDeleted = FALSE
-            AND IsActive = TRUE
-
-          LIMIT 1;
-          `,
-          [OrganizationID]
-        );
-
-
-      if (
-        organizationCheck.rows.length === 0
-      ) {
-
-        throw new Error(
-          `Invalid or inactive OrganizationID: ${OrganizationID}`
-        );
-
-      }
-
-
-      const existingMapping =
-        await client.query(
-          `
-          SELECT
-            UserOrgMapID
-
-          FROM user_org_mapping
-
-          WHERE UserID = $1
-            AND OrganizationID = $2
-
-          LIMIT 1;
-          `,
-          [
-            UserID,
-            OrganizationID
-          ]
-        );
-
-
-      if (
-        existingMapping.rows.length > 0
-      ) {
-
-        await client.query(
-          `
-          UPDATE user_org_mapping
-
-          SET
-
-            UserBrandMapID = NULL,
-
-            IsActive = TRUE,
-            IsDeleted = FALSE,
-
-            ModifiedBy = $1,
-            ModifiedDate = CURRENT_TIMESTAMP,
-
-            DeletedBy = NULL,
-            DeletedDate = NULL
-
-          WHERE UserOrgMapID = $2;
-          `,
-          [
-            ModifiedBy || UserID,
-            existingMapping.rows[0]
-              .userorgmapid
-          ]
-        );
-
-      }
-
-      else {
-
-        await client.query(
-          `
-          INSERT INTO user_org_mapping
-          (
-            UserID,
-            UserBrandMapID,
-            OrganizationID,
-
-            IsActive,
-            IsDeleted,
-
-            CreatedBy
-          )
-
-          VALUES
-          (
-            $1,
-            NULL,
-            $2,
-
-            TRUE,
-            FALSE,
-
-            $3
+          throw new Error(
+            "OrganizationID is required"
           );
-          `,
-          [
-            UserID,
-            OrganizationID,
-            ModifiedBy || UserID
-          ]
-        );
+
+        }
+
+
+        const organizationCheck =
+          await client.query(
+            `
+            SELECT
+              OrganizationID
+
+            FROM Organization_Master
+
+            WHERE OrganizationID = $1
+              AND IsDeleted = FALSE
+              AND IsActive = TRUE
+
+            LIMIT 1;
+            `,
+            [OrganizationID]
+          );
+
+
+        if (
+          organizationCheck.rows.length === 0
+        ) {
+
+          throw new Error(
+            `Invalid or inactive OrganizationID: ${OrganizationID}`
+          );
+
+        }
+
+
+        const existingMapping =
+          await client.query(
+            `
+            SELECT
+              UserOrgMapID
+
+            FROM user_org_mapping
+
+            WHERE UserID = $1
+              AND OrganizationID = $2
+
+            LIMIT 1;
+            `,
+            [
+              UserID,
+              OrganizationID
+            ]
+          );
+
+
+        if (
+          existingMapping.rows.length > 0
+        ) {
+
+          await client.query(
+            `
+            UPDATE user_org_mapping
+
+            SET
+              UserBrandMapID = NULL,
+
+              IsActive = TRUE,
+              IsDeleted = FALSE,
+
+              ModifiedBy = $1,
+              ModifiedDate =
+                CURRENT_TIMESTAMP,
+
+              DeletedBy = NULL,
+              DeletedDate = NULL
+
+            WHERE UserOrgMapID = $2;
+            `,
+            [
+              ModifiedBy || UserID,
+
+              existingMapping
+                .rows[0]
+                .userorgmapid
+            ]
+          );
+
+        }
+
+        else {
+
+          await client.query(
+            `
+            INSERT INTO user_org_mapping
+            (
+              UserID,
+              UserBrandMapID,
+              OrganizationID,
+
+              IsActive,
+              IsDeleted,
+
+              CreatedBy
+            )
+
+            VALUES
+            (
+              $1,
+              NULL,
+              $2,
+
+              TRUE,
+              FALSE,
+
+              $3
+            );
+            `,
+            [
+              UserID,
+              OrganizationID,
+              ModifiedBy || UserID
+            ]
+          );
 
         }
 
@@ -5190,7 +5881,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // BRAND USER
+    // 21. BRAND USER
     // ========================================================
 
     else if (
@@ -5252,7 +5943,9 @@ const finalAllOrganizationAccess =
 
 
         if (
-          Number(organizationData.brandid) !==
+          Number(
+            organizationData.brandid
+          ) !==
           Number(BrandID)
         ) {
 
@@ -5292,14 +5985,14 @@ const finalAllOrganizationAccess =
             UPDATE user_org_mapping
 
             SET
-
               UserBrandMapID = $1,
 
               IsActive = TRUE,
               IsDeleted = FALSE,
 
               ModifiedBy = $2,
-              ModifiedDate = CURRENT_TIMESTAMP,
+              ModifiedDate =
+                CURRENT_TIMESTAMP,
 
               DeletedBy = NULL,
               DeletedDate = NULL
@@ -5308,8 +6001,11 @@ const finalAllOrganizationAccess =
             `,
             [
               userBrandMapID,
+
               ModifiedBy || UserID,
-              existingMapping.rows[0]
+
+              existingMapping
+                .rows[0]
                 .userorgmapid
             ]
           );
@@ -5360,27 +6056,14 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 13. PRODUCT MAPPING
+    // 22. DEACTIVATE OLD PRODUCTS
     // ========================================================
-
-    // IMPORTANT:
-    // Products are independent of Department.
-    //
-    // Any active ProductID can be assigned to the user,
-    // regardless of DepartmentID.
-    // ========================================================
-
-
-    // ------------------------------------------
-    // Deactivate old products
-    // ------------------------------------------
 
     await client.query(
       `
       UPDATE user_product_mapping
 
       SET
-
         IsActive = FALSE,
         IsDeleted = TRUE,
 
@@ -5400,9 +6083,9 @@ const finalAllOrganizationAccess =
     );
 
 
-    // ------------------------------------------
-    // Create / Reactivate Products
-    // ------------------------------------------
+    // ========================================================
+    // 23. CREATE / REACTIVATE PRODUCTS
+    // ========================================================
 
     if (
       Array.isArray(Products)
@@ -5428,11 +6111,9 @@ const finalAllOrganizationAccess =
         }
 
 
-        // --------------------------------------
+        // ----------------------------------------------------
         // Product validity check
-        //
-        // NO Department check here.
-        // --------------------------------------
+        // ----------------------------------------------------
 
         const productCheck =
           await client.query(
@@ -5463,9 +6144,9 @@ const finalAllOrganizationAccess =
         }
 
 
-        // --------------------------------------
+        // ----------------------------------------------------
         // Check existing mapping
-        // --------------------------------------
+        // ----------------------------------------------------
 
         const existingProductMapping =
           await client.query(
@@ -5487,16 +6168,17 @@ const finalAllOrganizationAccess =
           );
 
 
-        // --------------------------------------
+        // ----------------------------------------------------
         // Reactivate
-        // --------------------------------------
+        // ----------------------------------------------------
 
         if (
           existingProductMapping.rows.length > 0
         ) {
 
           const UserProductMapID =
-            existingProductMapping.rows[0]
+            existingProductMapping
+              .rows[0]
               .userproductmapid;
 
 
@@ -5505,12 +6187,12 @@ const finalAllOrganizationAccess =
             UPDATE user_product_mapping
 
             SET
-
               IsActive = TRUE,
               IsDeleted = FALSE,
 
               ModifiedBy = $1,
-              ModifiedDate = CURRENT_TIMESTAMP,
+              ModifiedDate =
+                CURRENT_TIMESTAMP,
 
               DeletedBy = NULL,
               DeletedDate = NULL
@@ -5525,9 +6207,10 @@ const finalAllOrganizationAccess =
 
         }
 
-        // --------------------------------------
+
+        // ----------------------------------------------------
         // Insert new product
-        // --------------------------------------
+        // ----------------------------------------------------
 
         else {
 
@@ -5536,6 +6219,7 @@ const finalAllOrganizationAccess =
             INSERT INTO user_product_mapping
             (
               UserProductMapID,
+
               UserID,
               ProductID,
 
@@ -5553,6 +6237,7 @@ const finalAllOrganizationAccess =
                     MAX(UserProductMapID),
                     0
                   ) + 1
+
                 FROM user_product_mapping
               ),
 
@@ -5580,7 +6265,7 @@ const finalAllOrganizationAccess =
 
 
     // ========================================================
-    // 14. COMMIT
+    // 24. COMMIT
     // ========================================================
 
     await client.query("COMMIT");
@@ -5596,6 +6281,22 @@ const finalAllOrganizationAccess =
 
       message:
         "User Updated Successfully",
+
+      data: {
+
+        UserID:
+          Number(UserID),
+
+        Username:
+          finalUsername,
+
+        PrimaryOrganizationID:
+          primaryOrganizationID,
+
+        OrganizationCode:
+          organizationCode,
+
+      },
 
     };
 
@@ -5614,8 +6315,11 @@ const finalAllOrganizationAccess =
     const retryResponse =
       retryableDatabaseResponse(error);
 
+
     if (retryResponse) {
+
       return retryResponse;
+
     }
 
 
@@ -5633,12 +6337,9 @@ const finalAllOrganizationAccess =
       ) {
 
         return {
-
           success: false,
-
           message:
             "User is already mapped with this Brand",
-
         };
 
       }
@@ -5650,24 +6351,19 @@ const finalAllOrganizationAccess =
       ) {
 
         return {
-
           success: false,
-
           message:
             "User is already mapped with this Product",
-
         };
 
       }
 
 
       return {
-
         success: false,
 
         message:
-          "Username or Employee Code already exists",
-
+          "Username, Employee Code, or Primary Organization Username already exists",
       };
 
     }
@@ -5682,25 +6378,25 @@ const finalAllOrganizationAccess =
     ) {
 
       return {
-
         success: false,
 
         message:
           "Invalid User, Brand, Organization, Department, Division or Product",
-
       };
 
     }
 
 
+    // ========================================================
+    // DEFAULT ERROR
+    // ========================================================
+
     return {
-
       success: false,
-
       message:
         error.message,
-
     };
+
 
   } finally {
 
@@ -6227,7 +6923,6 @@ const updateUserPersonalDetails = async (data) => {
   }
 
 };
-
 // ============================================================
 // UPDATE USER ORGANIZATIONS
 // ============================================================
