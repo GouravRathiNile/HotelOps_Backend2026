@@ -23,7 +23,13 @@ const normalizeIDs = (data = {}, requireMasterID = false) => ({
 });
 
 const normalizeSave = (data = {}) => {
-    const ids = normalizeIDs(data);
+    // Create forms send an empty ID; only a populated ID selects an update.
+    const masterID = data.ApprovalMasterID;
+    const ids = normalizeIDs({
+        ...data,
+        ApprovalMasterID: typeof masterID === "string" && !masterID.trim()
+            ? undefined : masterID
+    });
     if (data.IsActive !== undefined && typeof data.IsActive !== "boolean") {
         throw new AppError("IsActive must be a boolean", 400);
     }

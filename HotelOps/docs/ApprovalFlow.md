@@ -25,7 +25,7 @@ Level, ApproverType, Role, ApprovalType and optional IsMandatory fields and thei
 existing domain values. IsMandatory defaults to true and must be boolean when
 provided. Actor/audit IDs come from the authenticated user.
 
-Omitting ApprovalMasterID (or supplying null) creates a flow and returns HTTP
+Omitting ApprovalMasterID (or supplying null, an empty string, or whitespace) creates a flow and returns HTTP
 201. Supplying a positive ApprovalMasterID updates that non-deleted flow in the
 given organization and returns HTTP 200. An unknown or cross-organization ID
 returns HTTP 404; it never creates a replacement.

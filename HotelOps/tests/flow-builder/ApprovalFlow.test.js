@@ -45,6 +45,25 @@ test("Save creates master and levels, defaults active and returns success after 
     assert.equal(s.calls.at(-1).sql, "COMMIT");
     assert.ok(s.released());
 });
+for (const masterID of ["", "   ", null, undefined]) {
+    test("Save creates when ApprovalMasterID is " + JSON.stringify(masterID), async () => {
+        const s = service();
+        const result = await s.api.saveApprovalFlow({ ...input, ApprovalMasterID: masterID });
+        assert.equal(result.success, true);
+        assert.equal(result.message, "Approval Flow Created Successfully");
+        assert.ok(!s.calls.some(c => c.sql.includes("FOR UPDATE")));
+        assert.ok(s.calls.some(c => c.sql.includes("INSERT INTO public.approval_master")));
+        assert.equal(s.calls.at(-1).sql, "COMMIT");
+    });
+}
+
+test("Empty master IDs remain invalid for delete", async () => {
+    const s = service();
+    const result = await s.api.deleteApprovalFlow({ OrganizationID: 2, ApprovalMasterID: "" });
+    assert.equal(result.statusCode, 400);
+    assert.equal(s.calls.length, 0);
+});
+
 for (const active of [false, true, undefined]) {
     test("Save updates scoped master and replaces levels; IsActive=" + active, async () => {
         const s = service();
@@ -112,7 +131,7 @@ test("Every service operation rejects missing organization before querying", asy
 });
 test("Save rejects invalid IDs and string boolean values", async () => {
     const s = service();
-    for (const fields of [{ ApprovalMasterID: "" }, { OrganizationID: true }, { IsActive: "false" }, { Details: [] }]) {
+    for (const fields of [{ ApprovalMasterID: 0 }, { ApprovalMasterID: "invalid" }, { ApprovalMasterID: -1 }, { OrganizationID: true }, { IsActive: "false" }, { Details: [] }]) {
         assert.equal((await s.api.saveApprovalFlow({ ...input, ...fields })).statusCode, 400);
     }
     assert.equal(s.calls.length, 0);
@@ -149,7 +168,7 @@ test("Router registers authenticated save/list/delete only", () => {
             saveApprovalFlow() {}, getApprovalFlowList() {}, deleteApprovalFlow() {}
         }
     });
-    assert.deepEqual(registrations.map(r => r.slice(0, 2)), [["post", "/save"], ["get", "/list"], ["delete", "/delete"]]);
+    assert.deepEqual(registrations.map(r => r.slice(0, 2)), [["post", "/Save"], ["get", "/List"], ["delete", "/Delete"]]);
     assert.ok(registrations.every(r => r[2] === auth && typeof r[3] === "function"));
 });
 test("Controller sends normalized Save with authenticated actor and propagates created response", async () => {
