@@ -70,17 +70,21 @@ module.exports = {
   MOM: {
   REQUEST: "mom_request_queue",
   RESPONSE: "mom_response_queue",
-},
- CREDIT_APPLICATION: {
+  },
+  CREDIT_APPLICATION: {
     REQUEST: "credit_application_request_queue",
     RESPONSE: "credit_application_response_queue",
   },
   DAILY_BREAKAGE: {
-  REQUEST: "daily_breakage_request",
-  RESPONSE: "daily_breakage_response",
-},
-GATEPASS: {
-  REQUEST: "gatepass_request_queue",
-  RESPONSE: "gatepass_response_queue",
-},
+    REQUEST: "daily_breakage_request",
+    RESPONSE: "daily_breakage_response",
+  },
+  GATEPASS: {
+    REQUEST: "gatepass_request_queue",
+    RESPONSE: "gatepass_response_queue",
+  },
+  APPROVAL_FLOW: {
+    REQUEST: "approval_flow_request_queue",
+    RESPONSE: "approval_flow_response_queue",
+  },
 };

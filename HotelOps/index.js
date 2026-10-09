@@ -36,6 +36,7 @@ const MinutesOfMeetingRoutes = require("./routes/MinutesOfMeetingRoutes/MinutesO
 const CreditApplicationRoutes = require("./routes/CreditApplicationRoute/CreditApplicationRoute");
 const DailyBreakageRoutes = require("./routes/DailyBreakageRoute/DailyBreakageRoute");
 const GatepassRoutes = require("./routes/GatepassRoutes/GatepassRoutes");
+const ApprovalFlowRoutes = require("./routes/FlowBuilderRoutes/ApprovalFlowRoutes");
 // ==========================================Consumers
 const BrandMasterConsumer = require("./consumer/ITAdminConsumer/BrandMaster");
 const OrganizationHandler = require("./consumer/ITAdminConsumer/OrganizationHandler");
@@ -62,6 +63,7 @@ const { startEngineeringAMCNotificationJob } = require("./services/EngineeringSe
 const CreditApplicationHandler = require("./consumer/CreditApplicationConsumer/CreditApplicationHandler");
 const DailyBreakageHandler = require("./consumer/DailyBreakageConsumer/DailyBreakageHandler");
 const GatepassHandler = require("./consumer/GatepassConsumer/GatepassHandler");
+const ApprovalFlowHandler = require("./consumer/FlowBuilderConsumer/ApprovalFlowHandler");
 // ==========================================Packages Start
 
 const app = express();
@@ -91,9 +93,10 @@ app.use("/api/Engineering", EngineeringRoutes);
 app.use("/public", PublicEquipmentRoutes);
 app.use("/api/Notification", NotificationRoutes);
 app.use("/api/MinutesOfMeeting", MinutesOfMeetingRoutes);
-app.use("/api/CreditApplication",CreditApplicationRoutes);
-app.use("/api/DailyBreakageReport",DailyBreakageRoutes);
-app.use("/api/GatepassManagement",GatepassRoutes);
+app.use("/api/CreditApplication", CreditApplicationRoutes);
+app.use("/api/DailyBreakageReport", DailyBreakageRoutes);
+app.use("/api/GatepassManagement", GatepassRoutes);
+app.use("/api/ApprovalFlow", ApprovalFlowRoutes);
 // =========================================Default Route
 app.get("/", (req, res) => {
   res.json({
@@ -217,25 +220,32 @@ const startServer = async () => {
       QUEUE.MOM.REQUEST,
       QUEUE.MOM.RESPONSE,
       MinutesOfMeetingHandler
-      );
-      // ===================================== Credit Application Consumer
+    );
+    // ===================================== Credit Application Consumer
     await startConsumer(
-     QUEUE.CREDIT_APPLICATION.REQUEST,
-     QUEUE.CREDIT_APPLICATION.RESPONSE,
-     CreditApplicationHandler
-      );
-      // ===================================== Daily Breakage Consumer
+      QUEUE.CREDIT_APPLICATION.REQUEST,
+      QUEUE.CREDIT_APPLICATION.RESPONSE,
+      CreditApplicationHandler
+    );
+    // ===================================== Daily Breakage Consumer
     await startConsumer(
-     QUEUE.DAILY_BREAKAGE.REQUEST,
-     QUEUE.DAILY_BREAKAGE.RESPONSE,
-     DailyBreakageHandler
-      );
-      // ===================================== Gatepass Management
+      QUEUE.DAILY_BREAKAGE.REQUEST,
+      QUEUE.DAILY_BREAKAGE.RESPONSE,
+      DailyBreakageHandler
+    );
+    // ===================================== Gatepass Management
     await startConsumer(
-    QUEUE.GATEPASS.REQUEST,
-    QUEUE.GATEPASS.RESPONSE,
-     GatepassHandler
-      );
+      QUEUE.GATEPASS.REQUEST,
+      QUEUE.GATEPASS.RESPONSE,
+      GatepassHandler
+    );
+
+    // ===================================== Approval Flow Builder Consumer
+    await startConsumer(
+      QUEUE.APPROVAL_FLOW.REQUEST,
+      QUEUE.APPROVAL_FLOW.RESPONSE,
+      ApprovalFlowHandler
+    );
     // Start only after RabbitMQ consumers are ready; the job itself is
     // concurrency-safe across multiple application instances.
     startEngineeringWarrantyStatusJob();
