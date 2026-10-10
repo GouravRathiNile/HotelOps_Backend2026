@@ -275,12 +275,6 @@ exports.getAllCapex = async (req, res) => {
       ? String(req.query.ApprovalFlow).trim().toUpperCase()
       : null;
 
-    if (ApprovalFlow && !["GM", "CEO", "OWNER"].includes(ApprovalFlow)) {
-      throw new AppError(
-        "ApprovalFlow must be GM, CEO, or OWNER",
-        STATUS_CODES.BAD_REQUEST
-      );
-    }
 
     // ================= Pagination =================
 
@@ -743,6 +737,8 @@ exports.approveCapex = async (req, res) => {
         data: {
           CapexID: Number(CapexID),
           Action: action,
+          ApprovalStepID: req.body?.ApprovalStepID,
+          Revision: req.body?.Revision,
           Remarks: remarks || null,
           Quantity,
           UserID: user.UserID,
@@ -891,6 +887,7 @@ exports.getCapexSummaryReport = async (req, res) => {
         OrganizationID: Number(req.query.OrganizationID),
       },
       UserType,
+      UserID: user.UserID,
     });
 
     if (!response.success) {
@@ -910,6 +907,7 @@ exports.getCapexSummaryReport = async (req, res) => {
 exports.getCapexDepartmentReport = async (req, res) => {
   try {
     const response = await CapexService.getCapexDepartmentReport({
+      ...authenticatedUser(req),
       Filters: departmentReportFilters(req),
     });
 
@@ -930,6 +928,7 @@ exports.getCapexDepartmentReport = async (req, res) => {
 exports.getCapexOrganizationReport = async (req, res) => {
   try {
     const response = await CapexService.getCapexOrganizationReport({
+      ...authenticatedUser(req),
       Filters: {
         ...reportFilters(req),
         ...reportDateFilters(req),
@@ -1088,12 +1087,6 @@ exports.generateCapexListPdf = async (req, res) => {
       ? String(req.query.ApprovalFlow).trim().toUpperCase()
       : null;
 
-    if (ApprovalFlow && !["GM", "CEO", "OWNER"].includes(ApprovalFlow)) {
-      throw new AppError(
-        "ApprovalFlow must be GM, CEO, or OWNER",
-        STATUS_CODES.BAD_REQUEST
-      );
-    }
     const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 
     for (const [fieldName, value] of [
@@ -1169,6 +1162,7 @@ exports.generateCapexListPdf = async (req, res) => {
 exports.getCapexDepartmentReportPdf = async (req, res) => {
   try {
     const response = await CapexService.getCapexDepartmentReportPdf({
+      ...authenticatedUser(req),
       Filters: departmentReportFilters(req),
     });
 
@@ -1197,6 +1191,7 @@ exports.getCapexOrganizationReportPdf = async (req, res) => {
   try {
     const response =
       await CapexService.getCapexOrganizationReportPdf({
+        ...authenticatedUser(req),
         Filters: {
           ...reportFilters(req),
           ...reportDateFilters(req),
