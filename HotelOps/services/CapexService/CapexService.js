@@ -302,6 +302,7 @@ const createCapex = async (data) => {
     }
 
     const workflowSteps = await CapexWorkflow.snapshot(client, capexID, data.OrganizationID);
+    const requiresApproval = Boolean(CapexWorkflow.currentStep(workflowSteps));
 
     const [approvalID] = await reserveNumericIDs(
       client,
@@ -322,21 +323,24 @@ const createCapex = async (data) => {
         CreatedBy,
         CreatedDate
       )
-      VALUES ($1, $2, 'Pending', 'Pending', 'Pending', 'Pending', FALSE, $3, CURRENT_TIMESTAMP);
+      VALUES ($1, $2, 'Pending', 'Pending', 'Pending', $4, FALSE, $3, CURRENT_TIMESTAMP);
       `,
-      [approvalID, capexID, data.CreatedBy],
+      [approvalID, capexID, data.CreatedBy, requiresApproval ? "Pending" : "Approved"],
     );
 
     await client.query("COMMIT");
     transactionStarted = false;
 
-    const firstApprovalRole = workflowSteps[0]?.approvertype === "ROLE" ? workflowSteps[0].role : null;
+    const firstStep = CapexWorkflow.currentStep(workflowSteps);
+    const firstApprovalRole = firstStep?.approvertype === "ROLE" ? firstStep.role : null;
     notifyCommittedCapex({
       organizationID: data.OrganizationID,
       capexID,
       roles: firstApprovalRole ? [firstApprovalRole] : [],
-      directUserIds: workflowSteps[0]?.assigneduserid ? [workflowSteps[0].assigneduserid] : [],
-      kind: "CREATE",
+      directUserIds: firstStep ? (firstStep.assigneduserid ? [firstStep.assigneduserid] : []) : [data.CreatedBy],
+      kind: firstStep ? "CREATE" : "AUTO_APPROVED",
+      title: "CAPEX approved",
+      message: "Your CAPEX is fully approved because no mandatory approval steps are configured.",
       item: data.Item,
       qty: data.Qty,
       department: data.Department,
@@ -456,7 +460,11 @@ const updateCapex = async (data) => {
     await client.query("BEGIN");
     transactionStarted = true;
     const accessResult = await client.query(
-      "SELECT organizationid, createdby FROM capex_master WHERE capexid = $1 AND isdeleted = FALSE FOR UPDATE",
+      `SELECT cm.organizationid, cm.createdby, cm.department, cm.isvoid, cm.isdeleted,
+        ${CapexWorkflow.hasActionSQL} AS hasaction
+       FROM capex_master cm
+       LEFT JOIN capex_approval ca ON ca.capexid = cm.capexid AND ca.isdeleted = FALSE
+       WHERE cm.capexid = $1 AND cm.isdeleted = FALSE FOR UPDATE OF cm`,
       [data.CapexID]
     );
     if (!accessResult.rows.length) return await cleanupAndFail(client, transactionStarted, fail("CAPEX record not found", 404));
@@ -874,7 +882,11 @@ const deleteCapex = async (data) => {
     await client.query("BEGIN");
     transactionStarted = true;
     const accessResult = await client.query(
-      "SELECT organizationid, createdby FROM capex_master WHERE capexid = $1 AND isdeleted = FALSE FOR UPDATE",
+      `SELECT cm.organizationid, cm.createdby, cm.department, cm.isvoid, cm.isdeleted,
+        ${CapexWorkflow.hasActionSQL} AS hasaction
+       FROM capex_master cm
+       LEFT JOIN capex_approval ca ON ca.capexid = cm.capexid AND ca.isdeleted = FALSE
+       WHERE cm.capexid = $1 AND cm.isdeleted = FALSE FOR UPDATE OF cm`,
       [data.CapexID]
     );
     if (!accessResult.rows.length) return await cleanupAndFail(client, transactionStarted, fail("CAPEX record not found", 404));
@@ -1099,7 +1111,7 @@ const processCapexApproval = async (data) => {
 
     const verifiedActor = await CapexWorkflow.getActor(client, capex.organizationid, data.UserID);
     approverRole = CapexWorkflow.normalized(verifiedActor.usertype);
-    const dynamicAction = await CapexWorkflow.applyAction(client, capex, data);
+    const dynamicAction = await CapexWorkflow.applyAction(client, capex, data, verifiedActor);
     if (dynamicAction) {
       await client.query("COMMIT");
       transactionStarted = false;
@@ -1317,7 +1329,6 @@ const processCapexApproval = async (data) => {
 
     const currentRole = currentStage.role;
 
-    const currentStatus = currentStage.status;
 
     // Build one post-commit notification from the already locked CAPEX and
     // effective workflow stages; no request-supplied organization is trusted.
@@ -1564,25 +1575,7 @@ const processCapexApproval = async (data) => {
     }
 
     // ============================================================
-    // 20. REJECT
-    //
-    // Current stage can reject.
-    //
-    // Previous approved stage can also reject
-    // while next stage is pending.
-    //
-    // Example:
-    //
-    // GM APPROVED
-    // CEO PENDING
-    //
-    // GM REJECT
-    //
-    // GM -> REJECTED
-    // FinalStatus -> REJECTED
-    //
-    // Later GM can APPROVE again.
-    // ============================================================
+    // Reject the current configured stage. A later reapproval does not restore edit rights.
 
     if (action === "REJECT") {
       await updateRoleApproval(
@@ -1644,18 +1637,7 @@ const processCapexApproval = async (data) => {
 
     if (action === "RETURN") {
       // ----------------------------------------------------------
-      // If previous approved role returns
-      //
-      // Example:
-      //
-      // GM APPROVED
-      // CEO PENDING
-      //
-      // GM RETURN
-      //
-      // GM becomes RETURNED
-      // GM becomes current stage
-      // ----------------------------------------------------------
+      // Only the current stage can return; shared authorization already checked it.
 
       await updateRoleApproval(
         approverRole,
@@ -2343,14 +2325,8 @@ const generateCapexListPdfDocument = async (data) => {
     // PDF COLUMNS
     // ============================================================
 
-    const approvalRoles = [];
-
-    for (const row of capexRows) {
-      for (const approval of row.Approvals || []) {
-        const role = approval.ColumnKey || String(approval.ApprovalRole || "").trim().toUpperCase();
-        if (role && !approvalRoles.includes(role)) approvalRoles.push(role);
-      }
-    }
+    const approvalColumns = data.ApprovalColumns || [];
+    const approvalRoles = approvalColumns.map(column => column.Key);
 
     const pdfRows = capexRows.map((row, index) => ({
       ...row,
@@ -2428,7 +2404,7 @@ const generateCapexListPdfDocument = async (data) => {
         align: "left",
       },
       ...approvalRoles.map((role) => ({
-        header: capexRows.flatMap(row => row.Approvals || []).find(item => item.ColumnKey === role)?.ApprovalType || role,
+        header: approvalColumns.find(column => column.Key === role)?.Label || role,
         value: (row) => approvalValue(row, role),
         width: 72,
         align: "left",
@@ -2535,6 +2511,7 @@ organizationName ||= "All Organizations";
 const generateCapexListPdf = async (data) => {
   try {
     const rows = [];
+    let approvalColumns = [];
     const exportPageSize = 1000;
     let page = 1;
     let totalPages = 1;
@@ -2548,6 +2525,7 @@ const generateCapexListPdf = async (data) => {
 
       if (!response.success) return response;
 
+      if (page === 1) approvalColumns = response.ApprovalColumns || [];
       rows.push(...response.data);
       totalPages = response.TotalPages;
       page += 1;
@@ -2556,6 +2534,7 @@ const generateCapexListPdf = async (data) => {
     return generateCapexListPdfDocument({
       ...data,
       PreparedRows: rows,
+      ApprovalColumns: approvalColumns,
     });
   } catch (error) {
     console.error("Generate CAPEX List PDF Error:", error.message);

@@ -25,9 +25,9 @@ Once snapshot-based requests exist, rolling back to the old backend would lose t
 
 PUT /CapexApprovalSystem retains CapexID, Action, Remarks and Quantity. Add ApprovalStepID and Revision from the list/detail response. ApprovalStepID is required for repeated assignments; otherwise a single actionable assignment can be resolved. Revision detects stale actions.
 
-APPROVE, REJECT, RETURN and HOLD remain supported. Nonapproval actions require remarks. Rejected/returned/held current stages can approve again. A previous approved stage can reject/return only while its immediate next stage is pending. Final approval means no unapproved snapshot step remains. Each action records previous/current status, actor, quantity, remarks and timestamp.
+APPROVE, REJECT, RETURN and HOLD remain supported. Nonapproval actions require remarks. Rejected/returned/held current stages can approve again. Only the current configured stage may act; previous and future stages cannot approve, reject, return or hold. Final approval means no unapproved snapshot step remains. Each action records previous/current status, actor, quantity, remarks and timestamp.
 
-Authorization uses persisted active organization mappings and the existing SuperAdmin + AllOrganizationAccess rule. Organization access never substitutes for assignment eligibility. Creator/HOD/GM edit/delete permissions are checked independently.
+Authorization uses persisted active organization mappings and the existing SuperAdmin + AllOrganizationAccess rule. Organization access never substitutes for assignment eligibility. CanAction permits only the creator or the related department HOD in the same organization, before any approval action. Any Approve/Reject/Return/Hold, actor timestamp or recorded history locks edit/delete permanently, even if status later returns to Pending. Void/deleted records also deny edits. The CAPEX department name is matched to the persisted user department in department_master.
 
 ## Frontend and response contract
 
@@ -47,7 +47,7 @@ Delivery remains best-effort post-commit dispatch, not a durable outbox.
 
 ## Outstanding contracts
 
-- USER: engine/storage support explicit assigned users, but snapshot creation rejects USER until the actual selected-user payload/storage is confirmed. Do not interpret display names or unverified Role values as IDs.
+- USER mapping verified on 10 October 2026: Builder stores the selected user ID in Role (for example Role="7", ApprovalType="CEO"). Snapshot creation validates active organization membership and persists assigneduserid separately. The selected user acts at the CEO business stage irrespective of their account role. Display names are not used for authorization.
 - IsMandatory=false: snapshot creation rejects it until skip/approval semantics are defined; no silent skipping.
 - Frontend repository: required to implement and verify table/action wiring.
 
@@ -59,3 +59,17 @@ Opt-in PostgreSQL integration test: set CAPEX_WORKFLOW_DB_TEST=1 and CAPEX_TEST_
 
 Integration migration/fixture/action writes are always rolled back and no notifications are sent. Use an organization with a verified mandatory ROLE configuration. Tests cover snapshots, hold/return/reject/reapproval/final approval, history, shared queries and legacy coexistence.
 
+
+CanApprove and each step's AllowedActions share the same policy with both dynamic and legacy approval APIs. Show edit/delete from CanAction, approve from CanApprove, and reject/return/hold from that step's AllowedActions. Each approval card also returns CanApprove; use that per-card flag rather than the record-level flag when rendering stage buttons. Previous and future steps have CanApprove=false and empty AllowedActions. Frontend files are still not available in this workspace.
+
+
+Optional-step progression: new snapshots preserve IsMandatory. Nonmandatory stages
+are bypassed automatically, with API status Skipped (derived from the snapshot flag
+and Pending storage status). No approval action/history or quantity is fabricated.
+The first pending mandatory step receives creation notifications; subsequent approval
+notifications target the next mandatory step. All-optional requests finish Approved
+at creation and notify their creator after commit. Final mandatory approval completes
+requests even with optional trailing steps. Reject/Return/Hold do not advance the
+current mandatory step. Existing snapshots are not rewritten when configuration changes.
+
+Each approval step accepts one action only. After Approve/Reject/Return/Hold, CanApprove is false and AllowedActions is empty for that step. Only approval advances to the next mandatory step; other actions stop progression. No implicit reopening is supported.

@@ -13,7 +13,7 @@ test("PostgreSQL snapshot, actions, read model and legacy coexistence", {
     const read = require("../../services/CapexService/CapexWorkflowRead");
     const organizationID = Number(process.env.CAPEX_TEST_ORGANIZATION_ID);
     assert.ok(Number.isSafeInteger(organizationID) && organizationID > 0,
-        "Set CAPEX_TEST_ORGANIZATION_ID to an organization with a verified mandatory ROLE flow");
+        "Set CAPEX_TEST_ORGANIZATION_ID to an organization with a verified mandatory flow");
     const client = await pool.connect();
     const originalQuery = pool.query;
     try {
@@ -30,15 +30,15 @@ test("PostgreSQL snapshot, actions, read model and legacy coexistence", {
             ORDER BY d.level
         `, [organizationID]);
         assert.ok(config.rows.length >= 2);
-        assert.ok(config.rows.every(s => s.approvertype === "ROLE" && s.ismandatory));
+        assert.ok(config.rows.every(s => ["ROLE", "USER"].includes(s.approvertype) && s.ismandatory));
         const actors = [];
         for (const step of config.rows) {
             const result = await client.query(`
                 SELECT um.userid FROM user_master um JOIN user_org_mapping uom ON uom.userid = um.userid
-                WHERE uom.organizationid = $1 AND UPPER(TRIM(um.usertype)) = UPPER(TRIM($2))
+                WHERE uom.organizationid = $1 AND (($3 = 'ROLE' AND UPPER(TRIM(um.usertype)) = UPPER(TRIM($2))) OR ($3 = 'USER' AND um.userid::text = $2))
                   AND um.isactive AND NOT um.isdeleted AND NOT um.islocked
                   AND uom.isactive AND NOT uom.isdeleted LIMIT 1
-            `, [organizationID, step.role]);
+            `, [organizationID, step.role, step.approvertype]);
             assert.ok(result.rows.length, "Configured role has no eligible actor");
             actors.push(result.rows[0].userid);
         }
@@ -65,11 +65,23 @@ test("PostgreSQL snapshot, actions, read model and legacy coexistence", {
         const steps = await workflow.snapshot(client,id,organizationID);
         assert.equal(steps.length,config.rows.length);
         const capex = {capexid:id,organizationid:organizationID,createdby:actors[0],isvoid:false};
+        const permissionsFor = async userID => {
+            const query = read.buildQuery({UserID:userID,CapexID:id}, false);
+            const result = await client.query(query.cte + " SELECT r.* FROM records r " + query.where, query.values);
+            return read.mapRow(result.rows[0],userID);
+        };
+        assert.equal((await permissionsFor(actors[0])).CanAction,true);
+        assert.equal((await permissionsFor(actors[0])).CanApprove,true);
+        if (String(actors[0]) !== String(actors[1])) {
+            assert.equal((await permissionsFor(actors[1])).CanApprove,false);
+        }
         for (const Action of ["HOLD","RETURN","REJECT","APPROVE"]) {
             await workflow.applyAction(client,capex,{
                 UserID:actors[0],Action,Remarks:"Integration check",Quantity:2,ApprovalStepID:steps[0].stepid
             });
+            assert.equal((await permissionsFor(actors[0])).CanAction,false);
         }
+        assert.equal((await permissionsFor(actors[1])).CanApprove,true);
         for (let i=1;i<steps.length;i++) {
             await workflow.applyAction(client,capex,{UserID:actors[i],Action:"APPROVE",Quantity:2,ApprovalStepID:steps[i].stepid});
         }

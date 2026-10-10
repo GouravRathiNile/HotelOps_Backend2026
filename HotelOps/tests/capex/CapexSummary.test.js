@@ -75,7 +75,7 @@ test("CAPEX notifications are triggered only after commit and failures are isola
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "../../services/CapexService/CapexService.js"), "utf8");
   assert.match(source, /const notifyCommittedCapex = \(event\)[\s\S]*Promise\.resolve\(\)[\s\S]*notifyCapex\(event\)[\s\S]*\.catch\(/);
-  assert.match(source, /await client\.query\("COMMIT"\);\s*transactionStarted = false;\s*const firstApprovalRole[\s\S]*notifyCommittedCapex\(/);
+  assert.match(source, /await client\.query\("COMMIT"\);\s*transactionStarted = false;\s*const firstStep[\s\S]*const firstApprovalRole[\s\S]*notifyCommittedCapex\(/);
   for (const kind of ["REJECT", "RETURN", "HOLD"]) {
     assert.match(source, new RegExp(`await client\\.query\\("COMMIT"\\);[\\s\\S]{0,180}notifyApprovalCommitted\\(\\{[\\s\\S]{0,80}kind: "${kind}"`));
   }
@@ -88,7 +88,7 @@ test("CAPEX update preserves existing documents and inserts only new uploads", {
   const client = {
     query: async (sql, values) => {
       calls.push({ sql, values });
-      if (/SELECT organizationid, createdby FROM capex_master/.test(sql)) return { rows: [{ organizationid: 20, createdby: 8 }] };
+      if (/SELECT cm.organizationid, cm.createdby/.test(sql)) return { rows: [{ organizationid: 20, createdby: 8, hasaction: false }] };
       if (/SELECT um.userid, um.usertype/.test(sql)) return { rows: [{ userid: 8, usertype: "HOD" }] };
       if (/UPDATE Capex_Master/.test(sql)) {
         return { rows: [{ capexid: 21, capexnumber: 11 }] };
@@ -161,7 +161,7 @@ test("CAPEX update deletes only requested owned document IDs", { concurrency: fa
   const client = {
     query: async (sql, values) => {
       calls.push({ sql, values });
-      if (/SELECT organizationid, createdby FROM capex_master/.test(sql)) return { rows: [{ organizationid: 20, createdby: 8 }] };
+      if (/SELECT cm.organizationid, cm.createdby/.test(sql)) return { rows: [{ organizationid: 20, createdby: 8, hasaction: false }] };
       if (/SELECT um.userid, um.usertype/.test(sql)) return { rows: [{ userid: 8, usertype: "HOD" }] };
       if (/UPDATE Capex_Master/.test(sql)) {
         return { rows: [{ capexid: 21, capexnumber: 11 }] };

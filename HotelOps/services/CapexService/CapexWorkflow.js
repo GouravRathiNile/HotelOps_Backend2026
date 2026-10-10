@@ -15,25 +15,49 @@ const isAssigned = (step, actor) => {
         normalized(step.role) === normalized(actor.usertype);
 };
 
-const currentStep = steps => steps.find(step => normalized(step.status) !== "APPROVED") || null;
+// Optional snapshot steps are skipped without fabricating approval actions/history.
+const currentStep = steps => steps.find(step => step.ismandatory !== false && !["APPROVED", "SKIPPED"].includes(normalized(step.status))) || null;
 
 const canAct = (steps, step, action) => {
     const current = currentStep(steps);
     if (!current || !statuses[action]) return false;
     if (String(current.stepid) === String(step.stepid)) {
-        return ["PENDING", "REJECTED", "RETURNED", "HOLD"].includes(normalized(step.status));
+        // Every action consumes this step. Rejected/returned/held requests stay
+        // at that stage, but cannot be acted on again without an explicit reopen flow.
+        return normalized(step.status) === "PENDING" && !(Number(step.revision) > 0) &&
+            step.actionby == null && step.actiondatetime == null;
     }
-    const index = steps.findIndex(row => String(row.stepid) === String(step.stepid));
-    return ["REJECT", "RETURN"].includes(action) &&
-        normalized(step.status) === "APPROVED" &&
-        normalized(steps[index + 1]?.status) === "PENDING";
+    // Neither a future nor a previously completed stage may act.
+    return false;
 };
 
-// These policies run only after persisted organization access is verified.
-// Creation ownership grants edit/delete, never an implicit approval assignment.
-const canModify = (record, actor) => !record.isdeleted &&
-    validUserID(actor?.userid) && validUserID(record.createdby) &&
-    String(record.createdby) === String(actor.userid);
+// Shared by read responses and locked update/delete checks. History prevents
+// edit rights returning if a stage is later reset to Pending.
+const hasActionSQL = `(
+    EXISTS (SELECT 1 FROM capex_workflow_step ws WHERE ws.capexid = cm.capexid
+        AND (ws.revision > 0 OR ws.actionby IS NOT NULL OR ws.actiondatetime IS NOT NULL
+            OR UPPER(TRIM(ws.status)) <> 'PENDING'))
+    OR EXISTS (SELECT 1 FROM capex_workflow_action wa
+        JOIN capex_workflow_step ws ON ws.stepid = wa.stepid WHERE ws.capexid = cm.capexid)
+    OR EXISTS (SELECT 1 FROM jsonb_each_text(to_jsonb(ca)) field
+        WHERE (field.key IN ('gmstatus','ceostatus','ownerstatus','finalstatus')
+               AND NULLIF(UPPER(TRIM(field.value)), '') IS NOT NULL
+               AND UPPER(TRIM(field.value)) <> 'PENDING')
+           OR (field.key IN ('gmstatusdatetime','ceostatusdatetime','ownerstatusdatetime',
+                'gmstatusapprovedby','ceostatusapprovedby','ownerstatusapprovedby','finalstatusdatetime')
+               AND field.value IS NOT NULL))
+)`;
+
+const canModify = (record, actor) => {
+    if (record.isdeleted || record.isvoid || record.hasaction !== false || !validUserID(actor?.userid)) return false;
+    const creator = validUserID(record.createdby) && String(record.createdby) === String(actor.userid);
+    // Department comes from user_master.departmentid -> department_master;
+    // CAPEX currently stores the department name, not a department ID.
+    const departmentHod = normalized(actor.usertype) === "HOD" &&
+        String(actor.departmentorganizationid) === String(record.organizationid) &&
+        !!normalized(record.department) && normalized(actor.departmentname) === normalized(record.department);
+    return creator || departmentHod;
+};
 
 const allowedActions = (record, steps, step, actor) => {
     if (record.isvoid || record.isdeleted || normalized(record.finalstatus) === "APPROVED" ||
@@ -82,8 +106,10 @@ const validateAction = data => {
 
 const getActor = async (client, organizationID, userID) => {
     const result = await client.query(`
-        SELECT um.userid, um.usertype FROM user_master um
+        SELECT um.userid, um.usertype, dm.departmentname,
+            dm.organizationid AS departmentorganizationid FROM user_master um
         JOIN organization_master om ON om.organizationid = $2
+        LEFT JOIN department_master dm ON dm.departmentid = um.departmentid AND dm.isdeleted = FALSE
         WHERE um.userid = $1
           AND um.isactive = TRUE AND um.isdeleted = FALSE AND um.islocked = FALSE
           AND om.isactive = TRUE AND om.isdeleted = FALSE AND om.activationstatus = TRUE
@@ -131,25 +157,31 @@ const snapshot = async (client, capexID, organizationID) => {
         if (!["ROLE", "USER"].includes(step.approvertype) || !String(step.approvaltype || "").trim()) {
             throw new AppError("Invalid CAPEX approval assignment or business stage", 400);
         }
-        // The existing schema has no selected-user column. Reject ambiguous
-        // configuration until its storage contract is explicitly established.
-        if (step.approvertype === "USER") {
-            throw new AppError("USER approval configuration requires a verified selected-user mapping", 400);
+        // Builder stores the selected user's ID in Role for USER steps.
+        // Snapshot it separately; ApprovalType remains the business stage label.
+        const assignment = String(step.role ?? "").trim();
+        step.assigneduserid = step.approvertype === "USER" ? assignment : null;
+        if (step.approvertype === "USER" && !validUserID(assignment)) {
+            throw new AppError("USER approval requires a valid selected user ID", 400);
         }
-        if (!step.ismandatory) {
-            throw new AppError("Optional CAPEX approval steps require an explicit progression policy", 400);
-        }
-        step.role = normalized(step.role);
-        if (!step.role) throw new AppError("Approval role is required", 400);
+        step.role = step.approvertype === "ROLE" ? normalized(assignment) : null;
+        if (step.approvertype === "ROLE" && !step.role) throw new AppError("Approval role is required", 400);
+        // Optional stages are retained for display but never require an eligible recipient.
+        if (step.ismandatory === false) continue;
         const recipients = await client.query(`
             SELECT 1 FROM user_master um
             JOIN user_org_mapping uom ON uom.userid = um.userid
-            WHERE uom.organizationid = $1 AND UPPER(TRIM(um.usertype)) = $2
+            WHERE uom.organizationid = $1
+              AND (($2::text = 'ROLE' AND UPPER(TRIM(um.usertype)) = $3)
+                OR ($2::text = 'USER' AND um.userid::text = $3))
               AND uom.isactive = TRUE AND uom.isdeleted = FALSE
               AND um.isactive = TRUE AND um.isdeleted = FALSE AND um.islocked = FALSE
             LIMIT 1
-        `, [organizationID, step.role]);
-        if (!recipients.rows.length) throw new AppError("No eligible approver for CAPEX role " + step.role, 400);
+        `, [organizationID, step.approvertype, step.assigneduserid || step.role]);
+        if (!recipients.rows.length) throw new AppError(
+            step.approvertype === "USER"
+                ? "Selected CAPEX approver is unavailable or not mapped to this organization"
+                : "No eligible approver for CAPEX role " + step.role, 400);
     }
     await client.query(`
         INSERT INTO capex_workflow (capexid, organizationid, approvalmasterid, flowname)
@@ -158,15 +190,16 @@ const snapshot = async (client, capexID, organizationID) => {
     for (const step of steps) {
         await client.query(`
             INSERT INTO capex_workflow_step
-                (capexid, sourceapprovalid, level, approvertype, role, approvaltype, ismandatory)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `, [capexID, step.approvalid, step.level, step.approvertype, step.role, step.approvaltype, step.ismandatory]);
+                (capexid, sourceapprovalid, level, approvertype, role, approvaltype, ismandatory, assigneduserid)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `, [capexID, step.approvalid, step.level, step.approvertype, step.role,
+            step.approvaltype, step.ismandatory, step.assigneduserid]);
     }
     return loadSteps(client, capexID);
 };
 
-const applyAction = async (client, capex, data) => {
-    const actor = await getActor(client, capex.organizationid, data.UserID);
+const applyAction = async (client, capex, data, verifiedActor) => {
+    const actor = verifiedActor || await getActor(client, capex.organizationid, data.UserID);
     const steps = await loadSteps(client, capex.capexid, true);
     if (!steps.length) return null; // Legacy request: leave its state and mapping untouched.
     if (capex.isvoid) throw new AppError("Void CAPEX cannot be processed for approval", 400);
@@ -207,6 +240,6 @@ const applyAction = async (client, capex, data) => {
     };
 };
 
-module.exports = { normalized, currentStep, isAssigned, canAct, chooseStep,
+module.exports = { normalized, currentStep, isAssigned, canAct, chooseStep, hasActionSQL,
     canModify, allowedActions, permissions, authorizeApproval,
     validateAction, getActor, loadSteps, snapshot, applyAction };
