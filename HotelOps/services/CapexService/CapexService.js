@@ -1,6 +1,7 @@
 const { pool } = require("../../db");
+const CapexWorkflow = require("./CapexWorkflow");
+const CapexWorkflowRead = require("./CapexWorkflowRead");
 const {retryableDatabaseResponse,} = require("../../utils/retryableDatabaseError");
-const generateDocumentUrl = require("../../AzurConfigration/Capex/AzureGetData");
 const { formatDate } = require("../../utils/dateFormatter");
 // ===============================================Pdf Helper
 const { generatePdf, loadLogo } = require("../../utils/pdfHelper");
@@ -135,28 +136,6 @@ const fail = (message, statusCode = 400) => ({
   statusCode,
   message,
 });
-// Merge organization overrides with the GM -> CEO -> OWNER defaults.
-const mergeApprovalConfiguration = (configuredRows) => {
-  const approvals = new Map(
-    DEFAULT_APPROVALS.map((approval) => [approval.LevelNo, approval]),
-  );
-
-  for (const row of configuredRows) {
-    const levelNo = Number(row.levelno);
-    const approvalRole = String(row.approvalrole || "").trim();
-
-    if (Number.isSafeInteger(levelNo) && levelNo > 0 && approvalRole) {
-      approvals.set(levelNo, {
-        LevelNo: levelNo,
-        ApprovalRole: approvalRole,
-      });
-    }
-  }
-
-  return [...approvals.values()].sort(
-    (left, right) => left.LevelNo - right.LevelNo,
-  );
-};
 // CAPEX currently supports only these three business approval roles.
 const approvalConfigurationIsValid = (approvals) =>
   approvals.length > 0 &&
@@ -216,6 +195,8 @@ const createCapex = async (data) => {
     client = await pool.connect();
     await client.query("BEGIN");
     transactionStarted = true;
+
+    await CapexWorkflow.getActor(client, data.OrganizationID, data.CreatedBy);
 
     const sequenceResult = await client.query(
       `
@@ -320,29 +301,7 @@ const createCapex = async (data) => {
       );
     }
 
-    const approvalConfigResult = await client.query(
-      `
-      SELECT ApprovalLevel AS LevelNo, ApprovalRole
-      FROM Capex_Approval_Config
-      WHERE OrganizationID = $1
-        AND IsDeleted = FALSE
-      ORDER BY ApprovalOrder ASC, ApprovalLevel ASC, CapexApprovalConfigID ASC;
-      `,
-      [data.OrganizationID],
-    );
-
-    const approvals = mergeApprovalConfiguration(approvalConfigResult.rows);
-
-    if (!approvalConfigurationIsValid(approvals)) {
-      return await cleanupAndFail(
-        client,
-        transactionStarted,
-        fail(
-          "CAPEX approval configuration contains an invalid approval role.",
-          400,
-        ),
-      );
-    }
+    const workflowSteps = await CapexWorkflow.snapshot(client, capexID, data.OrganizationID);
 
     const [approvalID] = await reserveNumericIDs(
       client,
@@ -371,12 +330,12 @@ const createCapex = async (data) => {
     await client.query("COMMIT");
     transactionStarted = false;
 
-    const firstApprovalRole = String(approvals[0]?.ApprovalRole || "").trim().toUpperCase();
+    const firstApprovalRole = workflowSteps[0]?.approvertype === "ROLE" ? workflowSteps[0].role : null;
     notifyCommittedCapex({
       organizationID: data.OrganizationID,
       capexID,
       roles: firstApprovalRole ? [firstApprovalRole] : [],
-      directUserIds: [],
+      directUserIds: workflowSteps[0]?.assigneduserid ? [workflowSteps[0].assigneduserid] : [],
       kind: "CREATE",
       item: data.Item,
       qty: data.Qty,
@@ -406,6 +365,7 @@ const createCapex = async (data) => {
 
     console.error("Create CAPEX Error:", error.message);
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
     if (retryResponse) return retryResponse;
 
@@ -423,1035 +383,15 @@ const createCapex = async (data) => {
   }
 };
 
-// ============================================================ Read Query and Mapping Helpers(Get Helpers)
-// The lateral query derives the first non-approved stage for each CAPEX.
-const CAPEX_SELECT = `
-  SELECT
-    cm.CapexID,
-    cm.OrganizationID,
-    om.ShortName AS OrganizationShortName,
-    cm.CapexNumber,
-    cm.Department,
-    cm.Item,
-    cm.Description,
-    cm.Make,
-    cm.Qty,
-    cm.Rate,
-    cm.Total,
-    cm.IsVoid,
-    cm.VoidRemarks,
-    cm.CreatedBy,
-    cm.CreatedDate,
-    
-
-    CASE
-      WHEN UPPER(COALESCE(approval_state.FinalStatus, 'PENDING'))
-           IN ('APPROVED', 'REJECTED')
-      THEN NULL
-      ELSE current_stage.ApprovalRole
-    END AS CurrentApprovalRole,
-
-    CASE
-      WHEN UPPER(COALESCE(approval_state.FinalStatus, 'PENDING'))
-           IN ('APPROVED', 'REJECTED')
-      THEN approval_state.FinalStatus
-
-      ELSE COALESCE(
-        current_stage.Status,
-        approval_state.FinalStatus,
-        'Pending'
-      )
-    END AS CurrentStatus
-
-  FROM Capex_Master cm
-
-  INNER JOIN Organization_Master om
-    ON om.OrganizationID = cm.OrganizationID
-   AND om.IsActive = TRUE
-   AND om.IsDeleted = FALSE
-   AND om.ActivationStatus = TRUE
-
-  LEFT JOIN Capex_Approval approval_state
-    ON approval_state.CapexID = cm.CapexID
-   AND approval_state.IsDeleted = FALSE
-
-  LEFT JOIN LATERAL
-  (
-    SELECT
-      cfg.ApprovalRole,
-
-      CASE UPPER(cfg.ApprovalRole)
-        WHEN 'GM'
-          THEN COALESCE(approval_state.GMStatus, 'PENDING')
-
-        WHEN 'CEO'
-          THEN COALESCE(approval_state.CEOStatus, 'PENDING')
-
-        WHEN 'OWNER'
-          THEN COALESCE(approval_state.OwnerStatus, 'PENDING')
-      END AS Status,
-
-      cfg.ApprovalLevel,
-      cfg.ApprovalOrder
-
-    FROM Capex_Approval_Config cfg
-
-    WHERE cfg.OrganizationID = cm.OrganizationID
-      AND cfg.IsDeleted = FALSE
-
-      AND UPPER(
-        CASE UPPER(cfg.ApprovalRole)
-          WHEN 'GM'
-            THEN COALESCE(approval_state.GMStatus, 'PENDING')
-
-          WHEN 'CEO'
-            THEN COALESCE(approval_state.CEOStatus, 'PENDING')
-
-          WHEN 'OWNER'
-            THEN COALESCE(approval_state.OwnerStatus, 'PENDING')
-        END
-      ) NOT IN ('APPROVED', 'REJECTED')
-
-    ORDER BY
-      cfg.ApprovalOrder ASC,
-      cfg.ApprovalLevel ASC
-
-    LIMIT 1
-
-  ) current_stage ON TRUE
-
-  WHERE cm.IsDeleted = FALSE
-`;
-// Convert PostgreSQL lowercase row keys into the public CAPEX response shape.
-const mapMaster = (row) => ({
-  CapexID: Number(row.capexid),
-  OrganizationID: Number(row.organizationid),
-  OrganizationShortName: row.organizationshortname,
-  CapexNumber: Number(row.capexnumber),
-  Department: row.department,
-  Item: row.item,
-  Description: row.description,
-  Make: row.make,
-  Qty: Number(row.qty),
-  Rate: Number(row.rate),
-  Total: Number(row.total),
-  IsVoid: row.isvoid,
-  VoidRemarks: row.voidremarks,
-  CreatedDate: formatDate(row.createddate),
-  CurrentStatus: row.currentstatus,
-  Documents: [],
-  Approvals: [],
-});
-// Generate a short-lived read URL while preserving stored blob paths in the DB.
-const mapDocument = (row) => ({
-  CapexDocumentID: Number(row.capexdocumentid),
-  FileName: row.filename,
-  FilePath: row.filepath ? generateDocumentUrl(row.filepath) : null,
-});
-// Return approval fields without exposing soft-delete/audit internals.
-const mapApproval = (row) => ({
-  CapexApprovalID: Number(row.capexapprovalid),
-  ApprovalRole: row.approvalrole,
-  Status: row.status,
-  ApprovedQuantity:
-    row.approvedquantity === null || row.approvedquantity === undefined
-      ? null
-      : Number(row.approvedquantity),
-  Remarks: row.remarks,
-});
-// Fetch documents and approvals in batches to avoid N+1 database queries.
-const attachRelatedData = async (capexRows) => {
-  if (capexRows.length === 0) return [];
-
-  const capexIDs = capexRows.map((row) => Number(row.capexid));
-  const [documentsResult, approvalsResult] = await Promise.all([
-    pool.query(
-      `
-      SELECT
-        CapexDocumentID,
-        CapexID,
-        CapexNumber,
-        FileName,
-        FilePath,
-        FileType,
-        FileSize
-      FROM Capex_Documents
-      WHERE CapexID = ANY($1::bigint[])
-        AND IsDeleted = FALSE
-      ORDER BY CapexID ASC, CapexDocumentID ASC;
-    `,
-      [capexIDs],
-    ),
-
-    pool.query(
-      `
-      SELECT
-        ca.CapexApprovalID,
-        ca.CapexID,
-        cfg.ApprovalLevel AS LevelNo,
-        cfg.ApprovalRole,
-
-        CASE cfg.ApprovalRole
-          WHEN 'GM' THEN ca.GMStatus
-          WHEN 'CEO' THEN ca.CEOStatus
-          WHEN 'OWNER' THEN ca.OwnerStatus
-        END AS Status,
-
-        CASE cfg.ApprovalRole
-          WHEN 'GM' THEN ca.GMStatusDateTime
-          WHEN 'CEO' THEN ca.CEOStatusDateTime
-          WHEN 'OWNER' THEN ca.OwnerStatusDateTime
-        END AS StatusDateTime,
-
-        CASE cfg.ApprovalRole
-          WHEN 'GM' THEN ca.GMStatusApprovedBy
-          WHEN 'CEO' THEN ca.CEOStatusApprovedBy
-          WHEN 'OWNER' THEN ca.OwnerStatusApprovedBy
-        END AS StatusApprovedBy,
-
-        CASE cfg.ApprovalRole
-          WHEN 'GM' THEN ca.GMApprovedQuantity
-          WHEN 'CEO' THEN ca.CEOApprovedQuantity
-          WHEN 'OWNER' THEN ca.OwnerApprovedQuantity
-        END AS ApprovedQuantity,
-
-        CASE cfg.ApprovalRole
-          WHEN 'GM' THEN ca.GMRemarks
-          WHEN 'CEO' THEN ca.CEORemarks
-          WHEN 'OWNER' THEN ca.OwnerRemarks
-        END AS Remarks
-
-      FROM Capex_Approval ca
-
-      INNER JOIN Capex_Approval_Config cfg
-        ON cfg.OrganizationID = (
-          SELECT OrganizationID
-          FROM Capex_Master
-          WHERE CapexID = ca.CapexID
-        )
-
-       AND cfg.IsDeleted = FALSE
-
-      WHERE ca.CapexID = ANY($1::bigint[])
-        AND ca.IsDeleted = FALSE
-
-      ORDER BY
-        ca.CapexID ASC,
-        cfg.ApprovalLevel ASC,
-        ca.CapexApprovalID ASC;
-    `,
-      [capexIDs],
-    ),
-  ]);
-
-  const byID = new Map(
-    capexRows.map((row) => {
-      const capex = mapMaster(row);
-      return [capex.CapexID, capex];
-    }),
-  );
-
-  for (const row of documentsResult.rows) {
-    byID.get(Number(row.capexid))?.Documents.push(mapDocument(row));
-  }
-
-  for (const row of approvalsResult.rows) {
-    byID.get(Number(row.capexid))?.Approvals.push(mapApproval(row));
-  }
-
-  return capexRows.map((row) => byID.get(Number(row.capexid)));
-};
-
-// Add frontend action permissions without exposing the audit CreatedBy field.
-// These flags do not affect record visibility; they describe which buttons the
-// authenticated user may see for each already-visible CAPEX row.
-const addCapexListPermissions = (capexRows, rawRows, data = {}) => {
-  const userID = Number(data.UserID);
-  const userType = String(data.UserType || "").trim().toUpperCase();
-  const rawRowsByID = new Map(
-    rawRows.map((row) => [Number(row.capexid), row]),
-  );
-
-  return capexRows.map((capex) => {
-    const rawRow = rawRowsByID.get(Number(capex.CapexID)) || {};
-    const currentApprovalRole = String(rawRow.currentapprovalrole || "")
-      .trim()
-      .toUpperCase();
-    const currentStatus = String(rawRow.currentstatus || "")
-      .trim()
-      .toUpperCase();
-    const createdBy = Number(rawRow.createdby);
-
-    return {
-      ...capex,
-      CanApprove:
-        APPROVAL_ROLES.has(userType) &&
-        currentApprovalRole === userType &&
-        currentStatus === "PENDING",
-      CanAction:
-        (Number.isSafeInteger(userID) &&
-          userID > 0 &&
-          Number.isSafeInteger(createdBy) &&
-          createdBy === userID) ||
-        ["HOD", "GM"].includes(userType),
-    };
-  });
-};
-
-// Apply organization-wide status visibility for roles that do not own an
-// approval stage. The same helper is used by the list and count queries so
-// pagination cannot disagree with the returned rows.
-const appendOverallCapexStatusFilter = (query, params, approvalStatus) => {
-  if (!approvalStatus) return query;
-
-  if (approvalStatus === "APPROVED") {
-    params.push(approvalStatus);
-    return `${query}
-      AND UPPER(TRIM(COALESCE(approval_state.FinalStatus, 'PENDING')))
-          = $${params.length}
-    `;
-  }
-
-  if (["REJECTED", "HOLD", "RETURNED"].includes(approvalStatus)) {
-    params.push(approvalStatus);
-    return `${query}
-      AND (
-        UPPER(TRIM(COALESCE(approval_state.GMStatus, ''))) = $${params.length}
-        OR UPPER(TRIM(COALESCE(approval_state.CEOStatus, ''))) = $${params.length}
-        OR UPPER(TRIM(COALESCE(approval_state.OwnerStatus, ''))) = $${params.length}
-        OR UPPER(TRIM(COALESCE(approval_state.FinalStatus, ''))) = $${params.length}
-      )
-    `;
-  }
-
-  return `${query}
-    AND UPPER(TRIM(COALESCE(approval_state.FinalStatus, 'PENDING')))
-        = 'PENDING'
-    AND UPPER(TRIM(COALESCE(approval_state.GMStatus, 'PENDING')))
-        NOT IN ('REJECTED', 'HOLD', 'RETURNED')
-    AND UPPER(TRIM(COALESCE(approval_state.CEOStatus, 'PENDING')))
-        NOT IN ('REJECTED', 'HOLD', 'RETURNED')
-    AND UPPER(TRIM(COALESCE(approval_state.OwnerStatus, 'PENDING')))
-        NOT IN ('REJECTED', 'HOLD', 'RETURNED')
-  `;
-};
-
-// Apply ApprovalFlow inside the caller's existing visibility scope. A selected
-// non-pending status belongs to that role's status column; only Pending is a
-// current-stage concept because later stages may also contain default Pending.
-const appendCapexApprovalFlowFilter = (
-  query,
-  params,
-  approvalFlow,
-  approvalStatus,
-) => {
-  if (!approvalFlow) return query;
-
-  const statusColumns = {
-    GM: "approval_state.GMStatus",
-    CEO: "approval_state.CEOStatus",
-    OWNER: "approval_state.OwnerStatus",
-  };
-  const statusColumn = statusColumns[approvalFlow];
-
-  params.push(approvalFlow);
-  const approvalFlowParameter = `$${params.length}`;
-  query = `${query}
-    AND EXISTS (
-      SELECT 1
-      FROM Capex_Approval_Config flow_cfg
-      WHERE flow_cfg.OrganizationID = cm.OrganizationID
-        AND flow_cfg.IsDeleted = FALSE
-        AND UPPER(TRIM(flow_cfg.ApprovalRole)) = ${approvalFlowParameter}
-    )
-  `;
-
-  if (!approvalStatus) return query;
-
-  if (approvalStatus === "PENDING") {
-    return `${query}
-      AND UPPER(TRIM(COALESCE(current_stage.ApprovalRole, '')))
-          = ${approvalFlowParameter}
-      AND UPPER(TRIM(COALESCE(current_stage.Status, 'PENDING')))
-          = 'PENDING'
-      AND UPPER(TRIM(COALESCE(approval_state.FinalStatus, 'PENDING')))
-          = 'PENDING'
-    `;
-  }
-
-  params.push(approvalStatus);
-  return `${query}
-    AND UPPER(TRIM(COALESCE(${statusColumn}, 'PENDING')))
-        = $${params.length}
-  `;
-};
-// ============================================================ Get All CAPEX
+// Shared workflow reads serve screens and exports.
 const getAllCapex = async (data) => {
-  try {
-    // =====================================================
-    // Pagination
-    // =====================================================
-
-    const page = Number(data.page) || 1;
-    const PageSize = Number(data.PageSize) || 10;
-
-    if (!Number.isInteger(page) || page < 1) {
-      return {
-        success: false,
-        message: "Page must be a positive integer.",
-      };
-    }
-
-    if (!Number.isInteger(PageSize) || PageSize < 1) {
-      return {
-        success: false,
-        message: "PageSize must be a positive integer.",
-      };
-    }
-
-    const offset = (page - 1) * PageSize;
-
-    // =====================================================
-    // User Type
-    // =====================================================
-
-    const userType = data.UserType ? String(data.UserType).toUpperCase() : null;
-
-    // =====================================================
-    // Status
-    // =====================================================
-
-    const approvalStatus =
-      data.Status !== undefined &&
-      data.Status !== null &&
-      String(data.Status).trim() !== ""
-        ? String(data.Status).trim().toUpperCase()
-        : null;
-
-    const validStatuses = [
-      "PENDING",
-      "APPROVED",
-      "REJECTED",
-      "HOLD",
-      "RETURNED",
-    ];
-
-    if (approvalStatus && !validStatuses.includes(approvalStatus)) {
-      return {
-        success: false,
-        message:
-          "Status must be Pending, Approved, Rejected, Hold, or Returned.",
-      };
-    }
-
-    const approvalFlow =
-      data.ApprovalFlow !== undefined &&
-      data.ApprovalFlow !== null &&
-      String(data.ApprovalFlow).trim() !== ""
-        ? String(data.ApprovalFlow).trim().toUpperCase()
-        : null;
-
-    if (approvalFlow && !APPROVAL_ROLES.has(approvalFlow)) {
-      return fail("ApprovalFlow must be GM, CEO, or OWNER.", 400);
-    }
-
-    // When a flow is selected, Status describes that selected approval stage.
-    // The login role continues to control visibility, but must not also apply
-    // the same Status to its own role column (for example GMStatus=Rejected
-    // together with CEOStatus=Rejected).
-    const visibilityStatus = approvalFlow ? null : approvalStatus;
-
-    // =====================================================
-    // MAIN QUERY
-    // =====================================================
-
-    let query = `
-      ${CAPEX_SELECT}
-    `;
-
-    const params = [];
-
-    // =====================================================
-    // Organization Filter
-    // =====================================================
-
-    if (data.OrganizationID !== null && data.OrganizationID !== undefined) {
-      params.push(data.OrganizationID);
-
-      query += `
-        AND cm.OrganizationID = $${params.length}
-      `;
-    }
-
-    // =====================================================
-    // Department Filter
-    // =====================================================
-
-    if (data.Department) {
-      params.push(String(data.Department).trim());
-
-      query += `
-        AND LOWER(TRIM(cm.Department)) = LOWER($${params.length})
-      `;
-    }
-
-    if (data.FromDate) {
-      params.push(data.FromDate);
-      query += ` AND cm.CreatedDate >= $${params.length}::date `;
-    }
-
-    if (data.ToDate) {
-      params.push(data.ToDate);
-      query += ` AND cm.CreatedDate < ($${params.length}::date + INTERVAL '1 day') `;
-    }
-
-    query = appendCapexApprovalFlowFilter(
-      query,
-      params,
-      approvalFlow,
-      approvalStatus,
-    );
-
-    // =====================================================
-    // STATUS FILTER
-    // =====================================================
-
-    if (["GM", "CEO", "OWNER"].includes(userType)) {
-      // A later approver must never see a CAPEX that is paused or sent back
-      // at an earlier stage. This gate also applies to the default/all-status
-      // list, where approvalStatus is null.
-      if (userType === "CEO") {
-        query += `
-          AND UPPER(COALESCE(approval_state.GMStatus, 'PENDING')) = 'APPROVED'
-        `;
-      } else if (userType === "OWNER") {
-        query += `
-          AND UPPER(COALESCE(approval_state.GMStatus, 'PENDING')) = 'APPROVED'
-          AND UPPER(COALESCE(approval_state.CEOStatus, 'PENDING')) = 'APPROVED'
-        `;
-      }
-
-      // ---------------------------------------------------
-      // GM
-      // ---------------------------------------------------
-
-      if (userType === "GM") {
-        if (visibilityStatus === "PENDING") {
-          params.push("GM");
-
-          query += `
-            AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = $${params.length}
-            AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-            AND UPPER(COALESCE(approval_state.FinalStatus, 'PENDING')) = 'PENDING'
-          `;
-        } else if (visibilityStatus) {
-          params.push(visibilityStatus);
-
-          query += `
-            AND UPPER(
-              COALESCE(
-                approval_state.GMStatus,
-                'PENDING'
-              )
-            ) = $${params.length}
-          `;
-        }
-        
-      }
-
-      // ---------------------------------------------------
-      // CEO
-      // ---------------------------------------------------
-      else if (userType === "CEO") {
-        if (visibilityStatus === "PENDING") {
-          params.push("CEO");
-
-          query += `
-            AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = $${params.length}
-            AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-            AND UPPER(COALESCE(approval_state.FinalStatus, 'PENDING')) = 'PENDING'
-          `;
-        } else if (visibilityStatus) {
-          params.push(visibilityStatus);
-
-          query += `
-            AND UPPER(
-              COALESCE(
-                approval_state.CEOStatus,
-                'PENDING'
-              )
-            ) = $${params.length}
-          `;
-        } 
-       
-      }
-
-      // ---------------------------------------------------
-      // OWNER
-      // ---------------------------------------------------
-      else if (userType === "OWNER") {
-        if (visibilityStatus === "PENDING") {
-          params.push("OWNER");
-
-          query += `
-            AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = $${params.length}
-            AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-            AND UPPER(COALESCE(approval_state.FinalStatus, 'PENDING')) = 'PENDING'
-          `;
-        } else if (visibilityStatus) {
-          params.push(visibilityStatus);
-
-          query += `
-            AND UPPER(
-              COALESCE(
-                approval_state.OwnerStatus,
-                'PENDING'
-              )
-            ) = $${params.length}
-          `;
-        } 
-       
-      }
-    }
-
-    // =====================================================
-    // HOD
-    // =====================================================
-    else if (userType === "HOD") {
-      if (["REJECTED", "HOLD", "RETURNED"].includes(visibilityStatus)) {
-        // Match the selected non-pending status at any approval stage.
-        params.push(visibilityStatus);
-
-        query += `
-          AND (
-            UPPER(
-              COALESCE(
-                approval_state.GMStatus,
-                ''
-              )
-            ) = $${params.length}
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.CEOStatus,
-                ''
-              )
-            ) = $${params.length}
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.OwnerStatus,
-                ''
-              )
-            ) = $${params.length}
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.FinalStatus,
-                ''
-              )
-            ) = $${params.length}
-          )
-        `;
-      } else if (visibilityStatus === "APPROVED") {
-        // FinalStatus already represents completion of the configured flow.
-        // Do not require roles (such as OWNER) that may not be configured.
-        query += `
-          AND UPPER(
-            COALESCE(
-              approval_state.FinalStatus,
-              'PENDING'
-            )
-          ) = 'APPROVED'
-        `;
-      } else if (visibilityStatus === "PENDING") {
-        // Pending excludes terminal and paused/returned approval states.
-        query += `
-          AND NOT (
-            UPPER(
-              COALESCE(
-                approval_state.GMStatus,
-                ''
-              )
-            ) IN ('REJECTED', 'HOLD', 'RETURNED')
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.CEOStatus,
-                ''
-              )
-            ) IN ('REJECTED', 'HOLD', 'RETURNED')
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.OwnerStatus,
-                ''
-              )
-            ) IN ('REJECTED', 'HOLD', 'RETURNED')
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.FinalStatus,
-                ''
-              )
-            ) IN ('REJECTED', 'HOLD', 'RETURNED', 'APPROVED')
-          )
-
-          AND (
-            UPPER(
-              COALESCE(
-                approval_state.GMStatus,
-                'PENDING'
-              )
-            ) <> 'APPROVED'
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.CEOStatus,
-                'PENDING'
-              )
-            ) <> 'APPROVED'
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.OwnerStatus,
-                'PENDING'
-              )
-            ) <> 'APPROVED'
-          )
-        `;
-      }
-    }
-
-    // Non-approval roles see organization-wide CAPEX, but a requested status
-    // must still constrain the result set.
-    else {
-      query = appendOverallCapexStatusFilter(query, params, visibilityStatus);
-    }
-
-    // =====================================================
-    // LIMIT + OFFSET
-    // =====================================================
-
-    const limitParameter = params.length + 1;
-    const offsetParameter = params.length + 2;
-
-    query += `
-      ORDER BY
-        cm.CreatedDate DESC,
-        cm.CapexID DESC
-
-      LIMIT $${limitParameter}
-      OFFSET $${offsetParameter};
-    `;
-
-    params.push(PageSize);
-    params.push(offset);
-
-    // =====================================================
-    // COUNT QUERY
-    // =====================================================
-
-    let countQuery = `
-      SELECT COUNT(*) AS TotalCount
-      FROM (
-        ${CAPEX_SELECT}
-    `;
-
-    const countParams = [];
-
-    // =====================================================
-    // Organization Count Filter
-    // =====================================================
-
-    if (data.OrganizationID !== null && data.OrganizationID !== undefined) {
-      countParams.push(data.OrganizationID);
-
-      countQuery += `
-        AND cm.OrganizationID = $${countParams.length}
-      `;
-    }
-
-    if (data.Department) {
-      countParams.push(String(data.Department).trim());
-
-      countQuery += `
-        AND LOWER(TRIM(cm.Department)) = LOWER($${countParams.length})
-      `;
-    }
-
-    if (data.FromDate) {
-      countParams.push(data.FromDate);
-      countQuery += ` AND cm.CreatedDate >= $${countParams.length}::date `;
-    }
-
-    if (data.ToDate) {
-      countParams.push(data.ToDate);
-      countQuery += ` AND cm.CreatedDate < ($${countParams.length}::date + INTERVAL '1 day') `;
-    }
-
-    countQuery = appendCapexApprovalFlowFilter(
-      countQuery,
-      countParams,
-      approvalFlow,
-      approvalStatus,
-    );
-
-    // =====================================================
-    // COUNT STATUS FILTER
-    // =====================================================
-
-    if (["GM", "CEO", "OWNER"].includes(userType)) {
-      // Keep pagination totals under the same predecessor-stage visibility
-      // rules as the main list.
-      if (userType === "CEO") {
-        countQuery += `
-          AND UPPER(COALESCE(approval_state.GMStatus, 'PENDING')) = 'APPROVED'
-        `;
-      } else if (userType === "OWNER") {
-        countQuery += `
-          AND UPPER(COALESCE(approval_state.GMStatus, 'PENDING')) = 'APPROVED'
-          AND UPPER(COALESCE(approval_state.CEOStatus, 'PENDING')) = 'APPROVED'
-        `;
-      }
-
-      let statusColumn = null;
-
-      if (userType === "GM") {
-        statusColumn = "approval_state.GMStatus";
-      } else if (userType === "CEO") {
-        statusColumn = "approval_state.CEOStatus";
-      } else if (userType === "OWNER") {
-        statusColumn = "approval_state.OwnerStatus";
-      }
-
-      if (visibilityStatus === "PENDING" ) {
-        countParams.push(userType);
-
-        countQuery += `
-          AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = $${countParams.length}
-          AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-          AND UPPER(COALESCE(approval_state.FinalStatus, 'PENDING')) = 'PENDING'
-        `;
-      } else if (visibilityStatus) {
-        countParams.push(visibilityStatus);
-
-        countQuery += `
-          AND UPPER(
-            COALESCE(
-              ${statusColumn},
-              'PENDING'
-            )
-          ) = $${countParams.length}
-        `;
-      }
-    }
-
-    // =====================================================
-    // HOD COUNT
-    // =====================================================
-    else if (userType === "HOD") {
-      if (visibilityStatus === "REJECTED") {
-        countQuery += `
-          AND (
-            UPPER(
-              COALESCE(
-                approval_state.GMStatus,
-                ''
-              )
-            ) = 'REJECTED'
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.CEOStatus,
-                ''
-              )
-            ) = 'REJECTED'
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.OwnerStatus,
-                ''
-              )
-            ) = 'REJECTED'
-          )
-        `;
-      } else if (visibilityStatus === "APPROVED") {
-        countQuery += `
-          AND UPPER(
-            COALESCE(
-              approval_state.FinalStatus,
-              'PENDING'
-            )
-          ) = 'APPROVED'
-        `;
-      } else if (visibilityStatus === "PENDING") {
-        countQuery += `
-          AND NOT (
-            UPPER(
-              COALESCE(
-                approval_state.GMStatus,
-                ''
-              )
-            ) = 'REJECTED'
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.CEOStatus,
-                ''
-              )
-            ) = 'REJECTED'
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.OwnerStatus,
-                ''
-              )
-            ) = 'REJECTED'
-          )
-
-          AND (
-            UPPER(
-              COALESCE(
-                approval_state.GMStatus,
-                'PENDING'
-              )
-            ) <> 'APPROVED'
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.CEOStatus,
-                'PENDING'
-              )
-            ) <> 'APPROVED'
-
-            OR
-
-            UPPER(
-              COALESCE(
-                approval_state.OwnerStatus,
-                'PENDING'
-              )
-            ) <> 'APPROVED'
-          )
-        `;
-      }
-    }
-
-    else {
-      countQuery = appendOverallCapexStatusFilter(
-        countQuery,
-        countParams,
-        visibilityStatus,
-      );
-    }
-
-    countQuery += `
-      ) filtered_capex
-    `;
-
-    // =====================================================
-    // Execute
-    // =====================================================
-
-    const [result, countResult] = await Promise.all([
-      pool.query(query, params),
-      pool.query(countQuery, countParams),
-    ]);
-
-    // =====================================================
-    // Attach Related Data
-    // =====================================================
-
-    const capexWithRelatedData = await attachRelatedData(result.rows);
-    const capex = addCapexListPermissions(
-      capexWithRelatedData,
-      result.rows,
-      data,
-    );
-
-    // =====================================================
-    // Pagination Count
-    // =====================================================
-
-    const totalCount = Number(countResult.rows[0].totalcount);
-
-    const totalPages = Math.ceil(totalCount / PageSize);
-
-    // =====================================================
-    // Response
-    // =====================================================
-    return {
-      success: true,
-      message: "CAPEX records fetched successfully.",
-
-      TotalCount: totalCount,
-      PageCount: capex.length,
-      CurrentPage: page,
-      PageSize: PageSize,
-      TotalPages: totalPages,
-
-      data: capex,
-    };
-  } catch (error) {
-    console.error("Get All CAPEX Error:", error.message);
-
-    return fail("Unable to fetch CAPEX records at this time.", 503);
-  }
+  try { return await CapexWorkflowRead.list(data); }
+  catch (error) { return fail(error.message, error.statusCode || 503); }
 };
 // ============================================================ Get CAPEX By ID
 const getCapexById = async (data) => {
-  try {
-    const result = await pool.query(
-      `
-      ${CAPEX_SELECT}
-      AND cm.CapexID = $1
-      LIMIT 1;
-      `,
-      [data.CapexID],
-    );
-
-    if (result.rows.length === 0) {
-      return fail("CAPEX record not found.", 404);
-    }
-
-    const [capex] = await attachRelatedData(result.rows);
-
-    return {
-      success: true,
-      message: "CAPEX record fetched successfully.",
-      data: capex,
-    };
-  } catch (error) {
-    console.error("Get CAPEX By ID Error:", error.message);
-    return fail("Unable to fetch CAPEX record at this time.", 503);
-  }
+  try { return await CapexWorkflowRead.detail(data); }
+  catch (error) { return fail(error.message, error.statusCode || 503); }
 };
 
 // ============================================================ Mutation Helpers (Update ,Delete,Approval Helpers)
@@ -1515,6 +455,17 @@ const updateCapex = async (data) => {
 
     await client.query("BEGIN");
     transactionStarted = true;
+    const accessResult = await client.query(
+      "SELECT organizationid, createdby FROM capex_master WHERE capexid = $1 AND isdeleted = FALSE FOR UPDATE",
+      [data.CapexID]
+    );
+    if (!accessResult.rows.length) return await cleanupAndFail(client, transactionStarted, fail("CAPEX record not found", 404));
+    const record = accessResult.rows[0];
+    const actor = await CapexWorkflow.getActor(client, record.organizationid, data.UserID);
+    if (!CapexWorkflow.canModify(record, actor)) {
+      return await cleanupAndFail(client, transactionStarted, fail("You cannot modify this CAPEX", 403));
+    }
+
 
     // ============================================================
     // Changes
@@ -1886,6 +837,7 @@ const updateCapex = async (data) => {
 
     console.error("Update CAPEX Error:", error.message);
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
 
     if (retryResponse) {
@@ -1921,6 +873,17 @@ const deleteCapex = async (data) => {
 
     await client.query("BEGIN");
     transactionStarted = true;
+    const accessResult = await client.query(
+      "SELECT organizationid, createdby FROM capex_master WHERE capexid = $1 AND isdeleted = FALSE FOR UPDATE",
+      [data.CapexID]
+    );
+    if (!accessResult.rows.length) return await cleanupAndFail(client, transactionStarted, fail("CAPEX record not found", 404));
+    const record = accessResult.rows[0];
+    const actor = await CapexWorkflow.getActor(client, record.organizationid, data.UserID);
+    if (!CapexWorkflow.canModify(record, actor)) {
+      return await cleanupAndFail(client, transactionStarted, fail("You cannot modify this CAPEX", 403));
+    }
+
 
     // ============================================================
     // SOFT DELETE CAPEX
@@ -2009,6 +972,7 @@ const deleteCapex = async (data) => {
 
     console.error("Delete CAPEX Error:", error.message);
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
 
     if (retryResponse) {
@@ -2034,7 +998,7 @@ const processCapexApproval = async (data) => {
     // 1. NORMALIZE INPUT
     // ============================================================
 
-    const approverRole = String(data.UserType || "")
+    let approverRole = String(data.UserType || "")
       .trim()
       .toUpperCase();
 
@@ -2075,9 +1039,6 @@ const processCapexApproval = async (data) => {
     // 4. VALIDATE ROLE
     // ============================================================
 
-    if (!APPROVAL_ROLES.has(approverRole)) {
-      return fail("Your role is not authorized for CAPEX approval.", 403);
-    }
 
     // ============================================================
     // 5. DB CONNECTION
@@ -2106,7 +1067,9 @@ const processCapexApproval = async (data) => {
         cm.Total,
         cm.Description,
         cm.IsVoid,
-        cm.ModifiedDate
+        cm.ModifiedDate,
+        (SELECT ca.finalstatus FROM capex_approval ca
+         WHERE ca.capexid = cm.capexid AND ca.isdeleted = FALSE LIMIT 1) AS FinalStatus
       FROM Capex_Master cm
       WHERE cm.CapexID = $1
         AND cm.IsDeleted = FALSE
@@ -2133,6 +1096,31 @@ const processCapexApproval = async (data) => {
     }
 
     const capex = masterResult.rows[0];
+
+    const verifiedActor = await CapexWorkflow.getActor(client, capex.organizationid, data.UserID);
+    approverRole = CapexWorkflow.normalized(verifiedActor.usertype);
+    const dynamicAction = await CapexWorkflow.applyAction(client, capex, data);
+    if (dynamicAction) {
+      await client.query("COMMIT");
+      transactionStarted = false;
+      const { change, step, next, roles, directUserIds } = dynamicAction;
+      notifyCommittedCapex({
+        organizationID: capex.organizationid, capexID: capex.capexid,
+        roles, directUserIds,
+        // A user assigned consecutive dynamic steps still needs the next task.
+        excludeUserID: change.action === "APPROVE" ? null : data.UserID,
+        actorUserID: data.UserID, kind: change.action,
+        item: capex.item, qty: capex.qty, department: capex.department,
+        description: capex.description, rate: capex.rate, total: capex.total,
+        actionQuantity: change.quantity, remark: change.remarks,
+        actionDate: new Date().toISOString(), approverRole: step.approvaltype,
+        action: change.status.toUpperCase()
+      });
+      return { success: true, message: change.action === "APPROVE" && !next
+        ? "CAPEX finally approved successfully." : "CAPEX " + change.status.toLowerCase() + " successfully." };
+    }
+
+
 
     if (capex.isvoid === true) {
       await rollback(client, transactionStarted);
@@ -2277,6 +1265,8 @@ const processCapexApproval = async (data) => {
 
       return {
         configured: stage,
+        stepid: "legacy:" + role,
+        approvertype: "ROLE",
         role,
         approval: roleData,
 
@@ -2357,121 +1347,13 @@ const processCapexApproval = async (data) => {
       });
     };
 
-    // ============================================================
-    // 15. FIND USER'S STAGE
-    // ============================================================
-
-    const userStageIndex = stages.findIndex(
-      (stage) => stage.role === approverRole,
+    // Legacy storage keeps its fixed columns, but authorization uses the same
+    // assignment/state policy as snapshot workflows and list/detail flags.
+    const authorizedStep = CapexWorkflow.authorizeApproval(
+      { ...capex, finalstatus: approval.finalstatus }, stages, verifiedActor,
+      action, data.ApprovalStepID
     );
-
-    if (userStageIndex === -1) {
-      await rollback(client, transactionStarted);
-
-      transactionStarted = false;
-
-      return fail(
-        `Approval stage not configured for role ${approverRole}.`,
-        403,
-      );
-    }
-
-    const userStage = stages[userStageIndex];
-
-    const userStatus = userStage.status;
-
-    // ============================================================
-    // 16. CHECK PERMISSION
-    //
-    // RULES
-    //
-    // ------------------------------------------------------------
-    // CASE 1:
-    // Current role can APPROVE / REJECT / RETURN
-    //
-    // Pending:
-    // GM -> APPROVE
-    // GM -> REJECT
-    // GM -> RETURN
-    //
-    // ------------------------------------------------------------
-    // CASE 2:
-    // Rejected current role can APPROVE again
-    //
-    // GM REJECTED
-    // ->
-    // GM APPROVE
-    //
-    // ------------------------------------------------------------
-    // CASE 3:
-    // Previous APPROVED role can REJECT / RETURN
-    // while next role is PENDING.
-    //
-    // GM APPROVED
-    // CEO PENDING
-    //
-    // GM:
-    // APPROVE  -> NO
-    // REJECT   -> YES
-    // RETURN   -> YES
-    //
-    // CEO:
-    // APPROVE  -> YES
-    // REJECT   -> YES
-    // RETURN   -> YES
-    // ============================================================
-
-    let canPerformAction = false;
-
-    // ------------------------------------------------------------
-    // CASE 1:
-    // USER IS CURRENT STAGE
-    //
-    // PENDING / RETURNED / REJECTED / HOLD
-    // ------------------------------------------------------------
-
-    if (
-      userStageIndex === currentIndex &&
-      ["PENDING", "RETURNED", "REJECTED", "HOLD"].includes(userStatus)
-    ) {
-      canPerformAction = true;
-    }
-
-    // ------------------------------------------------------------
-    // CASE 2:
-    // PREVIOUS APPROVED STAGE
-    //
-    // Can only REJECT / RETURN
-    // while next stage is pending.
-    // ------------------------------------------------------------
-
-    const nextStage = stages[userStageIndex + 1];
-
-    if (
-      userStageIndex < currentIndex &&
-      userStatus === "APPROVED" &&
-      nextStage &&
-      nextStage.status === "PENDING" &&
-      ["REJECT", "RETURN"].includes(action)
-    ) {
-      canPerformAction = true;
-    }
-
-    // ============================================================
-    // 17. PERMISSION DENIED
-    // ============================================================
-
-    if (!canPerformAction) {
-      await rollback(client, transactionStarted);
-
-      transactionStarted = false;
-
-      return fail(`You cannot perform ${action} action at this stage.`, 403);
-    }
-
-    // ============================================================
-    // 18. UPDATE ROLE APPROVAL HELPER
-    // ============================================================
+    const userStageIndex = stages.indexOf(authorizedStep);
 
     const updateRoleApproval = async (
       role,
@@ -2897,6 +1779,7 @@ const processCapexApproval = async (data) => {
 
     console.error("CAPEX Approval Error:", error.message);
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
 
     if (retryResponse) {
@@ -2911,116 +1794,6 @@ const processCapexApproval = async (data) => {
   }
 };
 
-// ============================================================ Report SQL (Summary and other reports Helpers)
-// PostgreSQL derives effective status and aggregates authorized CAPEX records.
-const REPORT_DATA_CTE = `
-  WITH capex_data AS
-  (
-    SELECT
-      cm.CapexID,
-      cm.OrganizationID,
-      cm.Department,
-      cm.CreatedDate,
-      COALESCE(cm.Total, 0)::numeric AS Total,
-
-      CASE
-
-        -- ====================================================
-        -- 1. VOID
-        -- ====================================================
-        WHEN cm.IsVoid = TRUE
-          THEN 'Void'
-
-        -- ====================================================
-        -- 2. REJECTED
-        -- ====================================================
-        WHEN
-          UPPER(COALESCE(ca.GMStatus, '')) = 'REJECTED'
-          OR UPPER(COALESCE(ca.CEOStatus, '')) = 'REJECTED'
-          OR UPPER(COALESCE(ca.OwnerStatus, '')) = 'REJECTED'
-          OR UPPER(COALESCE(ca.FinalStatus, '')) = 'REJECTED'
-        THEN 'Rejected'
-
-        -- ====================================================
-        -- 3. RETURNED
-        -- ====================================================
-        WHEN
-          UPPER(COALESCE(ca.GMStatus, '')) = 'RETURNED'
-          OR UPPER(COALESCE(ca.CEOStatus, '')) = 'RETURNED'
-          OR UPPER(COALESCE(ca.OwnerStatus, '')) = 'RETURNED'
-          OR UPPER(COALESCE(ca.FinalStatus, '')) = 'RETURNED'
-        THEN 'Returned'
-
-        -- ====================================================
-        -- 4. FINALLY APPROVED
-        -- ====================================================
-        WHEN UPPER(COALESCE(ca.FinalStatus, '')) = 'APPROVED'
-        THEN 'Approved'
-
-        -- ====================================================
-        -- 5. OTHERWISE PENDING
-        -- ====================================================
-        ELSE 'Pending'
-
-      END AS Status
-
-    FROM Capex_Master cm
-
-    LEFT JOIN Capex_Approval ca
-      ON ca.CapexID = cm.CapexID
-      AND ca.IsDeleted = FALSE
-
-    WHERE cm.IsDeleted = FALSE
-
-      -- ====================================================
-      -- OPTIONAL ORGANIZATION FILTER
-      --
-      -- $1 = NULL
-      --     => ALL organizations
-      --
-      -- $1 = 10
-      --     => ONLY organization 10
-      -- ====================================================
-      AND (
-        $1::bigint IS NULL
-        OR cm.OrganizationID = $1::bigint
-      )
-  )
-`;
-// Keep parameter positions identical for every report query.
-const reportParameters = (data) => {
-  const filters = data.Filters || {};
-
-  return [filters.OrganizationID ?? null];
-};
-
-const departmentReportParameters = (data) => {
-  const filters = data.Filters || {};
-
-  return [
-    filters.OrganizationID ?? null,
-    filters.Department || null,
-    filters.FromDate || null,
-    filters.ToDate || null,
-  ];
-};
-
-const organizationReportParameters = (data) => {
-  const filters = data.Filters || {};
-
-  return [
-    filters.OrganizationID ?? null,
-    filters.FromDate || null,
-    filters.ToDate || null,
-  ];
-};
-// Read/report failures return synchronously; they are not background-retried.
-const reportFailure = (error, reportName) => {
-  console.error(`${reportName} Error:`, error.message);
-
-  return fail(`Unable to generate ${reportName} at this time.`, 503);
-};
-// Keep both role-scoped and organization-wide summaries on the same API shape.
 const capexSummaryData = (row) => ({
   TotalCapex: Number(row.totalcapex),
   TotalAmount: Number(row.totalamount),
@@ -3040,210 +1813,10 @@ const capexSummaryData = (row) => ({
 // ============================================================ Summary Report
 const getCapexSummaryReport = async (data) => {
   try {
-    const OrganizationID = Number(data?.Filters?.OrganizationID);
-    const UserType = String(data.UserType || "")
-      .trim()
-      .toUpperCase();
-
-    if (!Number.isSafeInteger(OrganizationID) || OrganizationID < 1) {
-      return fail("OrganizationID is required.", 400);
-    }
-
-    if (!APPROVAL_ROLES.has(UserType)) {
-      const result = await pool.query(
-        `
-        WITH organization_capex AS
-        (
-          SELECT
-            COALESCE(cm.Total, 0)::numeric AS Total,
-            CASE
-              WHEN cm.IsVoid = TRUE THEN 'Void'
-              WHEN UPPER(COALESCE(ca.FinalStatus, 'PENDING')) = 'APPROVED' THEN 'Approved'
-              WHEN UPPER(COALESCE(ca.FinalStatus, 'PENDING')) = 'REJECTED' THEN 'Rejected'
-              WHEN UPPER(COALESCE(ca.FinalStatus, 'PENDING')) = 'HOLD' THEN 'Hold'
-              WHEN UPPER(COALESCE(ca.FinalStatus, 'PENDING')) = 'RETURNED' THEN 'Returned'
-              ELSE 'Pending'
-            END AS Status
-          FROM Capex_Master cm
-          LEFT JOIN Capex_Approval ca
-            ON ca.CapexID = cm.CapexID
-           AND ca.IsDeleted = FALSE
-          WHERE cm.OrganizationID = $1
-            AND cm.IsDeleted = FALSE
-        )
-        SELECT
-          COUNT(*)::bigint AS TotalCapex,
-          COALESCE(SUM(Total), 0) AS TotalAmount,
-          COUNT(*) FILTER (WHERE Status = 'Pending')::bigint AS PendingCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Pending'), 0) AS PendingAmount,
-          COUNT(*) FILTER (WHERE Status = 'Approved')::bigint AS ApprovedCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Approved'), 0) AS ApprovedAmount,
-          COUNT(*) FILTER (WHERE Status = 'Rejected')::bigint AS RejectedCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Rejected'), 0) AS RejectedAmount,
-          COUNT(*) FILTER (WHERE Status = 'Hold')::bigint AS HoldCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Hold'), 0) AS HoldAmount,
-          COUNT(*) FILTER (WHERE Status = 'Returned')::bigint AS ReturnedCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Returned'), 0) AS ReturnedAmount,
-          COUNT(*) FILTER (WHERE Status = 'Void')::bigint AS VoidCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Void'), 0) AS VoidAmount
-        FROM organization_capex;
-        `,
-        [OrganizationID],
-      );
-
-      return {
-        success: true,
-        message: "CAPEX summary report fetched successfully.",
-        data: capexSummaryData(result.rows[0]),
-      };
-    }
-
-    const result = await pool.query(
-      `
-      WITH role_capex AS
-      (
-        SELECT
-          cm.CapexID,
-          COALESCE(cm.Total, 0)::numeric AS Total,
-          cm.IsVoid,
-          UPPER(COALESCE(ca.FinalStatus, 'PENDING')) AS FinalStatus,
-
-          UPPER(COALESCE(
-            CASE $2::text
-              WHEN 'GM' THEN ca.GMStatus
-              WHEN 'CEO' THEN ca.CEOStatus
-              WHEN 'OWNER' THEN ca.OwnerStatus
-            END,
-            'PENDING'
-          )) AS RoleStatus,
-
-          UPPER(COALESCE(current_stage.ApprovalRole, '')) AS CurrentApprovalRole,
-          UPPER(COALESCE(current_stage.Status, 'PENDING')) AS CurrentStageStatus
-
-        FROM Capex_Master cm
-
-        LEFT JOIN Capex_Approval ca
-          ON ca.CapexID = cm.CapexID
-         AND ca.IsDeleted = FALSE
-
-        LEFT JOIN LATERAL
-        (
-          SELECT
-            cfg.ApprovalRole,
-            CASE UPPER(cfg.ApprovalRole)
-              WHEN 'GM' THEN COALESCE(ca.GMStatus, 'Pending')
-              WHEN 'CEO' THEN COALESCE(ca.CEOStatus, 'Pending')
-              WHEN 'OWNER' THEN COALESCE(ca.OwnerStatus, 'Pending')
-            END AS Status,
-            cfg.ApprovalLevel,
-            cfg.ApprovalOrder
-          FROM
-          (
-            SELECT
-              configured.ApprovalLevel,
-              configured.ApprovalRole,
-              configured.ApprovalOrder
-            FROM Capex_Approval_Config configured
-            WHERE configured.OrganizationID = cm.OrganizationID
-              AND configured.IsDeleted = FALSE
-
-            UNION ALL
-
-            SELECT
-              defaults.ApprovalLevel,
-              defaults.ApprovalRole,
-              defaults.ApprovalOrder
-            FROM
-            (
-              VALUES
-                (1, 'GM', 1),
-                (2, 'CEO', 2),
-                (3, 'OWNER', 3)
-            ) defaults(ApprovalLevel, ApprovalRole, ApprovalOrder)
-            WHERE NOT EXISTS
-            (
-              SELECT 1
-              FROM Capex_Approval_Config configured
-              WHERE configured.OrganizationID = cm.OrganizationID
-                AND configured.IsDeleted = FALSE
-            )
-          ) cfg
-          WHERE UPPER(
-            CASE UPPER(cfg.ApprovalRole)
-              WHEN 'GM' THEN COALESCE(ca.GMStatus, 'Pending')
-              WHEN 'CEO' THEN COALESCE(ca.CEOStatus, 'Pending')
-              WHEN 'OWNER' THEN COALESCE(ca.OwnerStatus, 'Pending')
-            END
-          ) NOT IN ('APPROVED', 'REJECTED')
-          ORDER BY cfg.ApprovalOrder ASC, cfg.ApprovalLevel ASC
-          LIMIT 1
-        ) current_stage ON TRUE
-
-        WHERE cm.OrganizationID = $1
-          AND cm.IsDeleted = FALSE
-      ),
-
-      visible_capex AS
-      (
-        SELECT
-          CapexID,
-          Total,
-          CASE
-            WHEN IsVoid = TRUE THEN 'Void'
-            WHEN RoleStatus = 'PENDING'
-              AND CurrentApprovalRole = $2
-              AND CurrentStageStatus = 'PENDING'
-              AND FinalStatus = 'PENDING'
-            THEN 'Pending'
-            WHEN RoleStatus = 'APPROVED' THEN 'Approved'
-            WHEN RoleStatus = 'REJECTED' THEN 'Rejected'
-            WHEN RoleStatus = 'HOLD' THEN 'Hold'
-            WHEN RoleStatus = 'RETURNED' THEN 'Returned'
-            ELSE NULL
-          END AS Status
-        FROM role_capex
-        WHERE RoleStatus IN ('APPROVED', 'REJECTED', 'HOLD', 'RETURNED')
-           OR (
-             RoleStatus = 'PENDING'
-             AND CurrentApprovalRole = $2
-             AND CurrentStageStatus = 'PENDING'
-             AND FinalStatus = 'PENDING'
-           )
-      )
-
-      SELECT
-        COUNT(*)::bigint AS TotalCapex,
-        COALESCE(SUM(Total), 0) AS TotalAmount,
-        COUNT(*) FILTER (WHERE Status = 'Pending')::bigint AS PendingCount,
-        COALESCE(SUM(Total) FILTER (WHERE Status = 'Pending'), 0) AS PendingAmount,
-        COUNT(*) FILTER (WHERE Status = 'Approved')::bigint AS ApprovedCount,
-        COALESCE(SUM(Total) FILTER (WHERE Status = 'Approved'), 0) AS ApprovedAmount,
-        COUNT(*) FILTER (WHERE Status = 'Rejected')::bigint AS RejectedCount,
-        COALESCE(SUM(Total) FILTER (WHERE Status = 'Rejected'), 0) AS RejectedAmount,
-        COUNT(*) FILTER (WHERE Status = 'Hold')::bigint AS HoldCount,
-        COALESCE(SUM(Total) FILTER (WHERE Status = 'Hold'), 0) AS HoldAmount,
-        COUNT(*) FILTER (WHERE Status = 'Returned')::bigint AS ReturnedCount,
-        COALESCE(SUM(Total) FILTER (WHERE Status = 'Returned'), 0) AS ReturnedAmount,
-        COUNT(*) FILTER (WHERE Status = 'Void')::bigint AS VoidCount,
-        COALESCE(SUM(Total) FILTER (WHERE Status = 'Void'), 0) AS VoidAmount
-      FROM visible_capex
-      WHERE Status IS NOT NULL;
-      `,
-      [OrganizationID, UserType],
-    );
-
-    const row = result.rows[0];
-
-    return {
-      success: true,
-
-      message: "CAPEX summary report fetched successfully.",
-
-      data: capexSummaryData(row),
-    };
-  } catch (error) {
-    return reportFailure(error, "CAPEX summary report");
-  }
+    const [row] = await CapexWorkflowRead.report(data);
+    return { success: true, message: "CAPEX summary report fetched successfully.",
+      data: capexSummaryData({ ...row, totalcapex: row.count }) };
+  } catch (error) { return fail(error.message, error.statusCode || 503); }
 };
 // ===========================================================================(Department and Organization Reports Helpers)
 // Normalize grouped PostgreSQL results into the public API response shape.
@@ -3264,104 +1837,18 @@ const groupedReportRows = (rows, groupField) =>
 // ============================================================ Department Report
 const getCapexDepartmentReport = async (data) => {
   try {
-    const result = await pool.query(
-      `${REPORT_DATA_CTE}
-       SELECT
-         COALESCE(Department, 'Unspecified') AS Department,
-         COUNT(*)::bigint AS Count,
-         COALESCE(SUM(Total), 0) AS TotalAmount,
-         COUNT(*) FILTER (WHERE Status = 'Approved')::bigint AS ApprovedCount,
-         COUNT(*) FILTER (WHERE Status = 'Pending')::bigint AS PendingCount,
-         COUNT(*) FILTER (WHERE Status = 'Rejected')::bigint AS RejectedCount,
-         COUNT(*) FILTER (WHERE Status = 'Hold')::bigint AS HoldCount,
-         COUNT(*) FILTER (WHERE Status = 'Returned')::bigint AS ReturnedCount
-       FROM capex_data
-       WHERE ($2::text IS NULL OR LOWER(TRIM(COALESCE(Department, 'Unspecified'))) = LOWER(TRIM($2::text)))
-         AND ($3::date IS NULL OR CreatedDate >= $3::date)
-         AND ($4::date IS NULL OR CreatedDate < ($4::date + INTERVAL '1 day'))
-       GROUP BY COALESCE(Department, 'Unspecified')
-       ORDER BY COALESCE(Department, 'Unspecified') ASC;`,
-      departmentReportParameters(data),
-    );
-
-    return {
-      success: true,
-      message: "CAPEX department report fetched successfully.",
-      data: groupedReportRows(result.rows, "Department"),
-    };
-  } catch (error) {
-    return reportFailure(error, "CAPEX department report");
-  }
+    const rows = await CapexWorkflowRead.report(data, "department");
+    return { success: true, message: "CAPEX department report fetched successfully.",
+      data: groupedReportRows(rows, "Department") };
+  } catch (error) { return fail(error.message, error.statusCode || 503); }
 };
 // ============================================================ Organization Report
 const getCapexOrganizationReport = async (data) => {
   try {
-    const result = await pool.query(
-      `${REPORT_DATA_CTE}
-       SELECT
-         cm.OrganizationID,
-         COALESCE(om.ShortName, 'Unspecified') AS ShortName,
-
-         COUNT(*)::bigint AS Count,
-
-         COALESCE(SUM(cm.Total), 0) AS TotalAmount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Approved'
-         )::bigint AS ApprovedCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Pending'
-         )::bigint AS PendingCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Rejected'
-         )::bigint AS RejectedCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Hold'
-         )::bigint AS HoldCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Returned'
-         )::bigint AS ReturnedCount
-
-       FROM capex_data cm
-
-       LEFT JOIN Organization_Master om
-         ON om.OrganizationID = cm.OrganizationID
-         AND om.IsDeleted = FALSE
-
-       WHERE ($2::date IS NULL OR cm.CreatedDate >= $2::date)
-         AND ($3::date IS NULL OR cm.CreatedDate < ($3::date + INTERVAL '1 day'))
-
-       GROUP BY
-         cm.OrganizationID,
-         om.ShortName
-
-       ORDER BY
-         cm.OrganizationID ASC;`,
-      organizationReportParameters(data),
-    );
-
-    return {
-      success: true,
-      message: "CAPEX organization report fetched successfully.",
-      data: result.rows.map((row) => ({
-        OrganizationID: Number(row.organizationid),
-        ShortName: row.shortname,
-        Count: Number(row.count),
-        TotalAmount: Number(row.totalamount),
-        ApprovedCount: Number(row.approvedcount),
-        PendingCount: Number(row.pendingcount),
-        RejectedCount: Number(row.rejectedcount),
-        HoldCount: Number(row.holdcount),
-        ReturnedCount: Number(row.returnedcount),
-      })),
-    };
-  } catch (error) {
-    return reportFailure(error, "CAPEX organization report");
-  }
+    const rows = await CapexWorkflowRead.report(data, "organization");
+    return { success: true, message: "CAPEX organization report fetched successfully.",
+      data: groupedReportRows(rows, "OrganizationID").map((row, i) => ({ ...row, ShortName: rows[i].shortname })) };
+  } catch (error) { return fail(error.message, error.statusCode || 503); }
 };
 
 // ============================================================ Get Approval Config
@@ -3422,6 +1909,7 @@ const getApprovalConfig = async (data) => {
   } catch (error) {
     console.error("Get CAPEX Approval Config Error:", error.message);
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
     if (retryResponse) return retryResponse;
 
@@ -3748,6 +2236,7 @@ const createApprovalConfig = async (data) => {
 
     console.error("Save CAPEX Approval Config Error:", error.message);
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
 
     if (retryResponse) return retryResponse;
@@ -3826,6 +2315,7 @@ const deleteApprovalConfig = async (data) => {
 
     console.error("Delete CAPEX Approval Config Error:", error.message);
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
     if (retryResponse) return retryResponse;
 
@@ -3841,326 +2331,10 @@ const deleteApprovalConfig = async (data) => {
 // ============================================================Generate CAPEX List PDF
 const generateCapexListPdfDocument = async (data) => {
   try {
-    const userType = data.UserType ? String(data.UserType).toUpperCase() : null;
-
-    const approvalStatus = data.Status
-      ? String(data.Status).toUpperCase()
-      : null;
-
-    const approvalFlow = data.ApprovalFlow
-      ? String(data.ApprovalFlow).trim().toUpperCase()
-      : null;
-
-    const validStatuses = [
-      "PENDING",
-      "APPROVED",
-      "REJECTED",
-      "HOLD",
-      "RETURNED",
-    ];
-
-    if (approvalStatus && !validStatuses.includes(approvalStatus)) {
-      return {
-        success: false,
-        message:
-          "Status must be Pending, Approved, Rejected, Hold, or Returned.",
-        statusCode: 400,
-      };
-    }
-
-    if (approvalFlow && !APPROVAL_ROLES.has(approvalFlow)) {
-      return fail("ApprovalFlow must be GM, CEO, or OWNER.", 400);
-    }
-
-    const visibilityStatus = approvalFlow ? null : approvalStatus;
-
-    // ============================================================
-    // PDF QUERY
-    // Same CAPEX_SELECT + same filters as getAllCapex
-    // NO LIMIT / OFFSET
-    // ============================================================
-
-    let query = `
-      ${CAPEX_SELECT}
-    `;
-
-    const params = [];
-
-    // ============================================================
-    // ORGANIZATION FILTER
-    // ============================================================
-
-    if (data.OrganizationID !== null && data.OrganizationID !== undefined) {
-      params.push(data.OrganizationID);
-
-      query += `
-        AND cm.OrganizationID = $${params.length}
-      `;
-    }
-
-    if (data.Department) {
-      params.push(String(data.Department).trim());
-      query += `
-        AND LOWER(TRIM(cm.Department)) = LOWER($${params.length})
-      `;
-    }
-
-    if (data.FromDate) {
-      params.push(data.FromDate);
-      query += ` AND cm.CreatedDate >= $${params.length}::date `;
-    }
-
-    if (data.ToDate) {
-      params.push(data.ToDate);
-      query += ` AND cm.CreatedDate < ($${params.length}::date + INTERVAL '1 day') `;
-    }
-
-    query = appendCapexApprovalFlowFilter(
-      query,
-      params,
-      approvalFlow,
-      approvalStatus,
-    );
-
-    // ============================================================
-    // STATUS FILTER
-    // ============================================================
-
-    if (["GM", "CEO", "OWNER"].includes(userType)) {
-      // ----------------------------------------------------------
-      // GM
-      // ----------------------------------------------------------
-
-      if (userType === "GM") {
-        if (visibilityStatus === "PENDING") {
-          params.push("GM");
-
-          query += `
-            AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = $${params.length}
-            AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-          `;
-        } else if (visibilityStatus) {
-          params.push(visibilityStatus);
-
-          query += `
-            AND UPPER(
-              COALESCE(
-                approval_state.GMStatus,
-                'PENDING'
-              )
-            ) = $${params.length}
-          `;
-        } else {
-          params.push("GM");
-
-          query += `
-            AND UPPER(
-              COALESCE(
-                current_stage.ApprovalRole,
-                ''
-              )
-            ) = $${params.length}
-
-            AND UPPER(
-              COALESCE(
-                current_stage.Status,
-                'PENDING'
-              )
-            ) = 'PENDING'
-          `;
-        }
-      }
-
-      // ----------------------------------------------------------
-      // CEO
-      // ----------------------------------------------------------
-      else if (userType === "CEO") {
-        if (visibilityStatus === "PENDING") {
-          params.push("CEO");
-
-          query += `
-            AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = $${params.length}
-            AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-          `;
-        } else if (visibilityStatus) {
-          params.push(visibilityStatus);
-
-          query += `
-            AND UPPER(
-              COALESCE(
-                approval_state.CEOStatus,
-                'PENDING'
-              )
-            ) = $${params.length}
-          `;
-        } else {
-          params.push("CEO");
-
-          query += `
-            AND UPPER(
-              COALESCE(
-                current_stage.ApprovalRole,
-                ''
-              )
-            ) = $${params.length}
-
-            AND UPPER(
-              COALESCE(
-                current_stage.Status,
-                'PENDING'
-              )
-            ) = 'PENDING'
-          `;
-        }
-      }
-
-      // ----------------------------------------------------------
-      // OWNER
-      // ----------------------------------------------------------
-      else if (userType === "OWNER") {
-        if (visibilityStatus === "PENDING") {
-          params.push("OWNER");
-
-          query += `
-            AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = $${params.length}
-            AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-          `;
-        } else if (visibilityStatus) {
-          params.push(visibilityStatus);
-
-          query += `
-            AND UPPER(
-              COALESCE(
-                approval_state.OwnerStatus,
-                'PENDING'
-              )
-            ) = $${params.length}
-          `;
-        } else {
-          params.push("OWNER");
-
-          query += `
-            AND UPPER(
-              COALESCE(
-                current_stage.ApprovalRole,
-                ''
-              )
-            ) = $${params.length}
-
-            AND UPPER(
-              COALESCE(
-                current_stage.Status,
-                'PENDING'
-              )
-            ) = 'PENDING'
-          `;
-        }
-      }
-    }
-
-    // ============================================================
-    // HOD
-    // ============================================================
-    else if (userType === "HOD") {
-      if (["REJECTED", "HOLD", "RETURNED"].includes(visibilityStatus)) {
-        params.push(visibilityStatus);
-
-        query += `
-          AND (
-            UPPER(COALESCE(approval_state.GMStatus, '')) = $${params.length}
-            OR
-            UPPER(COALESCE(approval_state.CEOStatus, '')) = $${params.length}
-            OR
-            UPPER(COALESCE(approval_state.OwnerStatus, '')) = $${params.length}
-            OR
-            UPPER(COALESCE(approval_state.FinalStatus, '')) = $${params.length}
-          )
-        `;
-      } else if (visibilityStatus === "APPROVED") {
-        query += `
-          AND UPPER(
-            COALESCE(approval_state.GMStatus, 'PENDING')
-          ) = 'APPROVED'
-
-          AND UPPER(
-            COALESCE(approval_state.CEOStatus, 'PENDING')
-          ) = 'APPROVED'
-
-          AND UPPER(
-            COALESCE(approval_state.OwnerStatus, 'PENDING')
-          ) = 'APPROVED'
-        `;
-      } else if (visibilityStatus === "PENDING") {
-        query += `
-          AND NOT (
-            UPPER(COALESCE(approval_state.GMStatus, ''))
-              IN ('REJECTED', 'HOLD', 'RETURNED')
-
-            OR
-
-            UPPER(COALESCE(approval_state.CEOStatus, ''))
-              IN ('REJECTED', 'HOLD', 'RETURNED')
-
-            OR
-
-            UPPER(COALESCE(approval_state.OwnerStatus, ''))
-              IN ('REJECTED', 'HOLD', 'RETURNED')
-
-            OR
-
-            UPPER(COALESCE(approval_state.FinalStatus, ''))
-              IN ('REJECTED', 'HOLD', 'RETURNED', 'APPROVED')
-          )
-
-          AND (
-            UPPER(COALESCE(approval_state.GMStatus, 'PENDING'))
-              <> 'APPROVED'
-
-            OR
-
-            UPPER(COALESCE(approval_state.CEOStatus, 'PENDING'))
-              <> 'APPROVED'
-
-            OR
-
-            UPPER(COALESCE(approval_state.OwnerStatus, 'PENDING'))
-              <> 'APPROVED'
-          )
-        `;
-      }
-    }
-
-    // ============================================================
-    // ORDER
-    // ============================================================
-
-    query += `
-      ORDER BY
-        cm.CreatedDate DESC,
-        cm.CapexID DESC;
-    `;
-
-    // ============================================================
-    // GET DATA
-    // ============================================================
-
-    let capexRows;
-
-    if (Array.isArray(data.PreparedRows)) {
-      capexRows = data.PreparedRows;
-    } else {
-      const result = await pool.query(query, params);
-
-      // ============================================================
-      // ATTACH DOCUMENTS / APPROVALS
-      // ============================================================
-
-      capexRows = await attachRelatedData(result.rows);
-    }
-
-    // ============================================================
-    // ORGANIZATION
-    // ============================================================
+    const approvalStatus = data.Status || null;
+    const approvalFlow = data.ApprovalFlow || null;
+    if (!Array.isArray(data.PreparedRows)) throw new Error("Prepared CAPEX rows are required");
+    const capexRows = data.PreparedRows;
 
     const organizationId =
       data.OrganizationID || capexRows[0]?.OrganizationID || null;
@@ -4173,7 +2347,7 @@ const generateCapexListPdfDocument = async (data) => {
 
     for (const row of capexRows) {
       for (const approval of row.Approvals || []) {
-        const role = String(approval.ApprovalRole || "").trim().toUpperCase();
+        const role = approval.ColumnKey || String(approval.ApprovalRole || "").trim().toUpperCase();
         if (role && !approvalRoles.includes(role)) approvalRoles.push(role);
       }
     }
@@ -4186,7 +2360,7 @@ const generateCapexListPdfDocument = async (data) => {
     const approvalValue = (row, role) => {
       const approval = (row.Approvals || []).find(
         (item) =>
-          String(item.ApprovalRole || "").trim().toUpperCase() === role,
+          (item.ColumnKey || String(item.ApprovalRole || "").trim().toUpperCase()) === role,
       );
 
       if (!approval) return "-";
@@ -4254,7 +2428,7 @@ const generateCapexListPdfDocument = async (data) => {
         align: "left",
       },
       ...approvalRoles.map((role) => ({
-        header: role,
+        header: capexRows.flatMap(row => row.Approvals || []).find(item => item.ColumnKey === role)?.ApprovalType || role,
         value: (row) => approvalValue(row, role),
         width: 72,
         align: "left",
@@ -4392,35 +2566,7 @@ const generateCapexListPdf = async (data) => {
 const getCapexDepartmentReportPdf = async (data) => {
   try {
     // Same report query as Department Report API
-    const result = await pool.query(
-      `${REPORT_DATA_CTE}
-       SELECT
-         COALESCE(Department, 'Unspecified') AS Department,
-         COUNT(*)::bigint AS Count,
-         COALESCE(SUM(Total), 0) AS TotalAmount,
-         COUNT(*) FILTER (
-           WHERE Status = 'Approved'
-         )::bigint AS ApprovedCount,
-         COUNT(*) FILTER (
-           WHERE Status = 'Pending'
-         )::bigint AS PendingCount,
-         COUNT(*) FILTER (
-           WHERE Status = 'Rejected'
-         )::bigint AS RejectedCount,
-         COUNT(*) FILTER (
-           WHERE Status = 'Hold'
-         )::bigint AS HoldCount,
-         COUNT(*) FILTER (
-           WHERE Status = 'Returned'
-         )::bigint AS ReturnedCount
-       FROM capex_data
-       WHERE ($2::text IS NULL OR LOWER(TRIM(COALESCE(Department, 'Unspecified'))) = LOWER(TRIM($2::text)))
-         AND ($3::date IS NULL OR CreatedDate >= $3::date)
-         AND ($4::date IS NULL OR CreatedDate < ($4::date + INTERVAL '1 day'))
-       GROUP BY COALESCE(Department, 'Unspecified')
-       ORDER BY COALESCE(Department, 'Unspecified') ASC;`,
-      departmentReportParameters(data),
-    );
+    const result = { rows: await CapexWorkflowRead.report(data, "department") };
 
     const rows = result.rows;
 const organizationId = data?.Filters?.OrganizationID || null;
@@ -4540,53 +2686,7 @@ if (organizationId) {
 // ============================================================ Organization Report PDF
 const getCapexOrganizationReportPdf = async (data) => {
   try {
-    const result = await pool.query(
-      `${REPORT_DATA_CTE}
-       SELECT
-         cm.OrganizationID,
-         COALESCE(om.ShortName, 'Unspecified') AS ShortName,
-
-         COUNT(*)::bigint AS Count,
-
-         COALESCE(SUM(cm.Total), 0) AS TotalAmount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Approved'
-         )::bigint AS ApprovedCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Pending'
-         )::bigint AS PendingCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Rejected'
-         )::bigint AS RejectedCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Hold'
-         )::bigint AS HoldCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Returned'
-         )::bigint AS ReturnedCount
-
-       FROM capex_data cm
-
-       LEFT JOIN Organization_Master om
-         ON om.OrganizationID = cm.OrganizationID
-         AND om.IsDeleted = FALSE
-
-       WHERE ($2::date IS NULL OR cm.CreatedDate >= $2::date)
-         AND ($3::date IS NULL OR cm.CreatedDate < ($3::date + INTERVAL '1 day'))
-
-       GROUP BY
-         cm.OrganizationID,
-         om.ShortName
-
-       ORDER BY
-         cm.OrganizationID ASC;`,
-      organizationReportParameters(data),
-    );
+    const result = { rows: await CapexWorkflowRead.report(data, "organization") };
 
     const rows = result.rows;
 
@@ -4735,23 +2835,9 @@ const generateCapexByIdPdf = async (data) => {
     // ==========================================================
     // FETCH CAPEX
     // ==========================================================
-    const result = await pool.query(
-      `
-      ${CAPEX_SELECT}
-      AND cm.CapexID = $1
-      LIMIT 1;
-      `,
-      [capexID],
-    );
-
-    if (result.rows.length === 0) {
-      return fail("CAPEX record not found.", 404);
-    }
-
-    // ==========================================================
-    // ATTACH RELATED DATA
-    // ==========================================================
-    const [capex] = await attachRelatedData(result.rows);
+    const detailResponse = await getCapexById({ ...data, CapexID: capexID });
+    if (!detailResponse.success) return detailResponse;
+    const capex = detailResponse.data;
 
     const approvals = Array.isArray(capex.Approvals)
       ? capex.Approvals
