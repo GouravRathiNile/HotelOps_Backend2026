@@ -2,12 +2,10 @@ const { pool } = require("../../db");
 const generateUrl = require("../../AzurConfigration/ITAdmin/UserMaster/AzureGetData");
 const { formatDate } = require("../../utils/dateFormatter");
 const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
 const { retryableDatabaseResponse } = require("../../utils/retryableDatabaseError");
 
 
-// ============================================================
-// CREATE USER
-// ============================================================
 // ============================================================
 // CREATE USER
 // ============================================================
@@ -1283,7 +1281,6 @@ const deleteUser = async (data) => {
 // ============================================================
 // GET ALL USERS
 // ============================================================
-
 const getAllUsers = async (page = 1, limit = 10) => {
 
   try {
@@ -1791,7 +1788,6 @@ const getAllUsers = async (page = 1, limit = 10) => {
   }
 
 };
-
 // ============================================================GET USER BY ID
 const getUserById = async (data) => {
   try {
@@ -2085,12 +2081,6 @@ WHERE um.UserID = $1
   }
 };
 // ============================================================ GET USER DROPDOWN
-// Filters:
-// OrganizationID
-// Username
-// FullName
-// ============================================================
-
 const getUserDropdown = async (
   OrganizationID,
   Username,
@@ -8233,7 +8223,638 @@ const updateUserProducts = async (
 
   }
 };
+// ============================================================
+// BLOCK USER
+// ============================================================
+const blockUser = async (data) => {
+  const client = await pool.connect();
 
+  try {
+    await client.query("BEGIN");
+
+    const {
+      UserID,
+      ModifiedBy,
+      Reason,
+    } = data;
+
+    // ========================================================
+    // VALIDATE USER ID
+    // ========================================================
+
+    const userID = Number(UserID);
+
+    if (
+      !Number.isInteger(userID) ||
+      userID <= 0
+    ) {
+      throw new Error(
+        "Valid UserID is required"
+      );
+    }
+
+    // ========================================================
+    // CHECK USER
+    // ========================================================
+
+    const userResult = await client.query(
+      `
+      SELECT
+        UserID,
+        Username,
+        FullName,
+        IsLocked,
+        IsActive,
+        IsDeleted
+
+      FROM user_master
+
+      WHERE UserID = $1
+        AND IsDeleted = FALSE
+
+      LIMIT 1;
+      `,
+      [userID]
+    );
+
+    if (userResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+
+      return {
+        success: false,
+        statusCode: 404,
+        message: "User not found",
+      };
+    }
+
+    const user = userResult.rows[0];
+
+    // ========================================================
+    // ALREADY BLOCKED
+    // ========================================================
+
+    if (user.islocked === true) {
+      await client.query("ROLLBACK");
+
+      return {
+        success: false,
+        statusCode: 400,
+        message: "User is already blocked",
+      };
+    }
+
+    // ========================================================
+    // 1. BLOCK USER
+    // ========================================================
+
+    await client.query(
+      `
+      UPDATE user_master
+
+      SET
+        IsLocked = TRUE,
+        ModifiedBy = $1,
+        ModifiedDate = CURRENT_TIMESTAMP
+
+      WHERE UserID = $2
+        AND IsDeleted = FALSE;
+      `,
+      [
+        ModifiedBy || userID,
+        userID,
+      ]
+    );
+
+    // ========================================================
+    // 2. LOGOUT FROM ALL DEVICES
+    // ========================================================
+
+    await client.query(
+      `
+      UPDATE user_device
+
+      SET
+        IsActive = FALSE,
+        ModifiedBy = $1,
+        ModifiedDate = CURRENT_TIMESTAMP
+
+      WHERE UserID = $2
+        AND IsDeleted = FALSE;
+      `,
+      [
+        ModifiedBy || userID,
+        userID,
+      ]
+    );
+
+    // ========================================================
+    // COMMIT
+    // ========================================================
+
+    await client.query("COMMIT");
+
+    return {
+      success: true,
+
+      message:
+        "User blocked and logged out from all devices successfully",
+
+      data: {
+        UserID: userID,
+        Username: user.username,
+        FullName: user.fullname,
+        IsLocked: true,
+        Reason: Reason || null,
+      },
+    };
+
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    console.log(
+      "Block User Error:",
+      error.message
+    );
+
+    return {
+      success: false,
+      statusCode: 500,
+      message: error.message,
+    };
+
+  } finally {
+    client.release();
+  }
+};
+// ============================================================User Details by Token
+const verifyTokenAndRegisterDevice = async (data) => {
+  try {
+
+    const {
+      Token,
+      DeviceID,
+      DeviceToken,
+      DeviceType,
+    } = data;
+
+
+    // ========================================================
+    // VALIDATION
+    // ========================================================
+
+    if (!Token) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Token is required",
+      };
+    }
+
+    if (!DeviceID) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Device ID is required",
+      };
+    }
+
+    if (!DeviceToken) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Device Token is required",
+      };
+    }
+
+    if (!DeviceType) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Device Type is required",
+      };
+    }
+
+
+    // ========================================================
+    // VERIFY JWT
+    // ========================================================
+
+    let decoded;
+
+    try {
+
+      decoded = jwt.verify(
+        Token,
+        process.env.JWT_SECRET
+      );
+
+    } catch (error) {
+
+      return {
+        success: false,
+        statusCode: 401,
+        message:
+          "Invalid or expired authentication token",
+      };
+
+    }
+
+
+    // ========================================================
+    // VALIDATE JWT CLAIMS
+    // ========================================================
+
+    if (
+      !decoded.UserID ||
+      !decoded.jti
+    ) {
+
+      return {
+        success: false,
+        statusCode: 401,
+        message:
+          "Invalid authentication token",
+      };
+
+    }
+
+
+    // ========================================================
+    // CHECK BLACKLIST
+    // ========================================================
+
+    const blacklistResult =
+      await pool.query(
+        `
+        SELECT
+          TokenBlacklistID
+
+        FROM auth_token_blacklist
+
+        WHERE JTI = $1
+          AND IsActive = TRUE
+          AND TokenExpiresAt > CURRENT_TIMESTAMP
+
+        LIMIT 1;
+        `,
+        [
+          decoded.jti
+        ]
+      );
+
+
+    if (
+      blacklistResult.rows.length > 0
+    ) {
+
+      return {
+        success: false,
+        statusCode: 401,
+        message:
+          "Authentication token has been revoked",
+      };
+
+    }
+
+
+    // ========================================================
+    // GET USER DETAILS
+    // ========================================================
+
+    const userResult =
+      await pool.query(
+        `
+        SELECT
+
+          um.UserID,
+          um.EmployeeCode,
+          um.Username,
+          um.FullName,
+          um.Designation,
+
+          um.DepartmentID,
+          dm.DepartmentName,
+
+          um.DivisionID,
+          dv.DivisionName,
+
+          um.LoginType,
+          um.UserType,
+
+          um.Email,
+          um.PhoneNumber,
+          um.Gender,
+
+          um.ProfilePhoto,
+
+          um.AllOrganizationAccess,
+
+          um.IsLocked,
+          um.IsActive,
+          um.IsDeleted,
+
+          um.DateOfJoining,
+
+          upo.OrganizationID
+            AS PrimaryOrganizationID,
+
+          om.OrganizationCode
+            AS PrimaryOrganizationCode,
+
+          om.OrganizationName
+            AS PrimaryOrganizationName,
+
+          om.ShortName
+            AS PrimaryOrganizationShortName
+
+        FROM user_master um
+
+        LEFT JOIN Department_Master dm
+          ON dm.DepartmentID =
+             um.DepartmentID
+
+        LEFT JOIN Division_Master dv
+          ON dv.DivisionID =
+             um.DivisionID
+
+        LEFT JOIN user_primary_organization upo
+          ON upo.UserID =
+             um.UserID
+          AND upo.IsActive = TRUE
+          AND upo.IsDeleted = FALSE
+
+        LEFT JOIN Organization_Master om
+          ON om.OrganizationID =
+             upo.OrganizationID
+          AND om.IsActive = TRUE
+          AND om.IsDeleted = FALSE
+
+        WHERE um.UserID = $1
+
+        LIMIT 1;
+        `,
+        [
+          decoded.UserID
+        ]
+      );
+
+
+    // ========================================================
+    // USER NOT FOUND
+    // ========================================================
+
+    if (
+      userResult.rows.length === 0
+    ) {
+
+      return {
+        success: false,
+        statusCode: 401,
+        message: "User not found",
+      };
+
+    }
+
+
+    const user =
+      userResult.rows[0];
+
+
+    // ========================================================
+    // USER DELETED
+    // ========================================================
+
+    if (
+      user.isdeleted === true
+    ) {
+
+      return {
+        success: false,
+        statusCode: 401,
+        message:
+          "User account is deleted",
+      };
+
+    }
+
+
+    // ========================================================
+    // USER INACTIVE
+    // ========================================================
+
+    if (
+      user.isactive !== true
+    ) {
+
+      return {
+        success: false,
+        statusCode: 401,
+        message:
+          "User account is inactive",
+      };
+
+    }
+
+
+    // ========================================================
+    // USER BLOCKED
+    // ========================================================
+
+    if (
+      user.islocked === true
+    ) {
+
+      return {
+        success: false,
+        statusCode: 401,
+        message:
+          "User account is blocked",
+      };
+
+    }
+
+
+    // ========================================================
+    // REGISTER / UPDATE DEVICE
+    // ========================================================
+
+    await pool.query(
+      `
+      INSERT INTO user_device
+      (
+        UserID,
+        DeviceID,
+        DeviceToken,
+        DeviceType,
+
+        IsActive,
+        IsDeleted,
+
+        CreatedBy,
+        CreatedDate
+      )
+
+      VALUES
+      (
+        $1,
+        $2,
+        $3,
+        $4,
+
+        TRUE,
+        FALSE,
+
+        $1,
+        CURRENT_TIMESTAMP
+      )
+
+      ON CONFLICT (UserID, DeviceID)
+
+      DO UPDATE SET
+
+        DeviceToken =
+          EXCLUDED.DeviceToken,
+
+        DeviceType =
+          EXCLUDED.DeviceType,
+
+        IsActive = TRUE,
+
+        IsDeleted = FALSE,
+
+        ModifiedBy =
+          EXCLUDED.UserID,
+
+        ModifiedDate =
+          CURRENT_TIMESTAMP,
+
+        DeletedBy = NULL,
+
+        DeletedDate = NULL;
+      `,
+      [
+        user.userid,
+        DeviceID,
+        DeviceToken,
+        DeviceType,
+      ]
+    );
+
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
+
+    return {
+
+      success: true,
+
+      message:
+        "Token verified and device registered successfully",
+
+      data: {
+
+        UserID:
+          user.userid,
+
+        EmployeeCode:
+          user.employeecode,
+
+        // @Nile / @Hojo remove
+        Username:
+          user.username
+            ? String(user.username)
+                .split("@")[0]
+            : null,
+
+        FullName:
+          user.fullname,
+
+        Designation:
+          user.designation,
+
+
+        DepartmentID:
+          user.departmentid,
+
+        DepartmentName:
+          user.departmentname,
+
+
+        DivisionID:
+          user.divisionid,
+
+        DivisionName:
+          user.divisionname,
+
+
+        LoginType:
+          user.logintype,
+
+        UserType:
+          user.usertype,
+
+
+        Email:
+          user.email,
+
+        PhoneNumber:
+          user.phonenumber,
+
+        Gender:
+          user.gender,
+
+
+        ProfilePhoto:
+          user.profilephoto
+            ? generateUrl(
+                user.profilephoto
+              )
+            : null,
+
+
+        AllOrganizationAccess:
+          user.allorganizationaccess,
+
+
+        PrimaryOrganizationID:
+          user.primaryorganizationid,
+
+        PrimaryOrganizationCode:
+          user.primaryorganizationcode,
+
+        PrimaryOrganizationName:
+          user.primaryorganizationname,
+
+        PrimaryOrganizationShortName:
+          user.primaryorganizationshortname,
+
+      },
+
+    };
+
+
+  } catch (error) {
+
+    console.log(
+      "Verify Token Register Device Error:",
+      error.message
+    );
+
+
+    return {
+
+      success: false,
+
+      statusCode: 503,
+
+      message:
+        "Unable to verify user right now. Please try again later.",
+
+    };
+
+  }
+};
 // ============================================================
 // EXPORT
 // ============================================================
@@ -8251,5 +8872,7 @@ module.exports = {
   updateUserPersonalDetails,
   updateUserOrganizations,
   updateUserProducts,
-  getUserProductsList
+  getUserProductsList,
+  blockUser,
+  verifyTokenAndRegisterDevice
 };

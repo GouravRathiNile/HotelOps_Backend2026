@@ -976,6 +976,7 @@ const logout = async (data) => {
   }
 };
 
+
 module.exports = {
   verifyOrganization,
   login,

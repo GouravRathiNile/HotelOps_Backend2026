@@ -137,7 +137,65 @@ const authenticateToken = async (req, res, next) => {
         message: "Authentication token has been revoked",
       });
     }
+// ========================================================
+// Check User Status
+// ========================================================
 
+const userResult = await pool.query(
+  `
+  SELECT
+    UserID,
+    IsLocked,
+    IsActive,
+    IsDeleted
+  FROM user_master
+  WHERE UserID = $1
+  LIMIT 1;
+  `,
+  [decoded.UserID]
+);
+
+if (userResult.rows.length === 0) {
+  return res.status(STATUS_CODES.UNAUTHORIZED).json({
+    success: false,
+    message: "User not found",
+  });
+}
+
+const user = userResult.rows[0];
+
+// ========================================================
+// User Deleted
+// ========================================================
+
+if (user.isdeleted === true) {
+  return res.status(STATUS_CODES.UNAUTHORIZED).json({
+    success: false,
+    message: "User account is deleted",
+  });
+}
+
+// ========================================================
+// User Inactive
+// ========================================================
+
+if (user.isactive !== true) {
+  return res.status(STATUS_CODES.UNAUTHORIZED).json({
+    success: false,
+    message: "User account is inactive",
+  });
+}
+
+// ========================================================
+// User Blocked
+// ========================================================
+
+if (user.islocked === true) {
+  return res.status(STATUS_CODES.UNAUTHORIZED).json({
+    success: false,
+    message: "User account is blocked",
+  });
+}
     // ========================================================
     // Authentication Successful
     // ========================================================

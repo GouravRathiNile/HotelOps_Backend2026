@@ -1,66 +1,59 @@
 const UserService = require("../../services/ITAdminService/UserService");
-const { retryableDatabaseResponse } = require("../../utils/retryableDatabaseError");
+const {
+  retryableDatabaseResponse,
+} = require("../../utils/retryableDatabaseError");
 
 const UserHandler = async (message) => {
   try {
-
     switch (message.action) {
       // =========================================CREATE USER
       case "CREATE_USER":
-        return await UserService.createUser(
-          message.data
-        );
+        return await UserService.createUser(message.data);
       // =========================================DELETE USER
       case "DELETE_USER":
-        return await UserService.deleteUser(
-          message.data
-        );
+        return await UserService.deleteUser(message.data);
       // =========================================UPDATE USER
       case "UPDATE_USER":
-        return await UserService.updateUser(
-          message.data
-        );
+        return await UserService.updateUser(message.data);
       // =========================================UPDATE USER PERSONAL DETAILS
       case "UPDATE_USER_PERSONAL_DETAILS":
-        return await UserService.updateUserPersonalDetails(
-          message.data
-        );
+        return await UserService.updateUserPersonalDetails(message.data);
       // =====================================================UPDATE USER PRODUCTS
       case "UPDATE_USER_PRODUCTS":
         return await UserService.updateUserProducts(
           message.data.UserID,
           message.data.Products,
-          message.data.ModifiedBy
+          message.data.ModifiedBy,
         );
       // ===================================================== UPDATE USER ORGANIZATIONS
       case "UPDATE_USER_ORGANIZATIONS":
-
         return await UserService.updateUserOrganizations(
           message.data.UserID,
           message.data.Organizations,
           message.data.ModifiedBy,
-          message.data.AllOrganizationAccess
+          message.data.AllOrganizationAccess,
         );
+      // ============================================================
+      // BLOCK USER
+      // ============================================================
+      case "BLOCK_USER":
+        return await UserService.blockUser(message.data);
+      // ============================================================User Details by Token
 
+      case "VERIFY_TOKEN_REGISTER_DEVICE":
+        return await UserService.verifyTokenAndRegisterDevice(message.data);
       // =========================================
       // INVALID ACTION
       // =========================================
 
       default:
-
         return {
           success: false,
           message: "Invalid Action",
         };
-
     }
-
   } catch (error) {
-
-    console.log(
-      "User Handler Error :",
-      error.message
-    );
+    console.log("User Handler Error :", error.message);
 
     const retryResponse = retryableDatabaseResponse(error);
     if (retryResponse) return retryResponse;
@@ -69,9 +62,7 @@ const UserHandler = async (message) => {
       success: false,
       message: error.message,
     };
-
   }
 };
-
 
 module.exports = UserHandler;

@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const upload = require("../../middleware/upload");
 const authenticateToken = require("../../middleware/authMiddleware");
-const { createUser,getAllUsers,getUserById,getUserDropdown,updateUser,deleteUser,getUserOrganizations, getUserProducts,getUserPersonalDetails,getAllUsersTabel,updateUserPersonalDetails,updateUserOrganizations,updateUserProducts,getUserProductsList } = require("../../controllers/ITAdminController/UserController");
+const { createUser,getAllUsers,getUserById,getUserDropdown,updateUser,deleteUser,getUserOrganizations, getUserProducts,getUserPersonalDetails,getAllUsersTabel,updateUserPersonalDetails,updateUserOrganizations,updateUserProducts,getUserProductsList,blockUser,verifyTokenAndRegisterDevice } = require("../../controllers/ITAdminController/UserController");
 
 // ========================================= Create User
 router.post("/Create", authenticateToken, upload.single("ProfilePhoto"), createUser);
@@ -32,4 +32,10 @@ router.put("/UpdateUserDetails",authenticateToken,upload.single("ProfilePhoto"),
 router.put("/UpdateUserOrganizations",authenticateToken,updateUserOrganizations);
 // ============================================================UPDATE USER PRODUCTS
 router.put("/UpdateUserProducts",authenticateToken,updateUserProducts);
+// ============================================================BLOCK USER
+router.put("/blockUser",authenticateToken,blockUser);
+// ============================================================User Details by Token
+router.post("/UserDetailsByToken",verifyTokenAndRegisterDevice);
+
+
 module.exports = router;

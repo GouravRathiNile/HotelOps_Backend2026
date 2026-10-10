@@ -1720,5 +1720,287 @@ exports.updateUserProducts = async (req, res) => {
     handleError(error, res);
   }
 };
+// ============================================================
+// BLOCK USER
+// ============================================================
+exports.blockUser = async (req, res) => {
+  try {
 
+    const {
+      UserID,
+      Token,
+      Reason,
+    } = req.body || {};
+
+    // Admin / current logged-in user
+    const ModifiedBy =
+      req.user?.UserID;
+
+
+    // ========================================================
+    // TARGET USER ID
+    // ========================================================
+
+    let targetUserID = null;
+
+
+    // --------------------------------------------------------
+    // 1. UserID provided
+    // --------------------------------------------------------
+
+    if (
+      UserID !== undefined &&
+      UserID !== null &&
+      String(UserID).trim() !== ""
+    ) {
+
+      const parsedUserID =
+        Number(UserID);
+
+      if (
+        !Number.isInteger(parsedUserID) ||
+        parsedUserID <= 0
+      ) {
+
+        throw new AppError(
+          "Valid UserID is required",
+          STATUS_CODES.BAD_REQUEST
+        );
+
+      }
+
+      targetUserID =
+        parsedUserID;
+
+    }
+
+
+    // --------------------------------------------------------
+    // 2. Token provided
+    // --------------------------------------------------------
+
+    if (
+      Token !== undefined &&
+      Token !== null &&
+      String(Token).trim() !== ""
+    ) {
+
+      let decodedTargetUser;
+
+      try {
+
+        decodedTargetUser =
+          jwt.verify(
+            String(Token).trim(),
+            process.env.JWT_SECRET
+          );
+
+      } catch (error) {
+
+        throw new AppError(
+          "Invalid or expired user token",
+          STATUS_CODES.UNAUTHORIZED
+        );
+
+      }
+
+
+      const tokenUserID =
+        Number(
+          decodedTargetUser?.UserID
+        );
+
+
+      if (
+        !Number.isInteger(tokenUserID) ||
+        tokenUserID <= 0
+      ) {
+
+        throw new AppError(
+          "Invalid user token",
+          STATUS_CODES.BAD_REQUEST
+        );
+
+      }
+
+
+      // ======================================================
+      // If UserID + Token both sent,
+      // both must belong to same user
+      // ======================================================
+
+      if (
+        targetUserID !== null &&
+        targetUserID !== tokenUserID
+      ) {
+
+        throw new AppError(
+          "UserID and Token do not belong to the same user",
+          STATUS_CODES.BAD_REQUEST
+        );
+
+      }
+
+
+      targetUserID =
+        tokenUserID;
+
+    }
+
+
+    // ========================================================
+    // NEITHER USER ID NOR TOKEN
+    // ========================================================
+
+    if (!targetUserID) {
+
+      throw new AppError(
+        "UserID or Token is required",
+        STATUS_CODES.BAD_REQUEST
+      );
+
+    }
+
+
+    // ========================================================
+    // SERVICE
+    // ========================================================
+
+    const response =
+      await UserService.blockUser({
+        UserID:
+          targetUserID,
+
+        Reason,
+
+        ModifiedBy,
+      });
+
+
+    if (!response.success) {
+
+      throw new AppError(
+        response.message ||
+          "Unable to block user",
+
+        response.statusCode ||
+          STATUS_CODES.BAD_REQUEST
+      );
+
+    }
+
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(response);
+
+
+  } catch (error) {
+
+    handleError(error, res);
+
+  }
+};
+// ============================================================User Details by Token
+exports.verifyTokenAndRegisterDevice = async (req, res) => {
+  try {
+
+    const {
+      Token,
+    } = req.body || {};
+
+    const DeviceID =
+      req.headers["deviceid"];
+
+    const DeviceToken =
+      req.headers["devicetoken"];
+
+    const DeviceType =
+      req.headers["devicetype"];
+
+
+    // ========================================================
+    // VALIDATION
+    // ========================================================
+
+    if (!Token) {
+      throw new AppError(
+        "Token is required",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    if (!DeviceID) {
+      throw new AppError(
+        "Device ID is required",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    if (!DeviceToken) {
+      throw new AppError(
+        "Device Token is required",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    if (!DeviceType) {
+      throw new AppError(
+        "Device Type is required",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+
+    // ========================================================
+    // SERVICE / RABBIT
+    // ========================================================
+
+    const response =
+      await producer.sendMessage(
+        QUEUE.USER.REQUEST,
+        QUEUE.USER.RESPONSE,
+        {
+          action:
+            "VERIFY_TOKEN_REGISTER_DEVICE",
+
+          data: {
+            Token:
+              String(Token).trim(),
+
+            DeviceID:
+              String(DeviceID).trim(),
+
+            DeviceToken:
+              String(DeviceToken).trim(),
+
+            DeviceType:
+              String(DeviceType)
+                .trim()
+                .toUpperCase(),
+          },
+        }
+      );
+
+
+    if (!response.success) {
+      throw new AppError(
+        response.message ||
+          "Unable to verify token",
+        response.statusCode ||
+          STATUS_CODES.UNAUTHORIZED
+      );
+    }
+
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(response);
+
+  } catch (error) {
+
+    handleError(error, res);
+
+  }
+};
 module.exports = exports;

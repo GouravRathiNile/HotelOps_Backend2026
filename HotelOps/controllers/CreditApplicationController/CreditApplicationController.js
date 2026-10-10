@@ -1313,38 +1313,16 @@ exports.processCreditApplicationApproval = async (req, res) => {
   }
 };
 // ============================================================ UPDATE AR ID
-exports.updateCreditApplicationARID = async (req, res) => {
+exports.updateCreditApplicationARID = async (
+  req,
+  res,
+) => {
   try {
     const {
       CreditApplicationID,
       ARID,
     } = req.body || {};
 
-    // ============================================================
-    // FC Permission
-    // ============================================================
-
-    const userType = String(
-      req.user?.UserType || "",
-    )
-      .trim()
-      .toUpperCase();
-
-    const departmentName = String(
-      req.user?.DepartmentName || "",
-    )
-      .trim()
-      .toUpperCase();
-
-    if (
-      userType !== "HOD" ||
-      !["FC", "FINANCE"].includes(departmentName)
-    ) {
-      throw new AppError(
-        "Only FC can update AR ID.",
-        STATUS_CODES.FORBIDDEN,
-      );
-    }
 
     // ============================================================
     // Credit Application ID
@@ -1352,8 +1330,14 @@ exports.updateCreditApplicationARID = async (req, res) => {
 
     if (
       !CreditApplicationID ||
-      !Number.isInteger(Number(CreditApplicationID)) ||
-      Number(CreditApplicationID) <= 0
+      !Number.isInteger(
+        Number(
+          CreditApplicationID,
+        ),
+      ) ||
+      Number(
+        CreditApplicationID,
+      ) <= 0
     ) {
       throw new AppError(
         "Credit Application ID must be a valid positive integer",
@@ -1361,13 +1345,16 @@ exports.updateCreditApplicationARID = async (req, res) => {
       );
     }
 
+
     // ============================================================
     // AR ID
     // ============================================================
 
     if (
       !ARID ||
-      !String(ARID).trim()
+      !String(
+        ARID,
+      ).trim()
     ) {
       throw new AppError(
         "AR ID is required",
@@ -1375,8 +1362,12 @@ exports.updateCreditApplicationARID = async (req, res) => {
       );
     }
 
+
     // ============================================================
     // Queue
+    //
+    // UserID / UserType / DepartmentName
+    // sendQueueResponse automatically JWT se add karega.
     // ============================================================
 
     return sendQueueResponse(
@@ -1385,17 +1376,25 @@ exports.updateCreditApplicationARID = async (req, res) => {
       "UPDATE_CREDIT_APPLICATION_ARID",
       {
         CreditApplicationID:
-          Number(CreditApplicationID),
+          Number(
+            CreditApplicationID,
+          ),
 
         ARID:
-          String(ARID).trim(),
+          String(
+            ARID,
+          ).trim(),
       },
     );
 
   } catch (error) {
-    return handleError(error, res);
+    return handleError(
+      error,
+      res,
+    );
   }
 };
+// ============================================================================================This Approval Config in not in Current Use
 // ============================================================Create Approval Config
 exports.createCreditApplicationApprovalConfig = async (
   req,
@@ -1473,6 +1472,7 @@ exports.deleteCreditApplicationApprovalConfig = async (
     );
   }
 };
+// ============================================================================================
 // ========================================================================Reports
 // ============================================================COMPANY WISE REPORT
 exports.getCompanyWiseReport = async (
