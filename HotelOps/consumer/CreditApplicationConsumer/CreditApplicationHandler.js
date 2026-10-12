@@ -34,6 +34,7 @@ const CreditApplicationHandler = async (message) => {
         return await CreditApplicationService.updateCreditApplicationARID(
           message.data,
         );
+        // ============================================================================================This Approval Config in not in Current Use
       // ======================================================== Create Config
       case "CREATE_CREDIT_APPLICATION_APPROVAL_CONFIG":
         return await CreditApplicationService.createCreditApplicationApprovalConfig(
@@ -44,6 +45,7 @@ const CreditApplicationHandler = async (message) => {
         return await CreditApplicationService.deleteCreditApplicationApprovalConfig(
           message.data,
         );
+      // ============================================================================================
 
       // ========================================================
       // Invalid Action

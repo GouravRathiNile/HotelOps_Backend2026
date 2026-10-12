@@ -33,10 +33,12 @@ router.delete("/Delete",authenticateToken,deleteCreditApplication,);
 router.put("/ApproveApplication",authenticateToken,processCreditApplicationApproval,);
 // ============================================================ Update AR Id
 router.put("/UpdateARId",authenticateToken,updateCreditApplicationARID,);
+// ============================================================================================This Approval Config in not in Current Use
 // ============================================================ Approval Config CRUD Operations
 router.post("/CreateApprovalConfig",authenticateToken, createCreditApplicationApprovalConfig,);
 router.get("/ApprovalConfigList",authenticateToken,getCreditApplicationApprovalConfigList,);
 router.delete("/DeleteApprovalConfig",authenticateToken,deleteCreditApplicationApprovalConfig,);
+// ============================================================================================
 // ============================================================ Reports
 router.get("/CompanyWiseReport",authenticateToken,getCompanyWiseReport,);
 router.get("/OrganizationWiseReport",authenticateToken,getOrganizationWiseReport,);

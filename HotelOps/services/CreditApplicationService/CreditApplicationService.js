@@ -45,10 +45,6 @@ const databaseFailure = (error, action) => {
   };
 };
 // ======================== Default Credit Application Approval Levels
-const DEFAULT_CREDIT_APPLICATION_APPROVALS = Object.freeze([
-  { LevelNo: 1, ApprovalRole: "FC" },
-  { LevelNo: 2, ApprovalRole: "GM" },
-]);
 const CREDIT_APPLICATION_APPROVAL_ROLES = new Set([
   "FC",
   "GM",
@@ -58,6 +54,10 @@ const normalizeCreditApplicationApprovalRole = (value) => {
   return role === "FINANCE" ? "FC" : role;
 };
 // ============================================================ CREATE CREDIT APPLICATION
+// ============================================================
+// CREATE CREDIT APPLICATION
+// ============================================================
+
 const createCreditApplication = async (data) => {
   const client = await pool.connect();
 
@@ -101,134 +101,216 @@ const createCreditApplication = async (data) => {
 
 
     // ============================================================
+    // Approval Flow
+    //
+    // IMPORTANT:
+    // Default flow nahi hai.
+    //
+    // Flow sirf:
+    // approval_master
+    // approval_master_details
+    //
+    // se aayega.
+    // ============================================================
+
+    const approvalFlow =
+      await getCreditApplicationApprovalFlow(
+        OrganizationID,
+        client,
+      );
+
+    if (
+      !Array.isArray(approvalFlow) ||
+      approvalFlow.length === 0
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Credit Application approval flow is not configured for this organization.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Duplicate Approval Type Validation
+    //
+    // Credit_Application_Approval table me sirf:
+    //
+    // FC -> FinanceStatus
+    // GM -> GMStatus
+    //
+    // ek-ek status column hai.
+    //
+    // Isliye same ApprovalType multiple times nahi aa sakta.
+    // ============================================================
+
+    const approvalRoles =
+      approvalFlow.map(
+        (item) =>
+          normalizeCreditApplicationApprovalRole(
+            item.ApprovalRole,
+          ),
+      );
+
+    const uniqueApprovalRoles =
+      new Set(
+        approvalRoles,
+      );
+
+    if (
+      uniqueApprovalRoles.size !==
+      approvalRoles.length
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Duplicate approval types are not allowed in Credit Application approval flow.",
+        400,
+      );
+    }
+
+
+    // ============================================================
     // Insert Credit Application Master
     // ARID create ke time NULL rahegi
     // ============================================================
 
-    const masterResult = await client.query(
-      `
-      INSERT INTO Credit_Application_Entry_Master
-      (
-        OrganizationID,
+    const masterResult =
+      await client.query(
+        `
+        INSERT INTO Credit_Application_Entry_Master
+        (
+          OrganizationID,
 
-        ApplicationDate,
+          ApplicationDate,
 
-        CompanyName,
-        CompanyGSTIN,
-        MSME,
+          CompanyName,
+          CompanyGSTIN,
+          MSME,
 
-        BusinessAddress,
-        BillingAddress,
+          BusinessAddress,
+          BillingAddress,
 
-        AuthorisedPersonNamePosition,
-        AuthorisedPersonMobileNo,
-        AuthorisedPersonEmail,
+          AuthorisedPersonNamePosition,
+          AuthorisedPersonMobileNo,
+          AuthorisedPersonEmail,
 
-        AccountsContactNamePosition,
-        AccountsContactMobileNo,
-        AccountsContactEmail,
+          AccountsContactNamePosition,
+          AccountsContactMobileNo,
+          AccountsContactEmail,
 
-        RecommendedBy,
-        Position,
+          RecommendedBy,
+          Position,
 
-        CreditReferenceCheckedBy,
-        CreditReferenceCheckedDate,
+          CreditReferenceCheckedBy,
+          CreditReferenceCheckedDate,
 
-        CreditAmountAllowed,
-        ExpectedBusinessFY,
-        FinancialYear,
+          CreditAmountAllowed,
+          ExpectedBusinessFY,
+          FinancialYear,
 
-        ARID,
+          ARID,
 
-        IsDeleted,
+          IsDeleted,
 
-        CreatedBy,
-        CreatedDate
-      )
-      VALUES
-      (
-        $1,
+          CreatedBy,
+          CreatedDate
+        )
+        VALUES
+        (
+          $1,
 
-        $2,
+          $2,
 
-        $3,
-        $4,
-        $5,
+          $3,
+          $4,
+          $5,
 
-        $6,
-        $7,
+          $6,
+          $7,
 
-        $8,
-        $9,
-        $10,
+          $8,
+          $9,
+          $10,
 
-        $11,
-        $12,
-        $13,
+          $11,
+          $12,
+          $13,
 
-        $14,
-        $15,
+          $14,
+          $15,
 
-        $16,
-        $17,
+          $16,
+          $17,
 
-        $18,
-        $19,
-        $20,
+          $18,
+          $19,
+          $20,
 
-        NULL,
+          NULL,
 
-        FALSE,
+          FALSE,
 
-        $21,
-        CURRENT_TIMESTAMP
-      )
-      RETURNING CreditApplicationID;
-      `,
-      [
-        OrganizationID,
+          $21,
+          CURRENT_TIMESTAMP
+        )
 
-        ApplicationDate,
+        RETURNING
+          CreditApplicationID;
+        `,
+        [
+          OrganizationID,
 
-        CompanyName,
-        CompanyGSTIN,
-        MSME,
+          ApplicationDate,
 
-        BusinessAddress,
-        BillingAddress,
+          CompanyName,
+          CompanyGSTIN,
+          MSME,
 
-        AuthorisedPersonNamePosition,
-        AuthorisedPersonMobileNo,
-        AuthorisedPersonEmail,
+          BusinessAddress,
+          BillingAddress,
 
-        AccountsContactNamePosition,
-        AccountsContactMobileNo,
-        AccountsContactEmail,
+          AuthorisedPersonNamePosition,
+          AuthorisedPersonMobileNo,
+          AuthorisedPersonEmail,
 
-        RecommendedBy,
-        Position,
+          AccountsContactNamePosition,
+          AccountsContactMobileNo,
+          AccountsContactEmail,
 
-        CreditReferenceCheckedBy,
-        CreditReferenceCheckedDate,
+          RecommendedBy,
+          Position,
 
-        CreditAmountAllowed,
-        ExpectedBusinessFY,
-        FinancialYear,
+          CreditReferenceCheckedBy,
+          CreditReferenceCheckedDate,
 
-        UserID,
-      ],
-    );
+          CreditAmountAllowed,
+          ExpectedBusinessFY,
+          FinancialYear,
+
+          UserID,
+        ],
+      );
 
     const CreditApplicationID =
-      masterResult.rows[0].creditapplicationid;
+      Number(
+        masterResult.rows[0]
+          .creditapplicationid,
+      );
 
 
     // ============================================================
     // Insert Documents
     // ============================================================
 
-    for (let i = 0; i < (Documents || []).length; i++) {
-      const document = Documents[i];
+    for (
+      let i = 0;
+      i < (Documents || []).length;
+      i += 1
+    ) {
+      const document =
+        Documents[i];
 
       await client.query(
         `
@@ -265,12 +347,21 @@ const createCreditApplication = async (data) => {
         `,
         [
           CreditApplicationID,
-          document.DocumentType || null,
 
-          document.FileName || null,
-          document.FilePath || null,
-          document.FileType || null,
-          document.FileSize ?? null,
+          document.DocumentType ||
+            null,
+
+          document.FileName ||
+            null,
+
+          document.FilePath ||
+            null,
+
+          document.FileType ||
+            null,
+
+          document.FileSize ??
+            null,
 
           UserID,
         ],
@@ -280,6 +371,12 @@ const createCreditApplication = async (data) => {
 
     // ============================================================
     // Create Approval Row
+    //
+    // Existing table same rahegi:
+    //
+    // FinanceStatus
+    // GMStatus
+    // FinalStatus
     // ============================================================
 
     await client.query(
@@ -317,45 +414,115 @@ const createCreditApplication = async (data) => {
       ],
     );
 
-    const approvalFlow = await getCreditApplicationApprovalFlow(OrganizationID, client);
-    const firstApprovalRole = approvalFlow[0]?.ApprovalRole;
+
+    // ============================================================
+    // First Approval Step
+    // Approval Builder se
+    // ============================================================
+
+    const firstApprovalStep =
+      approvalFlow[0];
+
+    const firstApprovalRole =
+      firstApprovalStep
+        ?.ApprovalRole ||
+      null;
+
 
     // ============================================================
     // Commit
     // ============================================================
 
-    await client.query("COMMIT");
+    await client.query(
+      "COMMIT",
+    );
 
-    dispatchCommittedCreditApplicationEvent({ organizationID: OrganizationID,
-      creditApplicationID: CreditApplicationID, companyName: CompanyName,
-      roles: firstApprovalRole ? [firstApprovalRole] : [], kind: "CREATE",
-      action: "CREATED", details: { applicationDate: ApplicationDate,
-        creditAmountAllowed: CreditAmountAllowed, expectedBusinessFY: ExpectedBusinessFY,
-        financialYear: FinancialYear, authorisedPerson: AuthorisedPersonNamePosition,
-        accountsContact: AccountsContactNamePosition } });
+
+    // ============================================================
+    // Notification / Event
+    //
+    // Existing system ko abhi same rakha hai.
+    // ============================================================
+
+    dispatchCommittedCreditApplicationEvent({
+      organizationID:
+        OrganizationID,
+
+      creditApplicationID:
+        CreditApplicationID,
+
+      companyName:
+        CompanyName,
+
+      roles:
+        firstApprovalRole
+          ? [
+              firstApprovalRole,
+            ]
+          : [],
+
+      kind:
+        "CREATE",
+
+      action:
+        "CREATED",
+
+      details: {
+        applicationDate:
+          ApplicationDate,
+
+        creditAmountAllowed:
+          CreditAmountAllowed,
+
+        expectedBusinessFY:
+          ExpectedBusinessFY,
+
+        financialYear:
+          FinancialYear,
+
+        authorisedPerson:
+          AuthorisedPersonNamePosition,
+
+        accountsContact:
+          AccountsContactNamePosition,
+      },
+    });
+
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return ok(
-      "Credit Application created successfully."
+      "Credit Application created successfully.",
     );
 
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query(
+      "ROLLBACK",
+    );
 
-    if (error.code === "23503") {
+    if (
+      error.code === "23503"
+    ) {
       return fail(
         "Invalid Credit Application related data.",
         400,
       );
     }
 
-    if (error.code === "23505") {
+    if (
+      error.code === "23505"
+    ) {
       return fail(
         "Credit Application record already exists.",
         409,
       );
     }
 
-    if (error.code === "22P02") {
+    if (
+      error.code === "22P02"
+    ) {
       return fail(
         "Invalid Credit Application data.",
         400,
@@ -372,132 +539,426 @@ const createCreditApplication = async (data) => {
   }
 };
 // ============================================================ Get Apis Helper
-// ========================Approval Role Condition Helper
-const resolveCreditApplicationApprovalRole = ({
-  UserType,
-  DepartmentName,
-}) => {
-  const userType = String(
-    UserType || "",
-  )
-    .trim()
-    .toUpperCase();
-
-  const departmentName = String(
-    DepartmentName || "",
-  )
-    .trim()
-    .toUpperCase();
-
-  // ============================================================
-  // FC
-  // FC approval = FC HOD
-  // ============================================================
-
-  if (
-    userType === "HOD" &&
-    ["FC", "FINANCE"].includes(departmentName)
-  ) {
-    return "FC";
-  }
-
-  // ============================================================
-  // GM
-  // ============================================================
-
-  if (userType === "GM") {
-    return "GM";
-  }
-
-  return null;
-};
 // ======================== Get Approval Flow Helper
 const getCreditApplicationApprovalFlow = async (
   OrganizationID,
   db = pool,
 ) => {
-  const result = await db.query(
-    `
-    SELECT
-      CreditApplicationApprovalConfigID,
-      ApprovalLevel,
-      ApprovalRole,
-      ApprovalOrder,
-      IsMandatory
-
-    FROM Credit_Application_Approval_Config
-
-    WHERE OrganizationID = $1
-      AND IsDeleted = FALSE
-
-    ORDER BY
-      ApprovalOrder ASC,
-      ApprovalLevel ASC,
-      CreditApplicationApprovalConfigID ASC;
-    `,
-    [
+  const organizationID =
+    Number(
       OrganizationID,
-    ],
-  );
+    );
+
+  if (
+    !Number.isSafeInteger(
+      organizationID,
+    ) ||
+    organizationID <= 0
+  ) {
+    return [];
+  }
 
   // ============================================================
-  // Organization Specific Flow
+  // Get Active Credit Application Approval Flow
   // ============================================================
 
-  if (result.rows.length > 0) {
-    return result.rows.map(
-      (row) => ({
+  const result =
+    await db.query(
+      `
+      WITH selected_flow AS
+      (
+        SELECT
+          am.approvalmasterid
+
+        FROM approval_master am
+
+        WHERE am.organizationid = $1
+
+          AND UPPER(
+                TRIM(
+                  COALESCE(
+                    am.modulename,
+                    ''
+                  )
+                )
+              ) = 'CREDIT APPLICATION'
+
+          AND am.isactive = TRUE
+
+          AND am.isdelete = FALSE
+
+        ORDER BY
+          am.modifieddatetime DESC NULLS LAST,
+          am.createddatetime DESC,
+          am.approvalmasterid DESC
+
+        LIMIT 1
+      )
+
+      SELECT
+        amd.approvalid,
+        amd.approvalmasterid,
+        amd.level,
+        amd.approvertype,
+        amd.role,
+        amd.approvaltype,
+        amd.ismandatory
+
+      FROM approval_master_details amd
+
+      INNER JOIN selected_flow sf
+        ON sf.approvalmasterid =
+           amd.approvalmasterid
+
+      WHERE amd.isdelete = FALSE
+
+        AND UPPER(
+              TRIM(
+                COALESCE(
+                  amd.approvaltype,
+                  ''
+                )
+              )
+            ) IN
+            (
+              'FC',
+              'FINANCE',
+              'GM'
+            )
+
+      ORDER BY
+        amd.level ASC,
+        amd.approvalid ASC;
+      `,
+      [
+        organizationID,
+      ],
+    );
+
+  // ============================================================
+  // No Approval Flow
+  // ============================================================
+
+  if (
+    result.rows.length === 0
+  ) {
+    return [];
+  }
+
+  // ============================================================
+  // Mapping
+  // ============================================================
+
+  return result.rows.map(
+    (row) => {
+      const rawApprovalType =
+        String(
+          row.approvaltype || "",
+        )
+          .trim()
+          .toUpperCase();
+
+      const ApprovalRole =
+        rawApprovalType ===
+          "FINANCE"
+          ? "FC"
+          : rawApprovalType;
+
+      return {
+        ApprovalMasterID:
+          Number(
+            row.approvalmasterid,
+          ),
+
+        ApprovalID:
+          Number(
+            row.approvalid,
+          ),
+
         CreditApplicationApprovalConfigID:
           Number(
-            row.creditapplicationapprovalconfigid,
+            row.approvalid,
           ),
 
         LevelNo:
           Number(
-            row.approvallevel,
-          ),
-
-        ApprovalRole:
-          normalizeCreditApplicationApprovalRole(
-            row.approvalrole,
+            row.level,
           ),
 
         ApprovalOrder:
           Number(
-            row.approvalorder,
+            row.level,
           ),
+
+        ApprovalRole,
+
+        ApproverType:
+          String(
+            row.approvertype || "",
+          )
+            .trim()
+            .toUpperCase(),
+
+        ApproverValue:
+          String(
+            row.role || "",
+          ).trim(),
+
+        ApprovalType:
+          ApprovalRole,
 
         IsMandatory:
           Boolean(
             row.ismandatory,
           ),
-      }),
+      };
+    },
+  );
+};
+// ============================================================
+// GET LOGGED-IN CREDIT APPLICATION USER CONTEXT
+//
+// USER approver ke liye Username user_master se aayega.
+// ROLE approver ke liye UserType / DepartmentName use honge.
+// ============================================================
+const getCreditApplicationUserContext = async (
+  data,
+  db = pool,
+) => {
+  const UserID =
+    Number(
+      data.UserID,
+    );
+
+  let Username = "";
+
+  if (
+    Number.isSafeInteger(UserID) &&
+    UserID > 0
+  ) {
+    const result =
+      await db.query(
+        `
+        SELECT
+          UserID,
+          Username
+
+        FROM user_master
+
+        WHERE UserID = $1
+          AND IsDeleted = FALSE
+          AND IsActive = TRUE
+
+        LIMIT 1;
+        `,
+        [
+          UserID,
+        ],
+      );
+
+    Username =
+      String(
+        result.rows[0]?.username ||
+          "",
+      )
+        .trim()
+        .toUpperCase();
+  }
+
+  return {
+    UserID,
+
+    Username,
+
+    UserType:
+      String(
+        data.UserType || "",
+      )
+        .trim()
+        .toUpperCase(),
+
+    DepartmentName:
+      String(
+        data.DepartmentName || "",
+      )
+        .trim()
+        .toUpperCase(),
+  };
+};
+// ============================================================
+// CHECK APPROVAL STEP ASSIGNMENT
+//
+// ApproverType = USER
+// role = Username
+//
+// ApproverType = ROLE
+// role = UserType / DepartmentName
+// ============================================================
+// ============================================================
+// CHECK CREDIT APPLICATION APPROVAL STEP ASSIGNMENT
+//
+// ApproverType = USER
+// role = UserID / Username
+//
+// ApproverType = ROLE
+// role = UserType / DepartmentName
+//
+// IMPORTANT:
+// ApprovalType = FC
+// -> Logged-in user DepartmentName must be FINANCE
+// ============================================================
+
+const isCreditApplicationApprovalStepAssignedToUser = (
+  approvalStep,
+  userContext,
+) => {
+  if (
+    !approvalStep ||
+    !userContext
+  ) {
+    return false;
+  }
+
+
+  // ============================================================
+  // Approval Role
+  // FINANCE -> FC
+  // ============================================================
+
+  const approvalRole =
+    normalizeCreditApplicationApprovalRole(
+      approvalStep.ApprovalRole ||
+        approvalStep.ApprovalType,
+    );
+
+
+  // ============================================================
+  // Approver Type
+  // USER / ROLE
+  // ============================================================
+
+  const approverType =
+    String(
+      approvalStep.ApproverType ||
+        "",
+    )
+      .trim()
+      .toUpperCase();
+
+
+  // ============================================================
+  // Approver Value
+  //
+  // USER -> UserID / Username
+  // ROLE -> UserType / DepartmentName
+  // ============================================================
+
+  const approverValue =
+    String(
+      approvalStep.ApproverValue ||
+        "",
+    )
+      .trim()
+      .toUpperCase();
+
+
+  if (!approverValue) {
+    return false;
+  }
+
+
+  // ============================================================
+  // Logged-In User Context
+  // ============================================================
+
+  const userID =
+    String(
+      userContext.UserID ||
+        "",
+    )
+      .trim()
+      .toUpperCase();
+
+  const username =
+    String(
+      userContext.Username ||
+        "",
+    )
+      .trim()
+      .toUpperCase();
+
+  const userType =
+    String(
+      userContext.UserType ||
+        "",
+    )
+      .trim()
+      .toUpperCase();
+
+  const departmentName =
+    String(
+      userContext.DepartmentName ||
+        "",
+    )
+      .trim()
+      .toUpperCase();
+
+
+  // ============================================================
+  // FC Approval
+  //
+  // FC approver ka department FINANCE hona compulsory hai.
+  // Kisi aur department ka HOD / User FC approve nahi karega.
+  // ============================================================
+
+  if (
+    approvalRole === "FC" &&
+    departmentName !== "FINANCE"
+  ) {
+    return false;
+  }
+
+
+  // ============================================================
+  // USER APPROVER
+  //
+  // Existing builder data:
+  // role = UserID
+  //
+  // Future compatibility:
+  // role = Username
+  // ============================================================
+
+  if (
+    approverType === "USER"
+  ) {
+    return (
+      approverValue === userID ||
+      approverValue === username
     );
   }
 
+
   // ============================================================
-  // Default Flow
-  // FC -> GM
+  // ROLE APPROVER
+  //
+  // Example:
+  // role = HOD
+  // role = GM
+  // role = FINANCE
   // ============================================================
 
-  return DEFAULT_CREDIT_APPLICATION_APPROVALS.map(
-    (item, index) => ({
-      CreditApplicationApprovalConfigID:
-        null,
+  if (
+    approverType === "ROLE"
+  ) {
+    return (
+      approverValue === userType ||
+      approverValue === departmentName
+    );
+  }
 
-      LevelNo:
-        item.LevelNo,
 
-      ApprovalRole:
-        item.ApprovalRole,
-
-      ApprovalOrder:
-        index + 1,
-
-      IsMandatory:
-        true,
-    }),
-  );
+  return false;
 };
 // ======================== Normalize Helper
 const normalizeCreditApprovalStatus = (value) =>
@@ -617,6 +1078,11 @@ const attachCreditApplicationRelatedData = async (
     return [];
   }
 
+
+  // ============================================================
+  // Credit Application IDs
+  // ============================================================
+
   const CreditApplicationIDs =
     rows.map(
       (row) =>
@@ -624,6 +1090,7 @@ const attachCreditApplicationRelatedData = async (
           row.creditapplicationid,
         ),
     );
+
 
   // ============================================================
   // Documents
@@ -660,7 +1127,7 @@ const attachCreditApplicationRelatedData = async (
 
 
   // ============================================================
-  // Approval Config For All Organizations
+  // Organization IDs
   // ============================================================
 
   const organizationIDs = [
@@ -674,29 +1141,88 @@ const attachCreditApplicationRelatedData = async (
     ),
   ];
 
+
+  // ============================================================
+  // Approval Builder
+  //
+  // Each organization ka latest active CREDIT APPLICATION flow.
+  // ============================================================
+
   const configResult =
     await pool.query(
       `
+      WITH selected_flows AS
+      (
+        SELECT DISTINCT ON
+        (
+          am.organizationid
+        )
+
+          am.organizationid,
+          am.approvalmasterid
+
+        FROM approval_master am
+
+        WHERE am.organizationid =
+              ANY($1::bigint[])
+
+          AND UPPER(
+                TRIM(
+                  COALESCE(
+                    am.modulename,
+                    ''
+                  )
+                )
+              ) = 'CREDIT APPLICATION'
+
+          AND am.isactive = TRUE
+
+          AND am.isdelete = FALSE
+
+        ORDER BY
+          am.organizationid ASC,
+          am.modifieddatetime DESC NULLS LAST,
+          am.createddatetime DESC,
+          am.approvalmasterid DESC
+      )
+
       SELECT
-        CreditApplicationApprovalConfigID,
-        OrganizationID,
-        ApprovalLevel,
-        ApprovalRole,
-        ApprovalOrder,
-        IsMandatory
+        sf.organizationid,
 
-      FROM Credit_Application_Approval_Config
+        amd.approvalmasterid,
+        amd.approvalid,
+        amd.level,
+        amd.approvertype,
+        amd.role,
+        amd.approvaltype,
+        amd.ismandatory
 
-      WHERE OrganizationID =
-            ANY($1::bigint[])
+      FROM selected_flows sf
 
-        AND IsDeleted = FALSE
+      INNER JOIN approval_master_details amd
+        ON amd.approvalmasterid =
+           sf.approvalmasterid
+
+      WHERE amd.isdelete = FALSE
+
+        AND UPPER(
+              TRIM(
+                COALESCE(
+                  amd.approvaltype,
+                  ''
+                )
+              )
+            ) IN
+            (
+              'FC',
+              'FINANCE',
+              'GM'
+            )
 
       ORDER BY
-        OrganizationID ASC,
-        ApprovalOrder ASC,
-        ApprovalLevel ASC,
-        CreditApplicationApprovalConfigID ASC;
+        sf.organizationid ASC,
+        amd.level ASC,
+        amd.approvalid ASC;
       `,
       [
         organizationIDs,
@@ -730,28 +1256,66 @@ const attachCreditApplicationRelatedData = async (
       );
     }
 
+    const rawApprovalType =
+      String(
+        row.approvaltype || "",
+      )
+        .trim()
+        .toUpperCase();
+
+    const ApprovalRole =
+      rawApprovalType ===
+        "FINANCE"
+        ? "FC"
+        : rawApprovalType;
+
     flowsByOrganization
-      .get(OrganizationID)
+      .get(
+        OrganizationID,
+      )
       .push({
+        ApprovalMasterID:
+          Number(
+            row.approvalmasterid,
+          ),
+
+        ApprovalID:
+          Number(
+            row.approvalid,
+          ),
+
+        // Existing frontend compatibility
         CreditApplicationApprovalConfigID:
           Number(
-            row.creditapplicationapprovalconfigid,
+            row.approvalid,
           ),
 
         LevelNo:
           Number(
-            row.approvallevel,
-          ),
-
-        ApprovalRole:
-          normalizeCreditApplicationApprovalRole(
-            row.approvalrole,
+            row.level,
           ),
 
         ApprovalOrder:
           Number(
-            row.approvalorder,
+            row.level,
           ),
+
+        ApprovalRole,
+
+        ApproverType:
+          String(
+            row.approvertype || "",
+          )
+            .trim()
+            .toUpperCase(),
+
+        ApproverValue:
+          String(
+            row.role || "",
+          ).trim(),
+
+        ApprovalType:
+          ApprovalRole,
 
         IsMandatory:
           Boolean(
@@ -762,164 +1326,185 @@ const attachCreditApplicationRelatedData = async (
 
 
   // ============================================================
-  // Default FC -> GM
-  // ============================================================
-
-  const defaultFlow =
-    DEFAULT_CREDIT_APPLICATION_APPROVALS.map(
-      (item, index) => ({
-        CreditApplicationApprovalConfigID:
-          null,
-
-        LevelNo:
-          item.LevelNo,
-
-        ApprovalRole:
-          item.ApprovalRole,
-
-        ApprovalOrder:
-          index + 1,
-
-        IsMandatory:
-          true,
-      }),
-    );
-
-
-  // ============================================================
   // Map Credit Application Rows
   // ============================================================
 
   const mapped =
-    rows.map((row) => {
-      const item =
-        mapCreditApplication(
-          row,
-        );
+    rows.map(
+      (row) => {
+        const item =
+          mapCreditApplication(
+            row,
+          );
 
-      const approvalFlow =
-        flowsByOrganization.get(
-          Number(
-            row.organizationid,
-          ),
-        ) ||
-        defaultFlow;
+        // ========================================================
+        // NO DEFAULT FLOW
+        // ========================================================
 
-
-      const statusMap = {
-        FC: {
-          Status:
-            row.financestatus ||
-            "Pending",
-
-          StatusDateTime:
-            row.financestatusdatetime ||
-            null,
-
-          ApprovedBy:
-            row.financestatusapprovedby !== null
-              ? Number(
-                  row.financestatusapprovedby,
-                )
-              : null,
-
-          Remarks:
-            row.financeremarks ||
-            null,
-        },
-
-        GM: {
-          Status:
-            row.gmstatus ||
-            "Pending",
-
-          StatusDateTime:
-            row.gmstatusdatetime ||
-            null,
-
-          ApprovedBy:
-            row.gmstatusapprovedby !== null
-              ? Number(
-                  row.gmstatusapprovedby,
-                )
-              : null,
-
-          Remarks:
-            row.gmremarks ||
-            null,
-        },
-      };
+        const approvalFlow =
+          flowsByOrganization.get(
+            Number(
+              row.organizationid,
+            ),
+          ) || [];
 
 
-      // ==========================================================
-      // Approval Array
-      // ==========================================================
+        // ========================================================
+        // Existing Credit Application Approval Status
+        // ========================================================
 
-      item.Approvals =
-        approvalFlow.map(
-          (approval) => {
-            const approvalData =
-              statusMap[
-                approval.ApprovalRole
-              ] || {};
+        const statusMap = {
+          FC: {
+            Status:
+              row.financestatus ||
+              "Pending",
 
-           return {
-  CreditApplicationApprovalConfigID:
-    approval.CreditApplicationApprovalConfigID ??
-    null,
+            StatusDateTime:
+              row.financestatusdatetime ||
+              null,
 
-  ApprovalRole:
-    approval.ApprovalRole,
+            ApprovedBy:
+              row.financestatusapprovedby !==
+                null &&
+              row.financestatusapprovedby !==
+                undefined
+                ? Number(
+                    row.financestatusapprovedby,
+                  )
+                : null,
 
-  Status:
-    approvalData.Status || "Pending",
-
-  Remarks:
-    approvalData.Remarks || null,
-};
+            Remarks:
+              row.financeremarks ||
+              null,
           },
-        );
+
+          GM: {
+            Status:
+              row.gmstatus ||
+              "Pending",
+
+            StatusDateTime:
+              row.gmstatusdatetime ||
+              null,
+
+            ApprovedBy:
+              row.gmstatusapprovedby !==
+                null &&
+              row.gmstatusapprovedby !==
+                undefined
+                ? Number(
+                    row.gmstatusapprovedby,
+                  )
+                : null,
+
+            Remarks:
+              row.gmremarks ||
+              null,
+          },
+        };
 
 
-      // ==========================================================
-      // Current Approval Stage
-      // ==========================================================
+        // ========================================================
+        // Approval Array
+        // ========================================================
 
-      const currentStage =
-        item.Approvals.find(
-          (approval) =>
-            normalizeCreditApprovalStatus(
-              approval.Status,
-            ) !==
-            "APPROVED",
-        );
+        item.Approvals =
+          approvalFlow.map(
+            (approval) => {
+              const approvalData =
+                statusMap[
+                  approval.ApprovalRole
+                ] || {};
+
+              return {
+                ApprovalMasterID:
+                  approval.ApprovalMasterID,
+
+                ApprovalID:
+                  approval.ApprovalID,
+
+                CreditApplicationApprovalConfigID:
+                  approval.CreditApplicationApprovalConfigID,
+
+                LevelNo:
+                  approval.LevelNo,
+
+                ApprovalOrder:
+                  approval.ApprovalOrder,
+
+                ApprovalRole:
+                  approval.ApprovalRole,
+
+                ApproverType:
+                  approval.ApproverType,
+
+                ApproverValue:
+                  approval.ApproverValue,
+
+                ApprovalType:
+                  approval.ApprovalType,
+
+                IsMandatory:
+                  approval.IsMandatory,
+
+                Status:
+                  approvalData.Status ||
+                  "Pending",
+
+                StatusDateTime:
+                  approvalData.StatusDateTime ||
+                  null,
+
+                ApprovedBy:
+                  approvalData.ApprovedBy ??
+                  null,
+
+                Remarks:
+                  approvalData.Remarks ||
+                  null,
+              };
+            },
+          );
 
 
-      if (
-        normalizeCreditApprovalStatus(
-          item.FinalStatus,
-        ) === "APPROVED"
-      ) {
-        item.CurrentApprovalRole =
-          null;
+        // ========================================================
+        // Current Approval Stage
+        // ========================================================
 
-        item.CurrentStatus =
-          "Approved";
-      } else {
-        item.CurrentApprovalRole =
-          currentStage
-            ?.ApprovalRole ||
-          null;
+        const currentStage =
+          item.Approvals.find(
+            (approval) =>
+              normalizeCreditApprovalStatus(
+                approval.Status,
+              ) !== "APPROVED",
+          );
 
-        item.CurrentStatus =
-          currentStage
-            ?.Status ||
-          item.FinalStatus ||
-          "Pending";
-      }
+        if (
+          normalizeCreditApprovalStatus(
+            item.FinalStatus,
+          ) === "APPROVED"
+        ) {
+          item.CurrentApprovalRole =
+            null;
 
-      return item;
-    });
+          item.CurrentStatus =
+            "Approved";
+        } else {
+          item.CurrentApprovalRole =
+            currentStage
+              ?.ApprovalRole ||
+            null;
+
+          item.CurrentStatus =
+            currentStage
+              ?.Status ||
+            item.FinalStatus ||
+            "Pending";
+        }
+
+        return item;
+      },
+    );
 
 
   // ============================================================
@@ -956,22 +1541,24 @@ const attachCreditApplicationRelatedData = async (
     }
 
     item.Documents.push({
-  CreditApplicationDocumentID:
-    Number(
-      row.creditapplicationdocumentid,
-    ),
+      CreditApplicationDocumentID:
+        Number(
+          row.creditapplicationdocumentid,
+        ),
 
-  DocumentType:
-    row.documenttype,
+      DocumentType:
+        row.documenttype,
 
-  FileName:
-    row.filename,
+      FileName:
+        row.filename,
 
-  FilePath:
-    row.filepath
-      ? generateUrl(row.filepath)
-      : null,
-});
+      FilePath:
+        row.filepath
+          ? generateUrl(
+              row.filepath,
+            )
+          : null,
+    });
   }
 
   return mapped;
@@ -986,6 +1573,7 @@ const CREDIT_APPLICATION_BASE_FROM = `
 
    AND om.IsDeleted = FALSE
 
+
   LEFT JOIN Credit_Application_Approval approval
     ON approval.CreditApplicationID =
        ca.CreditApplicationID
@@ -996,18 +1584,31 @@ const CREDIT_APPLICATION_BASE_FROM = `
   LEFT JOIN LATERAL
   (
     SELECT
+      approval_flow.ApprovalMasterID,
+
+      approval_flow.ApprovalID,
+
       approval_flow.ApprovalRole,
 
+      approval_flow.ApproverType,
+
+      approval_flow.ApproverValue,
+
+      approval_flow.ApprovalType,
+
+      approval_flow.ApprovalLevel,
+
+      approval_flow.IsMandatory,
+
+
       CASE
-        WHEN approval_flow.ApprovalRole =
-             'FC'
+        WHEN approval_flow.ApprovalRole = 'FC'
         THEN COALESCE(
           approval.FinanceStatus,
           'Pending'
         )
 
-        WHEN approval_flow.ApprovalRole =
-             'GM'
+        WHEN approval_flow.ApprovalRole = 'GM'
         THEN COALESCE(
           approval.GMStatus,
           'Pending'
@@ -1018,77 +1619,161 @@ const CREDIT_APPLICATION_BASE_FROM = `
 
       END AS Status
 
+
     FROM
     (
       SELECT
+        am.approvalmasterid
+          AS ApprovalMasterID,
+
+        amd.approvalid
+          AS ApprovalID,
+
+
         CASE
-          WHEN UPPER(TRIM(config.ApprovalRole)) = 'FINANCE'
+          WHEN UPPER(
+            TRIM(
+              COALESCE(
+                amd.approvaltype,
+                ''
+              )
+            )
+          ) = 'FINANCE'
           THEN 'FC'
-          ELSE UPPER(TRIM(config.ApprovalRole))
+
+          ELSE UPPER(
+            TRIM(
+              COALESCE(
+                amd.approvaltype,
+                ''
+              )
+            )
+          )
+
         END AS ApprovalRole,
 
-        config.ApprovalOrder,
 
-        config.ApprovalLevel
-
-      FROM Credit_Application_Approval_Config config
-
-      WHERE config.OrganizationID =
-            ca.OrganizationID
-
-        AND config.IsDeleted =
-            FALSE
+        UPPER(
+          TRIM(
+            COALESCE(
+              amd.approvertype,
+              ''
+            )
+          )
+        ) AS ApproverType,
 
 
-      UNION ALL
+        TRIM(
+          COALESCE(
+            amd.role,
+            ''
+          )
+        ) AS ApproverValue,
 
 
-      SELECT
-        default_flow.ApprovalRole,
+        CASE
+          WHEN UPPER(
+            TRIM(
+              COALESCE(
+                amd.approvaltype,
+                ''
+              )
+            )
+          ) = 'FINANCE'
+          THEN 'FC'
 
-        default_flow.ApprovalOrder,
+          ELSE UPPER(
+            TRIM(
+              COALESCE(
+                amd.approvaltype,
+                ''
+              )
+            )
+          )
 
-        default_flow.ApprovalLevel
+        END AS ApprovalType,
 
-      FROM
+
+        amd.level
+          AS ApprovalLevel,
+
+        amd.ismandatory
+          AS IsMandatory
+
+
+      FROM approval_master_details amd
+
+      INNER JOIN approval_master am
+        ON am.approvalmasterid =
+           amd.approvalmasterid
+
+
+      WHERE am.approvalmasterid =
       (
-        VALUES
-          ('FC', 1, 1),
-          ('GM', 2, 2)
+        SELECT
+          am2.approvalmasterid
 
-      ) AS default_flow(
-        ApprovalRole,
-        ApprovalOrder,
-        ApprovalLevel
-      )
+        FROM approval_master am2
 
-      WHERE NOT EXISTS
-      (
-        SELECT 1
-
-        FROM Credit_Application_Approval_Config config
-
-        WHERE config.OrganizationID =
+        WHERE am2.organizationid =
               ca.OrganizationID
 
-          AND config.IsDeleted =
-              FALSE
+          AND REPLACE(
+                UPPER(
+                  TRIM(
+                    COALESCE(
+                      am2.modulename,
+                      ''
+                    )
+                  )
+                ),
+                '_',
+                ' '
+              ) = 'CREDIT APPLICATION'
+
+          AND am2.isactive = TRUE
+
+          AND am2.isdelete = FALSE
+
+        ORDER BY
+          am2.modifieddatetime DESC NULLS LAST,
+          am2.createddatetime DESC,
+          am2.approvalmasterid DESC
+
+        LIMIT 1
       )
 
+
+      AND amd.isdelete = FALSE
+
+
+      AND UPPER(
+            TRIM(
+              COALESCE(
+                amd.approvaltype,
+                ''
+              )
+            )
+          ) IN
+          (
+            'FC',
+            'FINANCE',
+            'GM'
+          )
+
     ) approval_flow
+
 
     WHERE UPPER(
       TRIM(
         CASE
-          WHEN approval_flow.ApprovalRole =
-               'FC'
+          WHEN approval_flow.ApprovalRole = 'FC'
           THEN COALESCE(
             approval.FinanceStatus,
             'Pending'
           )
 
-          WHEN approval_flow.ApprovalRole =
-               'GM'
+          WHEN approval_flow.ApprovalRole = 'GM'
           THEN COALESCE(
             approval.GMStatus,
             'Pending'
@@ -1101,9 +1786,10 @@ const CREDIT_APPLICATION_BASE_FROM = `
       )
     ) <> 'APPROVED'
 
+
     ORDER BY
-      approval_flow.ApprovalOrder ASC,
-      approval_flow.ApprovalLevel ASC
+      approval_flow.ApprovalLevel ASC,
+      approval_flow.ApprovalID ASC
 
     LIMIT 1
 
@@ -1226,123 +1912,280 @@ const getCreditApplicationList = async (data) => {
       );
     }
 
+
+    // ============================================================
+    // Approval Flow Filter
+    // FC / GM
+    // ============================================================
+
     const normalizedApprovalFlow =
       data.ApprovalFlow !== undefined &&
       data.ApprovalFlow !== null &&
-      String(data.ApprovalFlow).trim() !== ""
-        ? normalizeCreditApplicationApprovalRole(data.ApprovalFlow)
+      String(
+        data.ApprovalFlow,
+      ).trim() !== ""
+        ? normalizeCreditApplicationApprovalRole(
+            data.ApprovalFlow,
+          )
         : null;
 
     if (
       normalizedApprovalFlow &&
-      !CREDIT_APPLICATION_APPROVAL_ROLES.has(normalizedApprovalFlow)
+      !CREDIT_APPLICATION_APPROVAL_ROLES.has(
+        normalizedApprovalFlow,
+      )
     ) {
-      return fail("ApprovalFlow must be FC or GM.", 400);
+      return fail(
+        "ApprovalFlow must be FC or GM.",
+        400,
+      );
     }
 
-    // When ApprovalFlow is selected, Status belongs to that selected stage.
-    // The logged-in approver still controls the base visibility scope, but the
-    // same status must not also be applied to the logged-in approver's column.
-    const visibilityStatus = normalizedApprovalFlow ? null : Status;
+    // ApprovalFlow selected hai to Status selected stage par lagega.
+    const visibilityStatus =
+      normalizedApprovalFlow
+        ? null
+        : Status;
 
 
     // ============================================================
     // Application Date Range
     // ============================================================
 
-    const normalizeDateFilter = (value) =>
+    const normalizeDateFilter = (
+      value,
+    ) =>
       value !== undefined &&
       value !== null &&
       String(value).trim() !== ""
         ? String(value).trim()
         : null;
 
-    const FromDate = normalizeDateFilter(data.FromDate);
-    const ToDate = normalizeDateFilter(data.ToDate);
-    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const FromDate =
+      normalizeDateFilter(
+        data.FromDate,
+      );
 
-    const isValidDateFilter = (value) => {
-      if (!value || !datePattern.test(value)) return false;
-      const parsedDate = new Date(`${value}T00:00:00.000Z`);
-      return !Number.isNaN(parsedDate.getTime()) &&
-        parsedDate.toISOString().slice(0, 10) === value;
+    const ToDate =
+      normalizeDateFilter(
+        data.ToDate,
+      );
+
+    const datePattern =
+      /^\d{4}-\d{2}-\d{2}$/;
+
+    const isValidDateFilter = (
+      value,
+    ) => {
+      if (
+        !value ||
+        !datePattern.test(value)
+      ) {
+        return false;
+      }
+
+      const parsedDate =
+        new Date(
+          `${value}T00:00:00.000Z`,
+        );
+
+      return (
+        !Number.isNaN(
+          parsedDate.getTime(),
+        ) &&
+        parsedDate
+          .toISOString()
+          .slice(0, 10) ===
+          value
+      );
     };
 
-    if (FromDate && !isValidDateFilter(FromDate)) {
-      return fail("FromDate must be a valid date in YYYY-MM-DD format.", 400);
-    }
-
-    if (ToDate && !isValidDateFilter(ToDate)) {
-      return fail("ToDate must be a valid date in YYYY-MM-DD format.", 400);
-    }
-
-    if (FromDate && ToDate && FromDate > ToDate) {
-      return fail("FromDate cannot be greater than ToDate.", 400);
-    }
-
-
-    // ============================================================
-    // Logged-In User Approval Role
-    // ============================================================
-
-    const approvalRole =
-      resolveCreditApplicationApprovalRole({
-        UserType:
-          data.UserType,
-
-        DepartmentName:
-          data.DepartmentName,
-      });
-
-
-    const departmentName =
-      String(
-        data.DepartmentName ||
-          "",
+    if (
+      FromDate &&
+      !isValidDateFilter(
+        FromDate,
       )
-        .trim()
-        .toUpperCase();
+    ) {
+      return fail(
+        "FromDate must be a valid date in YYYY-MM-DD format.",
+        400,
+      );
+    }
+
+    if (
+      ToDate &&
+      !isValidDateFilter(
+        ToDate,
+      )
+    ) {
+      return fail(
+        "ToDate must be a valid date in YYYY-MM-DD format.",
+        400,
+      );
+    }
+
+    if (
+      FromDate &&
+      ToDate &&
+      FromDate > ToDate
+    ) {
+      return fail(
+        "FromDate cannot be greater than ToDate.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Approval Builder Flow
+    // NO DEFAULT FLOW
+    // ============================================================
+
+    const approvalFlow =
+      await getCreditApplicationApprovalFlow(
+        OrganizationID,
+      );
+
+    if (
+      !Array.isArray(
+        approvalFlow,
+      ) ||
+      approvalFlow.length === 0
+    ) {
+      return fail(
+        "Credit Application approval flow is not configured for this organization.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Configured Approval Roles
+    // ============================================================
+
+    const configuredApprovalRoles = [
+      ...new Set(
+        approvalFlow.map(
+          (item) =>
+            normalizeCreditApplicationApprovalRole(
+              item.ApprovalRole,
+            ),
+        ),
+      ),
+    ];
+
+
+    // ============================================================
+    // ApprovalFlow Filter Must Exist In Config
+    // ============================================================
+
+    if (
+      normalizedApprovalFlow &&
+      !configuredApprovalRoles.includes(
+        normalizedApprovalFlow,
+      )
+    ) {
+      return ok(
+        "Credit Application records fetched successfully.",
+        {
+          TotalCount: 0,
+          PageCount: 0,
+          CurrentPage: page,
+          PageSize,
+          TotalPages: 0,
+          CanFilter: false,
+          data: [],
+        },
+      );
+    }
+
+
+    // ============================================================
+    // Logged-In User Context
+    //
+    // USER -> Username
+    // ROLE -> UserType / DepartmentName
+    // ============================================================
+
+    const userContext =
+      await getCreditApplicationUserContext(
+        data,
+      );
 
     const userType =
-      String(data.UserType || "")
-        .trim()
-        .toUpperCase();
+      userContext.UserType;
+
+    const departmentName =
+      userContext.DepartmentName;
 
 
     // ============================================================
-    // Front Office Search Rule
-    //
-    // Sirf Front Office ke liye CompanyName search compulsory hai.
+    // Approval Steps Assigned To Logged-In User
     // ============================================================
 
-    const frontOfficeViewer =
-      !approvalRole &&
-      (
-        departmentName ===
-          "FRONT OFFICE" ||
-        departmentName === "FO"
+    const assignedApprovalSteps =
+      approvalFlow.filter(
+        (step) =>
+          isCreditApplicationApprovalStepAssignedToUser(
+            step,
+            userContext,
+          ),
       );
+
+    const assignedApprovalRoles = [
+      ...new Set(
+        assignedApprovalSteps.map(
+          (step) =>
+            normalizeCreditApplicationApprovalRole(
+              step.ApprovalRole,
+            ),
+        ),
+      ),
+    ];
+
+    const isApprover =
+      assignedApprovalSteps.length > 0;
+
+
+    // ============================================================
+    // User Types
+    // ============================================================
 
     const isSalesDepartment =
       [
         "SALES",
         "SALES & MARKETING",
-      ].includes(departmentName);
+      ].includes(
+        departmentName,
+      );
 
     const salesViewer =
-      !approvalRole &&
+      !isApprover &&
       isSalesDepartment;
+
+    const frontOfficeViewer =
+      !isApprover &&
+      (
+        departmentName ===
+          "FRONT OFFICE" ||
+        departmentName ===
+          "FO"
+      );
+
+    // Sales ko workflow data visible rahega.
+    // Baaki non-approver users completed records dekhenge.
+    const completedOnlyViewer =
+      !isApprover &&
+      !salesViewer;
 
     const canFilter =
       isSalesDepartment ||
-      (
-        userType !== "CEO" &&
-        Boolean(approvalRole)
-      );
+      isApprover;
 
-    const completedOnlyViewer =
-      !approvalRole &&
-      !salesViewer;
+
+    // ============================================================
+    // Front Office Search Rule
+    // ============================================================
 
     if (
       frontOfficeViewer &&
@@ -1356,7 +2199,8 @@ const getCreditApplicationList = async (data) => {
           CurrentPage: page,
           PageSize,
           TotalPages: 0,
-          CanFilter: canFilter,
+          CanFilter:
+            canFilter,
           data: [],
         },
       );
@@ -1364,8 +2208,61 @@ const getCreditApplicationList = async (data) => {
 
 
     // ============================================================
+    // Status Column Mapping
+    // ============================================================
+
+    const roleStatusColumns = {
+      FC:
+        "approval.FinanceStatus",
+
+      GM:
+        "approval.GMStatus",
+    };
+
+
+    // ============================================================
+    // All Configured Approvals Approved
+    //
+    // Example:
+    // FC + GM configured -> both approved
+    //
+    // Only GM configured -> GM approved
+    // ============================================================
+
+    const configuredApprovedConditions =
+      configuredApprovalRoles
+        .map(
+          (role) =>
+            roleStatusColumns[
+              role
+            ],
+        )
+        .filter(Boolean)
+        .map(
+          (column) =>
+            `
+            UPPER(
+              TRIM(
+                COALESCE(
+                  ${column},
+                  ''
+                )
+              )
+            ) = 'APPROVED'
+            `,
+        );
+
+    const allConfiguredApprovedSql =
+      configuredApprovedConditions.length >
+      0
+        ? configuredApprovedConditions.join(
+            " AND ",
+          )
+        : "FALSE";
+
+
+    // ============================================================
     // Common WHERE
-    // Same WHERE for Count + List
     // ============================================================
 
     let whereClause = `
@@ -1399,50 +2296,225 @@ const getCreditApplicationList = async (data) => {
 
 
     // ============================================================
-    // Application Date Filters (Inclusive)
+    // Date Filters
     // ============================================================
 
     if (FromDate) {
-      params.push(FromDate);
+      params.push(
+        FromDate,
+      );
+
       whereClause += `
-        AND ca.ApplicationDate >= $${params.length}::date
+        AND ca.ApplicationDate >=
+            $${params.length}::date
       `;
     }
 
     if (ToDate) {
-      params.push(ToDate);
+      params.push(
+        ToDate,
+      );
+
       whereClause += `
-        AND ca.ApplicationDate <= $${params.length}::date
+        AND ca.ApplicationDate <=
+            $${params.length}::date
       `;
     }
 
 
     // ============================================================
-    // Completed-Only Visibility
-    // Sales ko chhodkar CEO, Front Office aur baaki non-approver users ko
-    // record tabhi dikhega jab approvals complete hon aur ARID update ho.
-    // Sales / Sales & Marketing ko complete workflow data visible rahega.
+    // Current Stage User Assignment SQL
+    // ============================================================
+
+  // ============================================================
+// Current Stage User Assignment SQL
+//
+// Login-context parameters sirf tab add honge
+// jab current-stage assignment SQL actually query me use hoga.
+//
+// Isse APPROVED / REJECTED / RETURNED filters me
+// unused $2 / $3 / $4 parameter gap nahi banega.
+// ============================================================
+// ============================================================
+// Current Stage User Assignment SQL
+//
+// USER:
+//   ApproverValue = UserID OR Username
+//
+// ROLE:
+//   ApproverValue = UserType OR DepartmentName
+//
+// Parameters sirf tab add honge jab current-stage
+// assignment query me actually use ho raha ho.
+// ============================================================
+
+let currentStageAssignedToUserSql =
+  "FALSE";
+
+const needsCurrentStageAssignment =
+  isApprover &&
+  (
+    visibilityStatus ===
+      "PENDING" ||
+
+    visibilityStatus ===
+      null
+  );
+
+if (
+  needsCurrentStageAssignment
+) {
+  // ============================================================
+  // User ID
+  // ============================================================
+
+  params.push(
+    String(
+      userContext.UserID ||
+        "",
+    ),
+  );
+
+  const userIDIndex =
+    params.length;
+
+
+  // ============================================================
+  // Username
+  // ============================================================
+
+  params.push(
+    userContext.Username ||
+      "",
+  );
+
+  const usernameIndex =
+    params.length;
+
+
+  // ============================================================
+  // User Type
+  // ============================================================
+
+  params.push(
+    userContext.UserType ||
+      "",
+  );
+
+  const userTypeIndex =
+    params.length;
+
+
+  // ============================================================
+  // Department
+  // ============================================================
+
+  params.push(
+    userContext.DepartmentName ||
+      "",
+  );
+
+  const departmentIndex =
+    params.length;
+
+
+  // ============================================================
+  // USER / ROLE Assignment
+  // ============================================================
+
+  currentStageAssignedToUserSql = `
+    (
+      (
+        UPPER(
+          TRIM(
+            COALESCE(
+              current_stage.ApproverType,
+              ''
+            )
+          )
+        ) = 'USER'
+
+        AND
+
+        (
+          TRIM(
+            COALESCE(
+              current_stage.ApproverValue,
+              ''
+            )
+          ) =
+          TRIM(
+            ($${userIDIndex})::text
+          )
+
+          OR
+
+          UPPER(
+            TRIM(
+              COALESCE(
+                current_stage.ApproverValue,
+                ''
+              )
+            )
+          ) =
+          UPPER(
+            TRIM(
+              ($${usernameIndex})::text
+            )
+          )
+        )
+      )
+
+      OR
+
+      (
+        UPPER(
+          TRIM(
+            COALESCE(
+              current_stage.ApproverType,
+              ''
+            )
+          )
+        ) = 'ROLE'
+
+        AND
+
+        UPPER(
+          TRIM(
+            COALESCE(
+              current_stage.ApproverValue,
+              ''
+            )
+          )
+        ) IN
+        (
+          UPPER(
+            TRIM(
+              ($${userTypeIndex})::text
+            )
+          ),
+
+          UPPER(
+            TRIM(
+              ($${departmentIndex})::text
+            )
+          )
+        )
+      )
+    )
+  `;
+}
+
+    // ============================================================
+    // Completed-Only Viewer
+    // CEO / Front Office / Other Non-Approver
     // ============================================================
 
     if (completedOnlyViewer) {
       whereClause += `
-        AND UPPER(
-          TRIM(
-            COALESCE(
-              approval.FinanceStatus,
-              ''
-            )
-          )
-        ) = 'APPROVED'
-
-        AND UPPER(
-          TRIM(
-            COALESCE(
-              approval.GMStatus,
-              ''
-            )
-          )
-        ) = 'APPROVED'
+        AND (
+          ${allConfiguredApprovedSql}
+        )
 
         AND NULLIF(
           TRIM(
@@ -1459,46 +2531,23 @@ const getCreditApplicationList = async (data) => {
 
     // ============================================================
     // Approver Access
+    // USER / ROLE Builder Based
     // ============================================================
 
-    else if (approvalRole) {
-      const roleStatusColumns = {
-        FC:
-          "approval.FinanceStatus",
-
-        GM:
-          "approval.GMStatus",
-      };
-
-      const roleStatusColumn =
-        roleStatusColumns[
-          approvalRole
-        ];
-
-
+    else if (isApprover) {
       // ==========================================================
-      // Pending
+      // PENDING
       // ==========================================================
 
-      if (visibilityStatus === "PENDING") {
-        params.push(
-          approvalRole,
-        );
-
-        const roleIndex =
-          params.length;
-
+      if (
+        visibilityStatus ===
+        "PENDING"
+      ) {
         whereClause += `
           AND
           (
             (
-              UPPER(
-                COALESCE(
-                  current_stage.ApprovalRole,
-                  ''
-                )
-              ) =
-              $${roleIndex}
+              ${currentStageAssignedToUserSql}
 
               AND UPPER(
                 TRIM(
@@ -1511,31 +2560,23 @@ const getCreditApplicationList = async (data) => {
             )
         `;
 
-        // FC ko ARID pending records bhi dikhne hain
+
+        // ========================================================
+        // FC ARID Pending
+        //
+        // FC configured approver ko:
+        // all approvals approved + ARID blank
+        // ========================================================
+
         if (
-          approvalRole ===
-          "FC"
+          assignedApprovalRoles.includes(
+            "FC",
+          )
         ) {
           whereClause += `
             OR
             (
-              UPPER(
-                TRIM(
-                  COALESCE(
-                    approval.FinanceStatus,
-                    ''
-                  )
-                )
-              ) = 'APPROVED'
-
-              AND UPPER(
-                TRIM(
-                  COALESCE(
-                    approval.GMStatus,
-                    ''
-                  )
-                )
-              ) = 'APPROVED'
+              ${allConfiguredApprovedSql}
 
               AND NULLIF(
                 TRIM(
@@ -1557,73 +2598,145 @@ const getCreditApplicationList = async (data) => {
 
 
       // ==========================================================
-      // Approved / Rejected / Returned
-      // Logged-in approver ka own history
+      // APPROVED / REJECTED / RETURNED
+      // Own Configured Approval History
       // ==========================================================
 
       else if (
-        visibilityStatus ===
-          "APPROVED" ||
-        visibilityStatus ===
-          "REJECTED" ||
-        visibilityStatus ===
-          "RETURNED"
+        [
+          "APPROVED",
+          "REJECTED",
+          "RETURNED",
+        ].includes(
+          visibilityStatus,
+        )
       ) {
         params.push(
           visibilityStatus,
         );
 
-        whereClause += `
-          AND UPPER(
-            TRIM(
-              COALESCE(
-                ${roleStatusColumn},
-                ''
-              )
-            )
-          ) =
-          $${params.length}
-        `;
+        const statusIndex =
+          params.length;
 
-        // GM approval ke baad AR ID pending record FC ka pending task hai,
-        // isliye use FC Approved history mein include nahi karna hai.
+        const historyConditions =
+          assignedApprovalRoles
+            .map(
+              (role) => {
+                const column =
+                  roleStatusColumns[
+                    role
+                  ];
+
+                if (!column) {
+                  return null;
+                }
+
+                let condition = `
+                  UPPER(
+                    TRIM(
+                      COALESCE(
+                        ${column},
+                        ''
+                      )
+                    )
+                  ) =
+                  $${statusIndex}
+                `;
+
+                // FC Approved + ARID blank =
+                // FC Pending task, Approved history nahi.
+                if (
+                  role === "FC" &&
+                  visibilityStatus ===
+                    "APPROVED"
+                ) {
+                  condition = `
+                    (
+                      ${condition}
+
+                      AND NOT
+                      (
+                        ${allConfiguredApprovedSql}
+
+                        AND NULLIF(
+                          TRIM(
+                            COALESCE(
+                              ca.ARID,
+                              ''
+                            )
+                          ),
+                          ''
+                        ) IS NULL
+                      )
+                    )
+                  `;
+                }
+
+                return condition;
+              },
+            )
+            .filter(Boolean);
+
         if (
-          approvalRole === "FC" &&
-          visibilityStatus === "APPROVED"
+          historyConditions.length >
+          0
         ) {
           whereClause += `
-            AND NOT
+            AND
             (
-              UPPER(TRIM(COALESCE(approval.FinanceStatus, ''))) = 'APPROVED'
-              AND UPPER(TRIM(COALESCE(approval.GMStatus, ''))) = 'APPROVED'
-              AND NULLIF(TRIM(COALESCE(ca.ARID, '')), '') IS NULL
+              ${historyConditions.join(
+                " OR ",
+              )}
             )
+          `;
+        } else {
+          whereClause += `
+            AND FALSE
           `;
         }
       }
 
 
       // ==========================================================
-      // No Status
-      // Current work + own history
+      // NO STATUS
+      //
+      // Current Work + Own History
       // ==========================================================
 
       else {
-        params.push(
-          approvalRole,
-        );
+        const historyConditions =
+          assignedApprovalRoles
+            .map(
+              (role) =>
+                roleStatusColumns[
+                  role
+                ],
+            )
+            .filter(Boolean)
+            .map(
+              (column) =>
+                `
+                UPPER(
+                  TRIM(
+                    COALESCE(
+                      ${column},
+                      ''
+                    )
+                  )
+                ) IN
+                (
+                  'APPROVED',
+                  'REJECTED',
+                  'RETURNED'
+                )
+                `,
+            );
 
         whereClause += `
           AND
           (
             (
-              UPPER(
-                COALESCE(
-                  current_stage.ApprovalRole,
-                  ''
-                )
-              ) =
-              $${params.length}
+              ${currentStageAssignedToUserSql}
 
               AND UPPER(
                 TRIM(
@@ -1635,21 +2748,19 @@ const getCreditApplicationList = async (data) => {
               ) = 'PENDING'
             )
 
-            OR
-
-            UPPER(
-              TRIM(
-                COALESCE(
-                  ${roleStatusColumn},
-                  ''
-                )
-              )
-            ) IN
-            (
-              'APPROVED',
-              'REJECTED',
-              'RETURNED'
-            )
+            ${
+              historyConditions.length >
+              0
+                ? `
+                  OR
+                  (
+                    ${historyConditions.join(
+                      " OR ",
+                    )}
+                  )
+                `
+                : ""
+            }
           )
         `;
       }
@@ -1658,12 +2769,13 @@ const getCreditApplicationList = async (data) => {
 
     // ============================================================
     // Normal User Status Filter
-    // Sales / Sales & Marketing etc.
+    // Sales / Sales & Marketing
     // ============================================================
 
     else if (visibilityStatus) {
       if (
-        visibilityStatus === "APPROVED"
+        visibilityStatus ===
+        "APPROVED"
       ) {
         whereClause += `
           AND UPPER(
@@ -1678,7 +2790,8 @@ const getCreditApplicationList = async (data) => {
       }
 
       else if (
-        visibilityStatus === "REJECTED"
+        visibilityStatus ===
+        "REJECTED"
       ) {
         whereClause += `
           AND
@@ -1718,7 +2831,8 @@ const getCreditApplicationList = async (data) => {
       }
 
       else if (
-        visibilityStatus === "RETURNED"
+        visibilityStatus ===
+        "RETURNED"
       ) {
         whereClause += `
           AND
@@ -1758,7 +2872,8 @@ const getCreditApplicationList = async (data) => {
       }
 
       else if (
-        visibilityStatus === "PENDING"
+        visibilityStatus ===
+        "PENDING"
       ) {
         whereClause += `
           AND current_stage.ApprovalRole
@@ -1814,60 +2929,71 @@ const getCreditApplicationList = async (data) => {
 
     // ============================================================
     // Approval Flow Filter
-    // Existing user visibility ke result ko selected approval stage se narrow
-    // karta hai. Non-pending status selected role ke own status column par
-    // apply hota hai; Pending current-stage concept hai.
+    //
+    // Old Credit_Application_Approval_Config completely removed.
+    // New configured flow already fetched above.
     // ============================================================
 
-    if (normalizedApprovalFlow) {
-      params.push(normalizedApprovalFlow);
-      const approvalFlowIndex = params.length;
+    if (
+      normalizedApprovalFlow
+    ) {
+      // ==========================================================
+      // Selected Flow + Pending
+      // ==========================================================
 
-      whereClause += `
-        AND (
-          EXISTS (
-            SELECT 1
-            FROM Credit_Application_Approval_Config flow_cfg
-            WHERE flow_cfg.OrganizationID = ca.OrganizationID
-              AND flow_cfg.IsDeleted = FALSE
-              AND (
-                CASE
-                  WHEN UPPER(TRIM(flow_cfg.ApprovalRole)) = 'FINANCE' THEN 'FC'
-                  ELSE UPPER(TRIM(flow_cfg.ApprovalRole))
-                END
-              ) = $${approvalFlowIndex}
-          )
-          OR (
-            NOT EXISTS (
-              SELECT 1
-              FROM Credit_Application_Approval_Config configured_flow
-              WHERE configured_flow.OrganizationID = ca.OrganizationID
-                AND configured_flow.IsDeleted = FALSE
-            )
-            AND $${approvalFlowIndex} IN ('FC', 'GM')
-          )
-        )
-      `;
+      if (
+        Status === "PENDING"
+      ) {
+        params.push(
+          normalizedApprovalFlow,
+        );
 
-      if (Status === "PENDING") {
+        const flowIndex =
+          params.length;
+
         whereClause += `
-          AND (
+          AND
+          (
             (
-              UPPER(TRIM(COALESCE(current_stage.ApprovalRole, ''))) =
-                $${approvalFlowIndex}
-              AND UPPER(TRIM(COALESCE(current_stage.Status, 'Pending'))) =
-                'PENDING'
+              UPPER(
+                TRIM(
+                  COALESCE(
+                    current_stage.ApprovalRole,
+                    ''
+                  )
+                )
+              ) =
+              $${flowIndex}
+
+              AND UPPER(
+                TRIM(
+                  COALESCE(
+                    current_stage.Status,
+                    'Pending'
+                  )
+                )
+              ) = 'PENDING'
             )
         `;
 
-        // Finance and GM approvals complete hone ke baad blank ARID ko UI mein
-        // FC ka pending task maana jata hai.
-        if (normalizedApprovalFlow === "FC") {
+        if (
+          normalizedApprovalFlow ===
+          "FC"
+        ) {
           whereClause += `
-            OR (
-              UPPER(TRIM(COALESCE(approval.FinanceStatus, ''))) = 'APPROVED'
-              AND UPPER(TRIM(COALESCE(approval.GMStatus, ''))) = 'APPROVED'
-              AND NULLIF(TRIM(COALESCE(ca.ARID, '')), '') IS NULL
+            OR
+            (
+              ${allConfiguredApprovedSql}
+
+              AND NULLIF(
+                TRIM(
+                  COALESCE(
+                    ca.ARID,
+                    ''
+                  )
+                ),
+                ''
+              ) IS NULL
             )
           `;
         }
@@ -1875,26 +3001,59 @@ const getCreditApplicationList = async (data) => {
         whereClause += `
           )
         `;
-      } else if (Status) {
-        const flowStatusColumns = {
-          FC: "approval.FinanceStatus",
-          GM: "approval.GMStatus",
-        };
-        const flowStatusColumn = flowStatusColumns[normalizedApprovalFlow];
+      }
 
-        params.push(Status);
+
+      // ==========================================================
+      // Selected Flow + Status
+      // ==========================================================
+
+      else if (Status) {
+        const flowStatusColumn =
+          roleStatusColumns[
+            normalizedApprovalFlow
+          ];
+
+        params.push(
+          Status,
+        );
+
+        const flowStatusIndex =
+          params.length;
+
         whereClause += `
-          AND UPPER(TRIM(COALESCE(${flowStatusColumn}, 'Pending'))) =
-            $${params.length}
+          AND UPPER(
+            TRIM(
+              COALESCE(
+                ${flowStatusColumn},
+                'Pending'
+              )
+            )
+          ) =
+          $${flowStatusIndex}
         `;
 
-        // ARID-null state is displayed as FC Pending, not FC Approved.
-        if (normalizedApprovalFlow === "FC" && Status === "APPROVED") {
+        // FC Approved + ARID blank = FC Pending
+        if (
+          normalizedApprovalFlow ===
+            "FC" &&
+          Status ===
+            "APPROVED"
+        ) {
           whereClause += `
-            AND NOT (
-              UPPER(TRIM(COALESCE(approval.FinanceStatus, ''))) = 'APPROVED'
-              AND UPPER(TRIM(COALESCE(approval.GMStatus, ''))) = 'APPROVED'
-              AND NULLIF(TRIM(COALESCE(ca.ARID, '')), '') IS NULL
+            AND NOT
+            (
+              ${allConfiguredApprovedSql}
+
+              AND NULLIF(
+                TRIM(
+                  COALESCE(
+                    ca.ARID,
+                    ''
+                  )
+                ),
+                ''
+              ) IS NULL
             )
           `;
         }
@@ -1928,7 +3087,7 @@ const getCreditApplicationList = async (data) => {
 
 
     // ============================================================
-    // List Parameters
+    // List Params
     // ============================================================
 
     const listParams = [
@@ -1954,8 +3113,6 @@ const getCreditApplicationList = async (data) => {
         SELECT
           ca.CreditApplicationID,
           ca.OrganizationID,
-
-        
 
           om.ShortName
             AS "OrganizationShortName",
@@ -2026,7 +3183,7 @@ const getCreditApplicationList = async (data) => {
 
 
     // ============================================================
-    // Attach Documents + Approval
+    // Attach Documents + New Approval Builder Flow
     // ============================================================
 
     const records =
@@ -2036,25 +3193,20 @@ const getCreditApplicationList = async (data) => {
 
 
     // ============================================================
-    // CanApprove
+    // CanAction + CanApprove
     // ============================================================
 
     for (
       const record of records
     ) {
-      record.CanAction = isSalesDepartment;
+      // Sales can edit/delete etc. existing behaviour
+      record.CanAction =
+        isSalesDepartment;
 
-      const fcApproval = record.Approvals.find(
-        (stage) => stage.ApprovalRole === "FC",
-      );
-      const gmApproval = record.Approvals.find(
-        (stage) => stage.ApprovalRole === "GM",
-      );
-      const isFCARPending =
-        approvalRole === "FC" &&
-        normalizeCreditApprovalStatus(fcApproval?.Status) === "APPROVED" &&
-        normalizeCreditApprovalStatus(gmApproval?.Status) === "APPROVED" &&
-        String(record.ARID || "").trim() === "";
+
+      // ==========================================================
+      // Current Approval Stage
+      // ==========================================================
 
       const currentStage =
         record.Approvals.find(
@@ -2065,35 +3217,100 @@ const getCreditApplicationList = async (data) => {
             "APPROVED",
         );
 
+
+      // ==========================================================
+      // Current Stage Assigned To Logged-In User?
+      // ==========================================================
+
+      const currentStageAssignedToUser =
+        isCreditApplicationApprovalStepAssignedToUser(
+          currentStage,
+          userContext,
+        );
+
+
+      // ==========================================================
+      // Can Approve
+      // ==========================================================
+
       record.CanApprove =
         Boolean(
-          approvalRole &&
+          currentStage &&
+
+          currentStageAssignedToUser &&
 
           normalizeCreditApprovalStatus(
             record.FinalStatus,
           ) !==
             "APPROVED" &&
 
-          currentStage
-            ?.ApprovalRole ===
-            approvalRole &&
-
           normalizeCreditApprovalStatus(
-            currentStage?.Status,
+            currentStage.Status,
           ) ===
             "PENDING"
         );
 
+
+      // ==========================================================
+      // FC ARID Pending
+      //
+      // All configured approvals Approved
+      // + FC assigned to logged-in user
+      // + ARID blank
+      // ==========================================================
+
+      const fcApproval =
+        record.Approvals.find(
+          (stage) =>
+            stage.ApprovalRole ===
+            "FC",
+        );
+
+      const loggedInUserIsFCApprover =
+        Boolean(
+          fcApproval &&
+          isCreditApplicationApprovalStepAssignedToUser(
+            fcApproval,
+            userContext,
+          ),
+        );
+
+      const allApprovalsApproved =
+        record.Approvals.length >
+          0 &&
+        record.Approvals.every(
+          (stage) =>
+            normalizeCreditApprovalStatus(
+              stage.Status,
+            ) ===
+            "APPROVED",
+        );
+
+      const isFCARPending =
+        loggedInUserIsFCApprover &&
+
+        allApprovalsApproved &&
+
+        String(
+          record.ARID || "",
+        ).trim() === "";
+
       if (isFCARPending) {
-        record.CurrentApprovalRole = "FC";
-        record.CurrentStatus = "Pending";
-        record.CanApprove = false;
+        record.CurrentApprovalRole =
+          "FC";
+
+        record.CurrentStatus =
+          "Pending";
+
+        // ARID update approval action nahi hai.
+        record.CanApprove =
+          false;
       }
     }
 
 
     // ============================================================
-    // Remove Detail-Only Fields From List
+    // Remove Detail / Internal Fields From List
     // ============================================================
 
     for (
@@ -2102,17 +3319,34 @@ const getCreditApplicationList = async (data) => {
       for (
         const field of [
           "OrganizationName",
-
           "CreatedBy",
           "ModifiedDate",
-
           "Documents",
         ]
       ) {
-        delete record[field];
+        delete record[
+          field
+        ];
       }
 
-      for (const approval of record.Approvals || []) {
+      for (
+        const approval of
+          record.Approvals ||
+          []
+      ) {
+        // Existing response shape maintain karo
+        delete approval.ApprovalMasterID;
+        delete approval.ApprovalID;
+
+        delete approval.LevelNo;
+        delete approval.ApprovalOrder;
+
+        delete approval.ApproverType;
+        delete approval.ApproverValue;
+
+        delete approval.ApprovalType;
+        delete approval.IsMandatory;
+
         delete approval.StatusDateTime;
         delete approval.ApprovedBy;
       }
@@ -2193,6 +3427,7 @@ const getCreditApplicationById = async (data) => {
 
     // ============================================================
     // Query
+    // Same Existing Query
     // ============================================================
 
     const result =
@@ -2262,8 +3497,7 @@ const getCreditApplicationById = async (data) => {
         WHERE
           ca.CreditApplicationID = $1
 
-          AND ca.IsDeleted =
-              FALSE
+          AND ca.IsDeleted = FALSE
 
         LIMIT 1;
         `,
@@ -2288,7 +3522,7 @@ const getCreditApplicationById = async (data) => {
 
 
     // ============================================================
-    // Attach Documents + Approval
+    // Attach Documents + New Approval Builder Flow
     // ============================================================
 
     const records =
@@ -2301,143 +3535,241 @@ const getCreditApplicationById = async (data) => {
 
 
     // ============================================================
-    // Approval Role
+    // Approval Flow Must Exist
+    // No Default Approval Flow
     // ============================================================
 
-    const approvalRole =
-      resolveCreditApplicationApprovalRole({
-        UserType:
-          data.UserType,
+    if (
+      !Array.isArray(
+        CreditApplication.Approvals,
+      ) ||
+      CreditApplication.Approvals.length === 0
+    ) {
+      return fail(
+        "Credit Application approval flow is not configured for this organization.",
+        400,
+      );
+    }
 
-        DepartmentName:
-          data.DepartmentName,
-      });
 
+    // ============================================================
+    // Logged-In User Context
+    //
+    // USER -> Username
+    // ROLE -> UserType / DepartmentName
+    // ============================================================
+
+    const userContext =
+      await getCreditApplicationUserContext(
+        data,
+      );
 
     const userType =
-      String(
-        data.UserType || "",
-      )
-        .trim()
-        .toUpperCase();
+      userContext.UserType;
 
     const departmentName =
+      userContext.DepartmentName;
+
+
+    // ============================================================
+    // Sales
+    // ============================================================
+
+    const isSalesDepartment =
+      [
+        "SALES",
+        "SALES & MARKETING",
+      ].includes(
+        departmentName,
+      );
+
+
+    // ============================================================
+    // Approval Steps Assigned To Logged-In User
+    // ============================================================
+
+    const assignedApprovalSteps =
+      CreditApplication.Approvals.filter(
+        (stage) =>
+          isCreditApplicationApprovalStepAssignedToUser(
+            stage,
+            userContext,
+          ),
+      );
+
+    const isApprover =
+      assignedApprovalSteps.length > 0;
+
+
+    // ============================================================
+    // Current Approval Stage
+    // First stage which is not Approved
+    // ============================================================
+
+    const currentStage =
+      CreditApplication.Approvals.find(
+        (stage) =>
+          normalizeCreditApprovalStatus(
+            stage.Status,
+          ) !==
+          "APPROVED",
+      );
+
+
+    // ============================================================
+    // All Configured Approvals Approved
+    // Dynamic Builder Based
+    // ============================================================
+
+    const allApprovalsApproved =
+      CreditApplication.Approvals.length >
+        0 &&
+
+      CreditApplication.Approvals.every(
+        (stage) =>
+          normalizeCreditApprovalStatus(
+            stage.Status,
+          ) ===
+          "APPROVED",
+      );
+
+
+    // ============================================================
+    // ARID
+    // ============================================================
+
+    const hasARID =
       String(
-        data.DepartmentName || "",
-      )
-        .trim()
-        .toUpperCase();
+        CreditApplication.ARID ||
+          "",
+      ).trim() !== "";
 
 
     // ============================================================
     // CEO / Front Office
-    // Only completed records
+    //
+    // Existing rule maintain:
+    // completed application only
     // ============================================================
 
-    const searchOnlyViewer =
-      !approvalRole &&
+    const completedOnlyViewer =
+      !isApprover &&
+      !isSalesDepartment &&
       (
         userType === "CEO" ||
+
         departmentName ===
           "FRONT OFFICE" ||
-        departmentName === "FO"
+
+        departmentName ===
+          "FO"
       );
 
-    if (searchOnlyViewer) {
-      const fcApproved =
-        normalizeCreditApprovalStatus(
-          result.rows[0]
-            .financestatus,
-        ) === "APPROVED";
 
-      const gmApproved =
-        normalizeCreditApprovalStatus(
-          result.rows[0]
-            .gmstatus,
-        ) === "APPROVED";
-
-      const hasARID =
-        String(
-          CreditApplication.ARID ||
-            "",
-        ).trim() !== "";
-
-      if (
-        !fcApproved ||
-        !gmApproved ||
+    if (
+      completedOnlyViewer &&
+      (
+        !allApprovalsApproved ||
         !hasARID
-      ) {
-        return fail(
-          "You are not authorized to view this Credit Application.",
-          403,
-        );
-      }
+      )
+    ) {
+      return fail(
+        "You are not authorized to view this Credit Application.",
+        403,
+      );
     }
+
+
+    // ============================================================
+    // FC Approval Step
+    // ============================================================
+
+    const fcApproval =
+      CreditApplication.Approvals.find(
+        (stage) =>
+          normalizeCreditApplicationApprovalRole(
+            stage.ApprovalRole,
+          ) ===
+          "FC",
+      );
+
+
+    // ============================================================
+    // Is Logged-In User Configured FC Approver?
+    // USER / ROLE dono support
+    // ============================================================
+
+    const loggedInUserIsFCApprover =
+      Boolean(
+        fcApproval &&
+
+        isCreditApplicationApprovalStepAssignedToUser(
+          fcApproval,
+          userContext,
+        ),
+      );
+
+
+    // ============================================================
+    // FC ARID Pending
+    //
+    // All configured approvals Approved
+    // + ARID blank
+    // + logged-in user is configured FC approver
+    // ============================================================
+
+    const fcARPending =
+      loggedInUserIsFCApprover &&
+
+      allApprovalsApproved &&
+
+      !hasARID;
 
 
     // ============================================================
     // Approver View Access
     // ============================================================
 
-    if (approvalRole) {
-      const currentStage =
-        CreditApplication.Approvals.find(
-          (stage) =>
-            normalizeCreditApprovalStatus(
-              stage.Status,
-            ) !==
-            "APPROVED",
-        );
-
-      const ownApproval =
-        CreditApplication.Approvals.find(
-          (stage) =>
-            stage.ApprovalRole ===
-            approvalRole,
-        );
-
-      const ownStatus =
-        normalizeCreditApprovalStatus(
-          ownApproval?.Status,
-        );
-
-      const hasAlreadyActed =
-        [
-          "APPROVED",
-          "REJECTED",
-          "RETURNED",
-        ].includes(
-          ownStatus,
-        );
+    if (isApprover) {
+      // ==========================================================
+      // Current stage assigned to logged-in user?
+      // ==========================================================
 
       const isCurrentStage =
-        currentStage
-          ?.ApprovalRole ===
-        approvalRole;
+        Boolean(
+          currentStage &&
+
+          isCreditApplicationApprovalStepAssignedToUser(
+            currentStage,
+            userContext,
+          ),
+        );
 
 
-      // FC ko ARID pending state me access rahega
-      const fcARPending =
-        approvalRole ===
-          "FC" &&
+      // ==========================================================
+      // User's own approval history
+      //
+      // User may have been configured on FC or GM step.
+      // ==========================================================
 
-        normalizeCreditApprovalStatus(
-          result.rows[0]
-            .financestatus,
-        ) ===
-          "APPROVED" &&
+      const hasAlreadyActed =
+        assignedApprovalSteps.some(
+          (stage) =>
+            [
+              "APPROVED",
+              "REJECTED",
+              "RETURNED",
+            ].includes(
+              normalizeCreditApprovalStatus(
+                stage.Status,
+              ),
+            ),
+        );
 
-        normalizeCreditApprovalStatus(
-          result.rows[0]
-            .gmstatus,
-        ) ===
-          "APPROVED" &&
 
-        String(
-          CreditApplication.ARID ||
-            "",
-        ).trim() === "";
-
+      // ==========================================================
+      // Access
+      // ==========================================================
 
       if (
         !isCurrentStage &&
@@ -2454,35 +3786,91 @@ const getCreditApplicationById = async (data) => {
 
     // ============================================================
     // Can Approve
+    //
+    // Current step:
+    // USER -> Username match
+    // ROLE -> UserType / DepartmentName match
     // ============================================================
 
-    const currentStage =
-      CreditApplication.Approvals.find(
-        (stage) =>
-          normalizeCreditApprovalStatus(
-            stage.Status,
-          ) !==
-          "APPROVED",
+    const currentStageAssignedToUser =
+      Boolean(
+        currentStage &&
+
+        isCreditApplicationApprovalStepAssignedToUser(
+          currentStage,
+          userContext,
+        ),
       );
 
     CreditApplication.CanApprove =
       Boolean(
-        approvalRole &&
+        currentStage &&
+
+        currentStageAssignedToUser &&
 
         normalizeCreditApprovalStatus(
           CreditApplication.FinalStatus,
         ) !==
           "APPROVED" &&
 
-        currentStage
-          ?.ApprovalRole ===
-          approvalRole &&
-
         normalizeCreditApprovalStatus(
-          currentStage?.Status,
+          currentStage.Status,
         ) ===
           "PENDING"
       );
+
+
+    // ============================================================
+    // FC ARID Pending
+    //
+    // Approval complete ho chuki hai.
+    // Ab FC ko ARID update karni hai.
+    // Approve button nahi aayega.
+    // ============================================================
+
+    if (fcARPending) {
+      CreditApplication.CurrentApprovalRole =
+        "FC";
+
+      CreditApplication.CurrentStatus =
+        "Pending";
+
+      CreditApplication.CanApprove =
+        false;
+    }
+
+
+    // ============================================================
+    // Remove Internal Approval Builder Fields
+    //
+    // Existing API response structure maintain
+    // ============================================================
+
+    for (
+      const approval of
+        CreditApplication.Approvals ||
+        []
+    ) {
+      delete approval.ApprovalMasterID;
+
+      delete approval.ApprovalID;
+
+      delete approval.LevelNo;
+
+      delete approval.ApprovalOrder;
+
+      delete approval.ApproverType;
+
+      delete approval.ApproverValue;
+
+      delete approval.ApprovalType;
+
+      delete approval.IsMandatory;
+
+      delete approval.StatusDateTime;
+
+      delete approval.ApprovedBy;
+    }
 
 
     // ============================================================
@@ -2500,7 +3888,7 @@ const getCreditApplicationById = async (data) => {
       "Fetch Credit Application record",
     );
   }
-};  
+};
 // ============================================================GET COMPANY NAMES
 const getCompanyNames = async (data) => {
   try {
@@ -3070,82 +4458,68 @@ const processCreditApplicationApproval = async (data) => {
       DepartmentName,
     } = data;
 
-    // ============================================================
-    // Logged-In Approval Role
-    // ============================================================
-
-    const approvalRole =
-      resolveCreditApplicationApprovalRole({
-        UserType,
-        DepartmentName,
-      });
-
-    if (!approvalRole) {
-      await client.query("ROLLBACK");
-
-      return fail(
-        "You are not authorized to approve Credit Applications.",
-        403,
-      );
-    }
 
     // ============================================================
     // Lock Credit Application + Approval
     // ============================================================
 
-    const result = await client.query(
-      `
-      SELECT
-        ca.CreditApplicationID,
-        ca.OrganizationID,
-        ca.CompanyName,
-        ca.ARID,
-        ca.ApplicationDate,
-        ca.CreditAmountAllowed,
-        ca.ExpectedBusinessFY,
-        ca.FinancialYear,
-        ca.AuthorisedPersonNamePosition,
-        ca.AccountsContactNamePosition,
-        ca.CreatedBy,
+    const result =
+      await client.query(
+        `
+        SELECT
+          ca.CreditApplicationID,
+          ca.OrganizationID,
+          ca.CompanyName,
+          ca.ARID,
+          ca.ApplicationDate,
+          ca.CreditAmountAllowed,
+          ca.ExpectedBusinessFY,
+          ca.FinancialYear,
+          ca.AuthorisedPersonNamePosition,
+          ca.AccountsContactNamePosition,
+          ca.CreatedBy,
 
-        approval.CreditApplicationApprovalID,
+          approval.CreditApplicationApprovalID,
 
-        approval.FinanceStatus,
-        approval.FinanceStatusDateTime,
-        approval.FinanceStatusApprovedBy,
-        approval.FinanceRemarks,
+          approval.FinanceStatus,
+          approval.FinanceStatusDateTime,
+          approval.FinanceStatusApprovedBy,
+          approval.FinanceRemarks,
 
-        approval.GMStatus,
-        approval.GMStatusDateTime,
-        approval.GMStatusApprovedBy,
-        approval.GMRemarks,
+          approval.GMStatus,
+          approval.GMStatusDateTime,
+          approval.GMStatusApprovedBy,
+          approval.GMRemarks,
 
-        approval.FinalStatus,
-        approval.FinalStatusDateTime
+          approval.FinalStatus,
+          approval.FinalStatusDateTime
 
-      FROM Credit_Application_Entry_Master ca
+        FROM Credit_Application_Entry_Master ca
 
-      INNER JOIN Credit_Application_Approval approval
-        ON approval.CreditApplicationID =
-           ca.CreditApplicationID
+        INNER JOIN Credit_Application_Approval approval
+          ON approval.CreditApplicationID =
+             ca.CreditApplicationID
 
-       AND approval.IsDeleted = FALSE
+         AND approval.IsDeleted = FALSE
 
-      WHERE ca.CreditApplicationID = $1
-        AND ca.IsDeleted = FALSE
+        WHERE ca.CreditApplicationID = $1
+          AND ca.IsDeleted = FALSE
 
-      FOR UPDATE OF ca, approval;
-      `,
-      [
-        CreditApplicationID,
-      ],
-    );
+        FOR UPDATE OF ca, approval;
+        `,
+        [
+          CreditApplicationID,
+        ],
+      );
+
 
     // ============================================================
     // Not Found
     // ============================================================
 
-    if (result.rows.length === 0) {
+    if (
+      result.rows.length === 0
+    ) {
       await client.query("ROLLBACK");
 
       return fail(
@@ -3154,16 +4528,46 @@ const processCreditApplicationApproval = async (data) => {
       );
     }
 
-    const row = result.rows[0];
+
+    const row =
+      result.rows[0];
 
     const OrganizationID =
-      Number(row.organizationid);
-    let committedNotificationEvent = null;
-    const notificationDetails = { applicationDate: row.applicationdate,
-      creditAmountAllowed: row.creditamountallowed,
-      expectedBusinessFY: row.expectedbusinessfy, financialYear: row.financialyear,
-      authorisedPerson: row.authorisedpersonnameposition,
-      accountsContact: row.accountscontactnameposition };
+      Number(
+        row.organizationid,
+      );
+
+
+    // ============================================================
+    // Notification
+    //
+    // IMPORTANT:
+    // Existing notification system abhi same rakha hai.
+    // ============================================================
+
+    let committedNotificationEvent =
+      null;
+
+    const notificationDetails = {
+      applicationDate:
+        row.applicationdate,
+
+      creditAmountAllowed:
+        row.creditamountallowed,
+
+      expectedBusinessFY:
+        row.expectedbusinessfy,
+
+      financialYear:
+        row.financialyear,
+
+      authorisedPerson:
+        row.authorisedpersonnameposition,
+
+      accountsContact:
+        row.accountscontactnameposition,
+    };
+
 
     // ============================================================
     // Already Final Approved
@@ -3182,6 +4586,7 @@ const processCreditApplicationApproval = async (data) => {
       );
     }
 
+
     // ============================================================
     // Already Rejected
     // ============================================================
@@ -3199,14 +4604,11 @@ const processCreditApplicationApproval = async (data) => {
       );
     }
 
+
     // ============================================================
-    // Get Organization Approval Flow
+    // Get Approval Builder Flow
     //
-    // Custom config available:
-    // use config
-    //
-    // No config:
-    // FC -> GM
+    // NO DEFAULT FLOW
     // ============================================================
 
     const approvalFlow =
@@ -3215,24 +4617,101 @@ const processCreditApplicationApproval = async (data) => {
         client,
       );
 
+
     // ============================================================
-    // Validate Approval Flow Roles
+    // Approval Flow Required
     // ============================================================
 
-    for (const stage of approvalFlow) {
+    if (
+      !Array.isArray(
+        approvalFlow,
+      ) ||
+      approvalFlow.length === 0
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Credit Application approval flow is not configured for this organization.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Validate Approval Types
+    // Credit Application supports only FC / GM status columns
+    // ============================================================
+
+    for (
+      const stage of approvalFlow
+    ) {
+      const role =
+        normalizeCreditApplicationApprovalRole(
+          stage.ApprovalRole,
+        );
+
       if (
         !CREDIT_APPLICATION_APPROVAL_ROLES.has(
-          stage.ApprovalRole,
+          role,
         )
       ) {
         await client.query("ROLLBACK");
 
         return fail(
-          "Credit Application approval configuration contains an invalid approval role.",
+          "Credit Application approval configuration contains an invalid approval type.",
           400,
         );
       }
     }
+
+
+    // ============================================================
+    // Duplicate Approval Type Validation
+    //
+    // One FinanceStatus
+    // One GMStatus
+    // ============================================================
+
+    const approvalRoles =
+      approvalFlow.map(
+        (stage) =>
+          normalizeCreditApplicationApprovalRole(
+            stage.ApprovalRole,
+          ),
+      );
+
+    if (
+      new Set(
+        approvalRoles,
+      ).size !==
+      approvalRoles.length
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Duplicate approval types are not allowed in Credit Application approval flow.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Logged-In User Context
+    //
+    // USER -> Username from user_master
+    // ROLE -> UserType / DepartmentName
+    // ============================================================
+
+    const userContext =
+      await getCreditApplicationUserContext(
+        {
+          UserID,
+          UserType,
+          DepartmentName,
+        },
+        client,
+      );
+
 
     // ============================================================
     // Existing Status Map
@@ -3248,21 +4727,32 @@ const processCreditApplicationApproval = async (data) => {
         "Pending",
     };
 
+
     // ============================================================
     // Current Approval Stage
     //
-    // First stage which is not Approved
+    // Builder Level ke according first non-approved stage
     // ============================================================
 
     const currentStage =
       approvalFlow.find(
-        (stage) =>
-          normalizeCreditApprovalStatus(
-            statusMap[
-              stage.ApprovalRole
-            ],
-          ) !== "APPROVED",
+        (stage) => {
+          const role =
+            normalizeCreditApplicationApprovalRole(
+              stage.ApprovalRole,
+            );
+
+          return (
+            normalizeCreditApprovalStatus(
+              statusMap[
+                role
+              ],
+            ) !==
+            "APPROVED"
+          );
+        },
       );
+
 
     if (!currentStage) {
       await client.query("ROLLBACK");
@@ -3273,21 +4763,50 @@ const processCreditApplicationApproval = async (data) => {
       );
     }
 
+
     // ============================================================
-    // Logged-In User Must Be Current Stage
+    // Current Approval Role
+    //
+    // ApprovalType:
+    // FINANCE -> FC
+    // FC      -> FC
+    // GM      -> GM
     // ============================================================
 
+    const approvalRole =
+      normalizeCreditApplicationApprovalRole(
+        currentStage.ApprovalRole,
+      );
+
+
+    // ============================================================
+    // Check Current Stage Assignment
+    //
+    // ApproverType = USER
+    //   selected Username must match logged-in Username
+    //
+    // ApproverType = ROLE
+    //   configured role must match UserType / DepartmentName
+    // ============================================================
+
+    const isCurrentUserApprover =
+      isCreditApplicationApprovalStepAssignedToUser(
+        currentStage,
+        userContext,
+      );
+
+
     if (
-      currentStage.ApprovalRole !==
-      approvalRole
+      !isCurrentUserApprover
     ) {
       await client.query("ROLLBACK");
 
       return fail(
-        `Credit Application is currently pending for ${currentStage.ApprovalRole} approval.`,
+        `Credit Application is currently pending for ${approvalRole} approval and is not assigned to the logged-in user.`,
         403,
       );
     }
+
 
     // ============================================================
     // Current Stage Status
@@ -3300,8 +4819,10 @@ const processCreditApplicationApproval = async (data) => {
         ],
       );
 
+
     if (
-      currentStatus !== "PENDING"
+      currentStatus !==
+      "PENDING"
     ) {
       await client.query("ROLLBACK");
 
@@ -3310,6 +4831,7 @@ const processCreditApplicationApproval = async (data) => {
         400,
       );
     }
+
 
     // ============================================================
     // Action -> Status
@@ -3322,8 +4844,9 @@ const processCreditApplicationApproval = async (data) => {
           ? "Rejected"
           : "Returned";
 
+
     // ============================================================
-    // Role Column Mapping
+    // Approval Status Column Mapping
     // ============================================================
 
     const roleColumns = {
@@ -3356,10 +4879,22 @@ const processCreditApplicationApproval = async (data) => {
       },
     };
 
+
     const columns =
       roleColumns[
         approvalRole
       ];
+
+
+    if (!columns) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Invalid Credit Application approval stage.",
+        400,
+      );
+    }
+
 
     // ============================================================
     // Update Current Approval Stage
@@ -3389,12 +4924,14 @@ const processCreditApplicationApproval = async (data) => {
       ],
     );
 
+
     // ============================================================
     // REJECT
-    // Final Status = Rejected
     // ============================================================
 
-    if (Action === "REJECT") {
+    if (
+      Action === "REJECT"
+    ) {
       await client.query(
         `
         UPDATE Credit_Application_Approval
@@ -3415,22 +4952,56 @@ const processCreditApplicationApproval = async (data) => {
         ],
       );
 
-      // FC is the first approver and rejects silently. A GM rejection returns
-      // attention to the organization's FC without notifying the creator.
-      if (approvalRole === "GM") {
-        committedNotificationEvent = { organizationID: OrganizationID,
-          creditApplicationID: CreditApplicationID, companyName: row.companyname,
-          roles: ["FC"], excludeUserIds: [UserID, row.createdby],
-          kind: "GM_REJECT", action: "REJECTED", details: notificationDetails };
+
+      // ==========================================================
+      // Existing Notification Logic
+      // No Change
+      // ==========================================================
+
+      if (
+        approvalRole === "GM"
+      ) {
+        committedNotificationEvent = {
+          organizationID:
+            OrganizationID,
+
+          creditApplicationID:
+            CreditApplicationID,
+
+          companyName:
+            row.companyname,
+
+          roles:
+            [
+              "FC",
+            ],
+
+          excludeUserIds:
+            [
+              UserID,
+              row.createdby,
+            ],
+
+          kind:
+            "GM_REJECT",
+
+          action:
+            "REJECTED",
+
+          details:
+            notificationDetails,
+        };
       }
     }
 
+
     // ============================================================
     // RETURN
-    // Final Status = Returned
     // ============================================================
 
-    else if (Action === "RETURN") {
+    else if (
+      Action === "RETURN"
+    ) {
       await client.query(
         `
         UPDATE Credit_Application_Approval
@@ -3452,25 +5023,44 @@ const processCreditApplicationApproval = async (data) => {
       );
     }
 
+
     // ============================================================
     // APPROVE
-    // Check Next Stage
     // ============================================================
 
-    else if (Action === "APPROVE") {
+    else if (
+      Action === "APPROVE"
+    ) {
+      // Current approval transaction me approve ho chuka hai
       statusMap[
         approvalRole
       ] = "Approved";
 
+
+      // ==========================================================
+      // Find Next Stage
+      // Builder Level Based
+      // ==========================================================
+
       const nextStage =
         approvalFlow.find(
-          (stage) =>
-            normalizeCreditApprovalStatus(
-              statusMap[
-                stage.ApprovalRole
-              ],
-            ) !== "APPROVED",
+          (stage) => {
+            const role =
+              normalizeCreditApplicationApprovalRole(
+                stage.ApprovalRole,
+              );
+
+            return (
+              normalizeCreditApprovalStatus(
+                statusMap[
+                  role
+                ],
+              ) !==
+              "APPROVED"
+            );
+          },
         );
+
 
       // ==========================================================
       // No Next Stage
@@ -3499,9 +5089,9 @@ const processCreditApplicationApproval = async (data) => {
         );
       }
 
+
       // ==========================================================
       // Next Stage Available
-      // Final remains Pending
       // ==========================================================
 
       else {
@@ -3526,35 +5116,123 @@ const processCreditApplicationApproval = async (data) => {
         );
       }
 
-      if (approvalRole === "FC" && nextStage) {
-        committedNotificationEvent = { organizationID: OrganizationID,
-          creditApplicationID: CreditApplicationID, companyName: row.companyname,
-          roles: [nextStage.ApprovalRole], excludeUserIds: [UserID, row.createdby],
-          kind: "FC_APPROVE", action: "APPROVED", details: notificationDetails };
-      } else if (approvalRole === "GM" && !nextStage) {
-        committedNotificationEvent = { organizationID: OrganizationID,
-          creditApplicationID: CreditApplicationID, companyName: row.companyname,
-          roles: ["FC"], excludeUserIds: [UserID, row.createdby],
-          kind: "GM_APPROVE", action: "APPROVED", details: notificationDetails };
+
+      // ==========================================================
+      // Existing Notification Logic
+      //
+      // Abhi USER / ROLE notification conversion nahi kiya.
+      // Existing behavior same rakha hai.
+      // ==========================================================
+
+      if (
+        approvalRole === "FC" &&
+        nextStage
+      ) {
+        committedNotificationEvent = {
+          organizationID:
+            OrganizationID,
+
+          creditApplicationID:
+            CreditApplicationID,
+
+          companyName:
+            row.companyname,
+
+          roles:
+            [
+              nextStage.ApprovalRole,
+            ],
+
+          excludeUserIds:
+            [
+              UserID,
+              row.createdby,
+            ],
+
+          kind:
+            "FC_APPROVE",
+
+          action:
+            "APPROVED",
+
+          details:
+            notificationDetails,
+        };
+      }
+
+      else if (
+        approvalRole === "GM" &&
+        !nextStage
+      ) {
+        committedNotificationEvent = {
+          organizationID:
+            OrganizationID,
+
+          creditApplicationID:
+            CreditApplicationID,
+
+          companyName:
+            row.companyname,
+
+          roles:
+            [
+              "FC",
+            ],
+
+          excludeUserIds:
+            [
+              UserID,
+              row.createdby,
+            ],
+
+          kind:
+            "GM_APPROVE",
+
+          action:
+            "APPROVED",
+
+          details:
+            notificationDetails,
+        };
       }
     }
+
 
     // ============================================================
     // Commit
     // ============================================================
 
-    await client.query("COMMIT");
+    await client.query(
+      "COMMIT",
+    );
 
-    if (committedNotificationEvent) {
-      dispatchCommittedCreditApplicationEvent(committedNotificationEvent);
+
+    // ============================================================
+    // Notification
+    // Existing System
+    // ============================================================
+
+    if (
+      committedNotificationEvent
+    ) {
+      dispatchCommittedCreditApplicationEvent(
+        committedNotificationEvent,
+      );
     }
+
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return ok(
       `Credit Application ${newStatus.toLowerCase()} successfully.`,
     );
 
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query(
+      "ROLLBACK",
+    );
 
     return databaseFailure(
       error,
@@ -3581,15 +5259,20 @@ const updateCreditApplicationARID = async (data) => {
       DepartmentName,
     } = data;
 
+
     // ============================================================
     // Validate Credit Application ID
     // ============================================================
 
     const creditApplicationID =
-      Number(CreditApplicationID);
+      Number(
+        CreditApplicationID,
+      );
 
     if (
-      !Number.isSafeInteger(creditApplicationID) ||
+      !Number.isSafeInteger(
+        creditApplicationID,
+      ) ||
       creditApplicationID <= 0
     ) {
       await client.query("ROLLBACK");
@@ -3600,12 +5283,15 @@ const updateCreditApplicationARID = async (data) => {
       );
     }
 
+
     // ============================================================
     // Validate AR ID
     // ============================================================
 
     const arID =
-      String(ARID || "").trim();
+      String(
+        ARID || "",
+      ).trim();
 
     if (!arID) {
       await client.query("ROLLBACK");
@@ -3616,26 +5302,6 @@ const updateCreditApplicationARID = async (data) => {
       );
     }
 
-    // ============================================================
-    // Logged-In User Must Be FC
-    // ============================================================
-
-    const approvalRole =
-      resolveCreditApplicationApprovalRole({
-        UserType,
-        DepartmentName,
-      });
-
-    if (
-      approvalRole !== "FC"
-    ) {
-      await client.query("ROLLBACK");
-
-      return fail(
-        "Only FC can update AR ID.",
-        403,
-      );
-    }
 
     // ============================================================
     // Lock Credit Application + Approval
@@ -3675,6 +5341,7 @@ const updateCreditApplicationARID = async (data) => {
         ],
       );
 
+
     // ============================================================
     // Not Found
     // ============================================================
@@ -3690,6 +5357,7 @@ const updateCreditApplicationARID = async (data) => {
       );
     }
 
+
     const row =
       result.rows[0];
 
@@ -3697,6 +5365,7 @@ const updateCreditApplicationARID = async (data) => {
       Number(
         row.organizationid,
       );
+
 
     // ============================================================
     // AR ID Already Added
@@ -3715,14 +5384,11 @@ const updateCreditApplicationARID = async (data) => {
       );
     }
 
+
     // ============================================================
-    // Get Approval Flow
+    // Get Approval Builder Flow
     //
-    // Organization Config Available
-    //      → Config Flow
-    //
-    // Config Not Available
-    //      → Default FC -> GM
+    // NO DEFAULT FLOW
     // ============================================================
 
     const approvalFlow =
@@ -3731,38 +5397,146 @@ const updateCreditApplicationARID = async (data) => {
         client,
       );
 
+
     // ============================================================
-    // Validate Approval Flow
+    // Approval Flow Required
     // ============================================================
 
     if (
-      !Array.isArray(approvalFlow) ||
+      !Array.isArray(
+        approvalFlow,
+      ) ||
       approvalFlow.length === 0
     ) {
       await client.query("ROLLBACK");
 
       return fail(
-        "Credit Application approval flow is not configured.",
+        "Credit Application approval flow is not configured for this organization.",
         400,
       );
     }
 
+
+    // ============================================================
+    // Validate Approval Types
+    // ============================================================
+
     for (
       const stage of approvalFlow
     ) {
+      const approvalRole =
+        normalizeCreditApplicationApprovalRole(
+          stage.ApprovalRole,
+        );
+
       if (
         !CREDIT_APPLICATION_APPROVAL_ROLES.has(
-          stage.ApprovalRole,
+          approvalRole,
         )
       ) {
         await client.query("ROLLBACK");
 
         return fail(
-          `Invalid approval role configured: ${stage.ApprovalRole}.`,
+          `Invalid approval type configured: ${stage.ApprovalRole}.`,
           400,
         );
       }
     }
+
+
+    // ============================================================
+    // Duplicate Approval Type Validation
+    //
+    // Credit Application table has only:
+    // FinanceStatus
+    // GMStatus
+    // ============================================================
+
+    const approvalRoles =
+      approvalFlow.map(
+        (stage) =>
+          normalizeCreditApplicationApprovalRole(
+            stage.ApprovalRole,
+          ),
+      );
+
+    if (
+      new Set(
+        approvalRoles,
+      ).size !==
+      approvalRoles.length
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Duplicate approval types are not allowed in Credit Application approval flow.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // FC Approval Step Required For AR ID
+    // ============================================================
+
+    const fcStage =
+      approvalFlow.find(
+        (stage) =>
+          normalizeCreditApplicationApprovalRole(
+            stage.ApprovalRole,
+          ) ===
+          "FC",
+      );
+
+    if (!fcStage) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "FC approval step is not configured for this Credit Application approval flow.",
+        400,
+      );
+    }
+
+
+    // ============================================================
+    // Logged-In User Context
+    //
+    // USER -> Username from user_master
+    // ROLE -> UserType / DepartmentName
+    // ============================================================
+
+    const userContext =
+      await getCreditApplicationUserContext(
+        {
+          UserID,
+          UserType,
+          DepartmentName,
+        },
+        client,
+      );
+
+
+    // ============================================================
+    // Logged-In User Must Be Configured FC Approver
+    // ============================================================
+
+    const isConfiguredFCApprover =
+      isCreditApplicationApprovalStepAssignedToUser(
+        fcStage,
+        userContext,
+      );
+
+    if (
+      !isConfiguredFCApprover
+    ) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "You are not authorized to update AR ID for this Credit Application.",
+        403,
+      );
+    }
+
 
     // ============================================================
     // Current Approval Status Map
@@ -3778,37 +5552,52 @@ const updateCreditApplicationARID = async (data) => {
         "Pending",
     };
 
+
     // ============================================================
-    // Check Configured Approval Flow
-    //
-    // Every configured stage must be Approved
+    // Every Configured Approval Must Be Approved
     // ============================================================
 
     const pendingStage =
       approvalFlow.find(
-        (stage) =>
-          normalizeCreditApprovalStatus(
-            statusMap[
-              stage.ApprovalRole
-            ],
-          ) !== "APPROVED",
+        (stage) => {
+          const approvalRole =
+            normalizeCreditApplicationApprovalRole(
+              stage.ApprovalRole,
+            );
+
+          return (
+            normalizeCreditApprovalStatus(
+              statusMap[
+                approvalRole
+              ],
+            ) !==
+            "APPROVED"
+          );
+        },
       );
+
 
     if (pendingStage) {
       await client.query("ROLLBACK");
 
+      const pendingRole =
+        normalizeCreditApplicationApprovalRole(
+          pendingStage.ApprovalRole,
+        );
+
       const pendingStatus =
         normalizeCreditApprovalStatus(
           statusMap[
-            pendingStage.ApprovalRole
+            pendingRole
           ],
         );
 
       return fail(
-        `${pendingStage.ApprovalRole} approval is ${pendingStatus}. AR ID can be added only after all approvals are completed.`,
+        `${pendingRole} approval is ${pendingStatus}. AR ID can be added only after all approvals are completed.`,
         400,
       );
     }
+
 
     // ============================================================
     // Final Status Must Be Approved
@@ -3817,7 +5606,8 @@ const updateCreditApplicationARID = async (data) => {
     if (
       normalizeCreditApprovalStatus(
         row.finalstatus,
-      ) !== "APPROVED"
+      ) !==
+      "APPROVED"
     ) {
       await client.query("ROLLBACK");
 
@@ -3826,6 +5616,7 @@ const updateCreditApplicationARID = async (data) => {
         400,
       );
     }
+
 
     // ============================================================
     // Update AR ID
@@ -3856,6 +5647,7 @@ const updateCreditApplicationARID = async (data) => {
         ],
       );
 
+
     // ============================================================
     // Safety Check
     // ============================================================
@@ -3871,11 +5663,19 @@ const updateCreditApplicationARID = async (data) => {
       );
     }
 
+
     // ============================================================
     // Commit
     // ============================================================
 
-    await client.query("COMMIT");
+    await client.query(
+      "COMMIT",
+    );
+
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return ok(
       "AR ID updated successfully.",
@@ -3893,7 +5693,9 @@ const updateCreditApplicationARID = async (data) => {
     );
 
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query(
+      "ROLLBACK",
+    );
 
     return databaseFailure(
       error,
@@ -3904,6 +5706,7 @@ const updateCreditApplicationARID = async (data) => {
     client.release();
   }
 };
+// ============================================================================================This Approval Config in not in Current Use
 // ============================================================ Create Approval Config
 const createCreditApplicationApprovalConfig = async (data) => {
   let client;
@@ -4661,6 +6464,8 @@ const deleteCreditApplicationApprovalConfig = async (data) => {
     );
   }
 };
+// ============================================================================================
+
 // ========================================================================Reports
 // ============================================================COMPANY WISE REPORT
 const getCompanyWiseReport = async (data) => {
