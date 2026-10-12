@@ -1118,11 +1118,11 @@ exports.generateCapexListPdf = async (req, res) => {
     }
 
     const response = await CapexService.generateCapexListPdf({
+      // The shared read model requires the verified identity for organization access.
+      ...user,
       OrganizationID: req.query.OrganizationID
         ? Number(req.query.OrganizationID)
         : null,
-
-      UserType: user.UserType,
 
       Status: req.query.Status || null,
 

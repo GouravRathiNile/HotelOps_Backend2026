@@ -2270,6 +2270,171 @@ const getUserDropdown = async (
   }
 
 };
+
+// ============================================================
+// GET USER DROPDOWN BY PRIMARY ORGANIZATION
+//
+// Filters:
+// OrganizationID
+// Username
+// FullName
+// ApproverType
+//
+// REGIONAL -> Primary Organization 10 (Nile)
+// Other types -> Requested Primary Organization
+// ============================================================
+
+const getUserDropdownByPrimaryOrganization = async (
+  OrganizationID,
+  Username,
+  FullName,
+  ApproverType
+) => {
+  try {
+    const filters = [
+      `um.IsDeleted = FALSE`,
+      `um.IsActive = TRUE`,
+      `upo.IsDeleted = FALSE`,
+      `upo.IsActive = TRUE`
+    ];
+
+    const filterValues = [];
+
+    // ========================================================
+    // PRIMARY ORGANIZATION FILTER
+    // ========================================================
+
+    const approverTypeValue = String(
+      ApproverType || ""
+    ).trim().toUpperCase();
+
+    if (approverTypeValue === "REGIONAL") {
+      // Regional: only users whose primary organization is Nile (10)
+      filterValues.push(10);
+
+      filters.push(
+        `upo.OrganizationID = $${filterValues.length}`
+      );
+
+    } else {
+      // Other approver types: requested primary organization
+      if (
+        OrganizationID === undefined ||
+        OrganizationID === null ||
+        String(OrganizationID).trim() === ""
+      ) {
+        return {
+          success: false,
+          message: "OrganizationID is required"
+        };
+      }
+
+      const organizationID = Number(OrganizationID);
+
+      if (
+        !Number.isSafeInteger(organizationID) ||
+        organizationID <= 0
+      ) {
+        return {
+          success: false,
+          message: "Invalid OrganizationID"
+        };
+      }
+
+      filterValues.push(organizationID);
+
+      filters.push(
+        `upo.OrganizationID = $${filterValues.length}`
+      );
+    }
+
+    // ========================================================
+    // USERNAME FILTER — PARTIAL SEARCH
+    // ========================================================
+
+    if (
+      Username !== undefined &&
+      Username !== null &&
+      String(Username).trim() !== ""
+    ) {
+      filterValues.push(
+        `%${String(Username).trim()}%`
+      );
+
+      filters.push(
+        `um.Username ILIKE $${filterValues.length}`
+      );
+    }
+
+    // ========================================================
+    // FULL NAME FILTER — PARTIAL SEARCH
+    // ========================================================
+
+    if (
+      FullName !== undefined &&
+      FullName !== null &&
+      String(FullName).trim() !== ""
+    ) {
+      filterValues.push(
+        `%${String(FullName).trim()}%`
+      );
+
+      filters.push(
+        `um.FullName ILIKE $${filterValues.length}`
+      );
+    }
+
+    // ========================================================
+    // QUERY
+    // ========================================================
+
+    const query = `
+      SELECT DISTINCT
+        um.UserID,
+        um.Username,
+        um.FullName
+      FROM user_master um
+      INNER JOIN user_primary_organization upo
+        ON upo.UserID = um.UserID
+      WHERE ${filters.join(" AND ")}
+      ORDER BY um.FullName ASC;
+    `;
+
+    const result = await pool.query(
+      query,
+      filterValues
+    );
+
+    // ========================================================
+    // RESPONSE DATA
+    // ========================================================
+
+    const users = result.rows.map((row) => ({
+      UserID: row.userid,
+      Username: row.username,
+      FullName: row.fullname
+    }));
+
+    return {
+      success: true,
+      message: "Users fetched successfully",
+      Count: users.length,
+      data: users
+    };
+
+  } catch (error) {
+    console.log(
+      "Get User Dropdown By Primary Organization Error:",
+      error.message
+    );
+
+    return {
+      success: false,
+      message: error.message
+    };
+  }
+};
+
 // ============================================================User wise Organization
 const getUserOrganizations = async (UserID) => {
   try {
@@ -8865,6 +9030,7 @@ module.exports = {
   updateUser,
   deleteUser,
   getUserDropdown,
+  getUserDropdownByPrimaryOrganization,
   getUserOrganizations,
   getUserProducts,
   getUserPersonalDetails,

@@ -2,13 +2,14 @@ const { pool } = require("../../db");
 const AppError = require("../../utils/AppError");
 const { formatDate } = require("../../utils/dateFormatter");
 const documentUrl = require("../../AzurConfigration/Capex/AzureGetData");
-const { permissions, allowedActions, currentStep } = require("./CapexWorkflow");
+const { permissions, allowedActions, currentStep, hasActionSQL } = require("./CapexWorkflow");
 
 // Legacy rows are projected, never rewritten. This is the same configuration
 // precedence used by legacy approval processing: configured stages, else defaults.
 const effectiveSteps = `
     SELECT s.stepid::text, s.level, s.level AS sortorder, s.approvertype,
-        s.role, s.assigneduserid, s.approvaltype, s.ismandatory, s.status,
+        s.role, s.assigneduserid, s.approvaltype, s.ismandatory,
+        CASE WHEN s.ismandatory = FALSE AND s.status = 'Pending' THEN 'Skipped' ELSE s.status END AS status,
         s.approvedquantity, s.remarks, s.actionby, s.actiondatetime, s.revision,
         s.sourceapprovalid::text AS sourceid
     FROM capex_workflow_step s WHERE s.capexid = cm.capexid
@@ -39,10 +40,12 @@ const effectiveSteps = `
 
 const base = `
 WITH actor AS (
-    SELECT userid, usertype, logintype, allorganizationaccess FROM user_master
+    SELECT userid, usertype, logintype, allorganizationaccess, departmentid FROM user_master
     WHERE userid = $1 AND isactive = TRUE AND isdeleted = FALSE AND islocked = FALSE
 ), records AS (
     SELECT cm.*, om.shortname, ca.capexapprovalid, ca.finalstatus, a.usertype AS actorrole,
+        dm.departmentname AS actordepartmentname, dm.organizationid AS actordepartmentorganizationid,
+        ${hasActionSQL} AS hasaction,
         COALESCE(w.steps, '[]'::jsonb) AS steps, cs.currentstep,
         EXISTS (SELECT 1 FROM capex_workflow WHERE capexid = cm.capexid) AS dynamic,
         CASE WHEN cm.isvoid THEN 'Void'
@@ -50,19 +53,27 @@ WITH actor AS (
              WHEN jsonb_array_length(COALESCE(w.steps, '[]'::jsonb)) > 0 THEN 'Approved'
              ELSE COALESCE(ca.finalstatus, 'Pending') END AS workflowstatus,
         EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(w.steps, '[]'::jsonb)) s
-            WHERE (s->>'approvertype' = 'USER' AND s->>'assigneduserid' = a.userid::text)
-               OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(a.usertype)))) AS assigned
+            WHERE COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE AND (
+                (s->>'approvertype' = 'USER' AND s->>'assigneduserid' = a.userid::text)
+               OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(a.usertype))))) AS assigned
     FROM capex_master cm CROSS JOIN actor a
     JOIN organization_master om ON om.organizationid = cm.organizationid
         AND om.isactive = TRUE AND om.isdeleted = FALSE AND om.activationstatus = TRUE
     LEFT JOIN capex_approval ca ON ca.capexid = cm.capexid AND ca.isdeleted = FALSE
+    LEFT JOIN department_master dm ON dm.departmentid = a.departmentid AND dm.isdeleted = FALSE
     LEFT JOIN LATERAL (
         SELECT jsonb_agg(to_jsonb(s) ORDER BY s.sortorder, s.level, s.stepid) AS steps
-        FROM (${effectiveSteps}) s
+        FROM (
+            SELECT raw.*, 'stage:' || UPPER(TRIM(raw.approvaltype)) || ':' ||
+                ROW_NUMBER() OVER (PARTITION BY UPPER(TRIM(raw.approvaltype))
+                    ORDER BY raw.sortorder, raw.level, raw.stepid) AS columnkey
+            FROM (${effectiveSteps}) raw
+        ) s
     ) w ON TRUE
     LEFT JOIN LATERAL (
         SELECT s AS currentstep FROM jsonb_array_elements(w.steps) s
-        WHERE UPPER(s->>'status') <> 'APPROVED' LIMIT 1
+        WHERE UPPER(s->>'status') NOT IN ('APPROVED', 'SKIPPED')
+            AND COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE LIMIT 1
     ) cs ON TRUE
     WHERE cm.isdeleted = FALSE AND (
       (a.logintype = 'SuperAdmin' AND a.allorganizationaccess = TRUE) OR EXISTS (
@@ -108,7 +119,8 @@ const buildQuery = (data = {}, visibility = true) => {
             (NOT r.assigned AND UPPER(r.workflowstatus) = ${param})
             OR (r.assigned AND EXISTS (
                 SELECT 1 FROM jsonb_array_elements(r.steps) s
-                WHERE ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
+                WHERE COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE
+                  AND ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
                     OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(r.actorrole))))
                   AND UPPER(s->>'status') = ${param}
                   AND (${param} <> 'PENDING' OR s->>'stepid' = r.currentstep->>'stepid')
@@ -117,7 +129,8 @@ const buildQuery = (data = {}, visibility = true) => {
     }
     if (visibility) conditions.push(`(NOT r.assigned OR EXISTS (
         SELECT 1 FROM jsonb_array_elements(r.steps) s
-        WHERE ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
+        WHERE COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE
+                  AND ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
             OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(r.actorrole))))
           AND (UPPER(s->>'status') <> 'PENDING' OR s->>'stepid' = r.currentstep->>'stepid')
     ))`);
@@ -125,8 +138,12 @@ const buildQuery = (data = {}, visibility = true) => {
 };
 
 const mapRow = (row, userID) => {
-    const actor = { userid: userID, usertype: row.actorrole };
+    const actor = { userid: userID, usertype: row.actorrole,
+        departmentname: row.actordepartmentname, departmentorganizationid: row.actordepartmentorganizationid };
     const steps = row.steps || [];
+    // Configuration detail IDs change on every save. Display columns identify
+    // a business stage and its occurrence, while actions retain the real step ID.
+    const stageOccurrences = new Map();
     const current = currentStep(steps);
     return {
         CapexID: Number(row.capexid), OrganizationID: Number(row.organizationid),
@@ -140,17 +157,24 @@ const mapRow = (row, userID) => {
         CurrentApprovalStepID: current?.stepid || null,
         ...permissions(row, steps, actor),
         Documents: [],
-        Approvals: steps.map(step => ({
+        Approvals: steps.map(step => {
+            const stage = String(step.approvaltype || '').trim().toUpperCase();
+            const occurrence = (stageOccurrences.get(stage) || 0) + 1;
+            stageOccurrences.set(stage, occurrence);
+            const actions = allowedActions(row, steps, step, actor);
+            return {
             CapexApprovalID: row.capexapprovalid == null ? null : Number(row.capexapprovalid),
-            ApprovalStepID: step.stepid, ColumnKey: row.dynamic ? "flow:" + step.sourceid : step.sourceid,
+            ApprovalStepID: step.stepid, ColumnKey: `stage:${stage}:${occurrence}`,
             Level: step.level, ApprovalRole: step.approvaltype, ApprovalType: step.approvaltype,
             ApproverType: step.approvertype, Role: step.role, AssignedUserID: step.assigneduserid,
-            IsMandatory: step.ismandatory, Status: step.status,
+            IsMandatory: step.ismandatory, Status: step.ismandatory === false && step.status === "Pending" ? "Skipped" : step.status,
             ApprovedQuantity: step.approvedquantity == null ? null : Number(step.approvedquantity),
             Remarks: step.remarks, ActionBy: step.actionby, ActionDateTime: step.actiondatetime,
             Revision: step.revision,
-            AllowedActions: allowedActions(row, steps, step, actor)
-        }))
+            // Per-card flag: the record-level flag must not enable every stage.
+            CanApprove: actions.includes("APPROVE"),
+            AllowedActions: actions
+        }; })
     };
 };
 
@@ -177,10 +201,30 @@ const list = async data => {
             ORDER BY r.createddate DESC, r.capexid DESC LIMIT $${values.length+1} OFFSET $${values.length+2}`,
         [...values, size, (page-1)*size]),
         pool.query(`${cte} SELECT COUNT(*) AS count FROM records r ${where}`, values),
-        pool.query(`${cte} SELECT DISTINCT r.dynamic, s->>'sourceid' AS sourceid,
-            s->>'approvaltype' AS label, (s->>'level')::integer AS level
-            FROM records r CROSS JOIN LATERAL jsonb_array_elements(r.steps) s ${where}
-            ORDER BY level, sourceid`, values)
+        // Headers describe the current organization configuration, not the filtered
+        // requests. Snapshot stage keys still supply each row's historical values.
+        pool.query(`SELECT 'stage:' || UPPER(TRIM(d.approvaltype)) || ':' ||
+                ROW_NUMBER() OVER (PARTITION BY UPPER(TRIM(d.approvaltype))
+                    ORDER BY d.level, d.approvalid) AS columnkey,
+                UPPER(TRIM(d.approvaltype)) AS label, d.level
+            FROM approval_master am
+            JOIN approval_master_details d ON d.approvalmasterid = am.approvalmasterid
+                AND d.isdelete = FALSE
+            JOIN organization_master om ON om.organizationid = am.organizationid
+                AND om.isactive = TRUE AND om.isdeleted = FALSE AND om.activationstatus = TRUE
+            WHERE am.organizationid = $2 AND UPPER(TRIM(am.modulename)) = 'CAPEX'
+                AND am.isactive = TRUE AND am.isdelete = FALSE
+                AND EXISTS (
+                    SELECT 1 FROM user_master actor
+                    WHERE actor.userid = $1 AND actor.isactive = TRUE
+                        AND actor.isdeleted = FALSE AND actor.islocked = FALSE
+                        AND ((actor.logintype = 'SuperAdmin' AND actor.allorganizationaccess = TRUE)
+                            OR EXISTS (SELECT 1 FROM user_org_mapping uom
+                                WHERE uom.userid = actor.userid AND uom.organizationid = am.organizationid
+                                    AND uom.isactive = TRUE AND uom.isdeleted = FALSE))
+                )
+            ORDER BY d.level, d.approvalid`,
+        [data.UserID, data.Filters?.OrganizationID ?? data.OrganizationID ?? null])
     ]);
     const rows = result.rows.map(row => mapRow(row, data.UserID));
     await attachDocuments(rows);
@@ -189,7 +233,9 @@ const list = async data => {
         TotalCount: total, PageCount: rows.length, CurrentPage: page, PageSize: size,
         TotalPages: Math.ceil(total/size),
         ApprovalColumns: columns.rows.map(col => ({
-            Key: col.dynamic ? "flow:" + col.sourceid : col.sourceid, Label: col.label, Level: col.level
+            Key: col.columnkey,
+            Label: col.columnkey.endsWith(':1') ? col.label : `${col.label} (${col.columnkey.split(':').pop()})`,
+            Level: col.level
         })), data: rows };
 };
 
@@ -212,7 +258,8 @@ const report = async (data, grouping = null) => {
         WHEN r.isvoid THEN 'Void'
         WHEN r.assigned THEN COALESCE((
             SELECT s->>'status' FROM jsonb_array_elements(r.steps) s
-            WHERE ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
+            WHERE COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE
+                  AND ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
                 OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(r.actorrole))))
               AND (UPPER(s->>'status') <> 'PENDING' OR s->>'stepid' = r.currentstep->>'stepid')
             ORDER BY (s->>'stepid' = r.currentstep->>'stepid') DESC NULLS LAST,
