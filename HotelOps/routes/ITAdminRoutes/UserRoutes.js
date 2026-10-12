@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const upload = require("../../middleware/upload");
 const authenticateToken = require("../../middleware/authMiddleware");
-const { createUser,getAllUsers,getUserById,getUserDropdown,updateUser,deleteUser,getUserOrganizations, getUserProducts,getUserPersonalDetails,getAllUsersTabel,updateUserPersonalDetails,updateUserOrganizations,updateUserProducts,getUserProductsList } = require("../../controllers/ITAdminController/UserController");
+const { createUser,getAllUsers,getUserById,getUserDropdown, getUserDropdownByPrimaryOrganization,updateUser,deleteUser,getUserOrganizations, getUserProducts,getUserPersonalDetails,getAllUsersTabel,updateUserPersonalDetails,updateUserOrganizations,updateUserProducts,getUserProductsList } = require("../../controllers/ITAdminController/UserController");
 
 // ========================================= Create User
 router.post("/Create", authenticateToken, upload.single("ProfilePhoto"), createUser);
@@ -14,6 +14,8 @@ router.get("/GetUserList", authenticateToken, getAllUsers);
 router.get("/GetUserDetail/:id", authenticateToken, getUserById);
 // ========================================= User Dropdown
 router.get("/GetUserNames", authenticateToken, getUserDropdown);
+// ========================================= User Dropdown By Primary Organization
+router.get("/GetUserNamesByPrimaryOrganization", authenticateToken, getUserDropdownByPrimaryOrganization);
 // ===========================================User Organizations
 router.get("/GetUserOrganizations",authenticateToken,getUserOrganizations);
 // ===========================================User Products

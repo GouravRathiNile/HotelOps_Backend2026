@@ -669,6 +669,43 @@ exports.getUserDropdown = async (req, res) => {
   }
 
 };
+
+// =========================================
+// Get User Dropdown By Primary Organization
+// =========================================
+exports.getUserDropdownByPrimaryOrganization = async (req, res) => {
+  try {
+    const {
+      OrganizationID,
+      Username,
+      FullName,
+      ApproverType
+    } = req.query;
+
+    const response =
+      await UserService.getUserDropdownByPrimaryOrganization(
+        OrganizationID,
+        Username,
+        FullName,
+        ApproverType
+      );
+
+    if (!response.success) {
+      throw new AppError(
+        response.message || "Unable to fetch users",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(response);
+
+  } catch (error) {
+    handleError(error, res);
+  }
+};
+
 // =========================================User wise Organization
 exports.getUserOrganizations = async (req, res) => {
 
