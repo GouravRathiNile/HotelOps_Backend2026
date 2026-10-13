@@ -7,7 +7,7 @@ const {createRequire}=require('node:module');
 const servicePath=path.resolve(__dirname,'../../services/OpexService/OpexService.js');
 const requireService=createRequire(servicePath);
 function loadService(overrides){const module={exports:{}};vm.runInNewContext(fs.readFileSync(servicePath,'utf8'),{
- module,exports:module.exports,require:name=>name in overrides?overrides[name]:requireService(name),
+ module,exports:module.exports,require:name=>name === "./OpexWorkflow" && name in overrides ? {...requireService(name),...overrides[name]} : name in overrides?overrides[name]:requireService(name),
  console:{log(){},error(){}},process,Buffer,setTimeout,clearTimeout
  });return module.exports;}
 module.exports={loadService};

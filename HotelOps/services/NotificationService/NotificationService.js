@@ -56,20 +56,22 @@ const normalizeNotificationModuleName = (moduleName) => {
 // Generic Firebase delivery used after a notification has been committed.
 const pushNotificationToRecipients = async (notification, userIds) => {
     try {
-        // CAPEX Regional recipients may belong only to the parent company.
+        // CAPEX/OPEX Regional recipients may belong only to the parent company.
         // Recheck the saved assignment and hierarchy; other modules retain their mapping rule.
-        const regionalCapex = notification.module_name === "Capex" && notification.entity_type === "Capex"
+        const regionalWorkflow = ((notification.module_name === "Capex" && notification.entity_type === "Capex")
+            || (notification.module_name === "Opex" && notification.entity_type === "Opex"))
             && /^[1-9]\d*$/.test(String(notification.entity_id ?? ""));
-        const regionalScope = regionalCapex
-            ? require("../CapexService/CapexWorkflow").regionalAccessSQL("um", "om", "$3::bigint") : null;
+        const regionalScope = regionalWorkflow
+            ? (notification.module_name === "Opex" ? require("../OpexService/OpexWorkflow")
+                : require("../CapexService/CapexWorkflow")).regionalAccessSQL("um", "om", "$3::bigint") : null;
         const devices = await pool.query(`
             SELECT DISTINCT TRIM(ud.devicetoken) AS token
             FROM user_device ud
             INNER JOIN user_master um ON um.userid = ud.userid
-            ${regionalCapex ? "INNER JOIN organization_master om ON om.organizationid = $2"
+            ${regionalWorkflow ? "INNER JOIN organization_master om ON om.organizationid = $2"
                 : "INNER JOIN user_org_mapping uom ON uom.userid = um.userid"}
             WHERE ud.userid::text = ANY($1::text[])
-              ${regionalCapex ? `AND om.isactive = TRUE AND om.isdeleted = FALSE AND om.activationstatus = TRUE
+              ${regionalWorkflow ? `AND om.isactive = TRUE AND om.isdeleted = FALSE AND om.activationstatus = TRUE
                 AND (EXISTS (SELECT 1 FROM user_org_mapping uom WHERE uom.userid = um.userid
                     AND uom.organizationid = $2 AND uom.isactive = TRUE AND uom.isdeleted = FALSE)
                   OR ${regionalScope})`
@@ -77,7 +79,7 @@ const pushNotificationToRecipients = async (notification, userIds) => {
               AND ud.isactive = TRUE AND ud.isdeleted = FALSE
               AND um.isactive = TRUE AND um.isdeleted = FALSE AND um.islocked = FALSE
               AND NULLIF(TRIM(ud.devicetoken), '') IS NOT NULL`,
-            regionalCapex ? [userIds, notification.organization_id, notification.entity_id]
+            regionalWorkflow ? [userIds, notification.organization_id, notification.entity_id]
                 : [userIds, notification.organization_id]);
         for (let offset = 0; offset < devices.rows.length; offset += 20) {
             await Promise.all(devices.rows.slice(offset, offset + 20).map(async ({ token }) => {

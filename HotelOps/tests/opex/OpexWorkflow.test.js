@@ -66,3 +66,23 @@ test('List headers come from active Builder config independently of status or em
  }assert.ok(calls.filter(c=>c.sql.includes('configured_columns')).every(c=>c.values[1]===20));}finally{pool.query=original;}
 });
 for(const action of ['REJECT','RETURN','HOLD'])test(action+' requires meaningful remarks',()=>assert.throws(()=>workflow.validateAction({Action:action}),/Remarks/));
+
+test('Regional assignment requires selected user and active company primary membership',()=>{
+ const step={...stages()[3],approvertype:'REGIONAL'};
+ const actor={...actors[3],regionaleligible:true,organizationaccess:false};
+ assert.equal(workflow.isAssigned(step,actor),true);
+ assert.equal(workflow.isAssigned(step,{...actor,userid:8}),false);
+ assert.equal(workflow.isAssigned(step,{...actor,regionaleligible:false}),false);
+ assert.equal(workflow.isAssigned({...step,approvertype:'USER'},actor),false);
+});
+test('Snapshot supports Regional while retaining business stage and selected user',async()=>{
+ const calls=[];const client={query:async(sql,values)=>{
+  calls.push({sql,values});
+  if(sql.includes('SELECT approvalmasterid'))return {rows:[{approvalmasterid:1,flowname:'Opex'}]};
+  if(sql.includes('SELECT approvalid'))return {rows:[{approvalid:2,level:1,approvertype:'REGIONAL',role:'9',approvaltype:'RD-FC',ismandatory:true}]};
+  if(sql.includes('SELECT um.userid,um.usertype'))return {rows:[{userid:9,regionaleligible:true,organizationaccess:false}]};
+  return {rows:[]};
+ }};
+ await workflow.snapshot(client,100,20);
+ assert.deepEqual(calls.find(c=>c.sql.includes('INSERT INTO opex_workflow_step')).values,[100,2,1,'REGIONAL',null,'RD-FC',true,'9']);
+});
