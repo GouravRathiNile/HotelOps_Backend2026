@@ -2,7 +2,7 @@ const { pool } = require("../../db");
 const AppError = require("../../utils/AppError");
 const { formatDate } = require("../../utils/dateFormatter");
 const documentUrl = require("../../AzurConfigration/Capex/AzureGetData");
-const { permissions, allowedActions, currentStep, hasActionSQL } = require("./CapexWorkflow");
+const { permissions, allowedActions, currentStep, hasActionSQL, regionalAccessSQL, regionalEligibilitySQL } = require("./CapexWorkflow");
 
 // Legacy rows are projected, never rewritten. This is the same configuration
 // precedence used by legacy approval processing: configured stages, else defaults.
@@ -45,6 +45,8 @@ WITH actor AS (
 ), records AS (
     SELECT cm.*, om.shortname, ca.capexapprovalid, ca.finalstatus, a.usertype AS actorrole,
         dm.departmentname AS actordepartmentname, dm.organizationid AS actordepartmentorganizationid,
+        access.organizationaccess AS actororganizationaccess,
+        access.regionaleligible AS actorregionaleligible,
         ${hasActionSQL} AS hasaction,
         COALESCE(w.steps, '[]'::jsonb) AS steps, cs.currentstep,
         EXISTS (SELECT 1 FROM capex_workflow WHERE capexid = cm.capexid) AS dynamic,
@@ -54,11 +56,21 @@ WITH actor AS (
              ELSE COALESCE(ca.finalstatus, 'Pending') END AS workflowstatus,
         EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(w.steps, '[]'::jsonb)) s
             WHERE COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE AND (
-                (s->>'approvertype' = 'USER' AND s->>'assigneduserid' = a.userid::text)
-               OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(a.usertype))))) AS assigned
+                (access.regionaleligible AND s->>'approvertype' = 'REGIONAL' AND s->>'assigneduserid' = a.userid::text)
+               OR (access.organizationaccess AND ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = a.userid::text)
+               OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(a.usertype))
+                 AND (UPPER(s->>'role') <> 'HOD' OR (dm.organizationid = cm.organizationid
+                   AND NULLIF(TRIM(cm.department), '') IS NOT NULL
+                   AND UPPER(TRIM(dm.departmentname)) = UPPER(TRIM(cm.department))))))))) AS assigned
     FROM capex_master cm CROSS JOIN actor a
     JOIN organization_master om ON om.organizationid = cm.organizationid
         AND om.isactive = TRUE AND om.isdeleted = FALSE AND om.activationstatus = TRUE
+    CROSS JOIN LATERAL (SELECT (
+        COALESCE((a.logintype = 'SuperAdmin' AND a.allorganizationaccess = TRUE), FALSE) OR EXISTS (
+            SELECT 1 FROM user_org_mapping uom
+            WHERE uom.userid = a.userid AND uom.organizationid = cm.organizationid
+              AND uom.isactive = TRUE AND uom.isdeleted = FALSE
+        )) AS organizationaccess, ${regionalEligibilitySQL("a", "om")} AS regionaleligible) access
     LEFT JOIN capex_approval ca ON ca.capexid = cm.capexid AND ca.isdeleted = FALSE
     LEFT JOIN department_master dm ON dm.departmentid = a.departmentid AND dm.isdeleted = FALSE
     LEFT JOIN LATERAL (
@@ -75,12 +87,21 @@ WITH actor AS (
         WHERE UPPER(s->>'status') NOT IN ('APPROVED', 'SKIPPED')
             AND COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE LIMIT 1
     ) cs ON TRUE
-    WHERE cm.isdeleted = FALSE AND (
-      (a.logintype = 'SuperAdmin' AND a.allorganizationaccess = TRUE) OR EXISTS (
-        SELECT 1 FROM user_org_mapping uom
-        WHERE uom.userid = a.userid AND uom.organizationid = cm.organizationid
-          AND uom.isactive = TRUE AND uom.isdeleted = FALSE
-    ))
+    WHERE cm.isdeleted = FALSE AND (access.organizationaccess
+        OR ${regionalAccessSQL("a", "om", "cm.capexid")})
+      AND (cm.createdby = a.userid
+        OR (a.logintype = 'SuperAdmin' AND a.allorganizationaccess = TRUE)
+        OR EXISTS (SELECT 1 FROM jsonb_array_elements(w.steps) s
+          WHERE COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE
+            AND (s->>'stepid' = cs.currentstep->>'stepid' OR UPPER(s->>'status') <> 'PENDING')
+            AND ((access.regionaleligible AND s->>'approvertype' = 'REGIONAL' AND s->>'assigneduserid' = a.userid::text)
+              OR (access.organizationaccess AND (
+                (s->>'approvertype' = 'USER' AND s->>'assigneduserid' = a.userid::text)
+                OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(a.usertype))
+                  AND (UPPER(s->>'role') <> 'HOD' OR (dm.organizationid = cm.organizationid
+                    AND NULLIF(TRIM(cm.department), '') IS NOT NULL
+                    AND UPPER(TRIM(dm.departmentname)) = UPPER(TRIM(cm.department)))))))))
+      )
 )
 `;
 
@@ -120,18 +141,26 @@ const buildQuery = (data = {}, visibility = true) => {
             OR (r.assigned AND EXISTS (
                 SELECT 1 FROM jsonb_array_elements(r.steps) s
                 WHERE COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE
-                  AND ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
-                    OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(r.actorrole))))
+                  AND ((r.actorregionaleligible AND s->>'approvertype' = 'REGIONAL' AND s->>'assigneduserid' = $1::text)
+                    OR (r.actororganizationaccess AND ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
+                    OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(r.actorrole))
+                      AND (UPPER(s->>'role') <> 'HOD' OR (r.actordepartmentorganizationid = r.organizationid
+                        AND NULLIF(TRIM(r.department), '') IS NOT NULL
+                        AND UPPER(TRIM(r.actordepartmentname)) = UPPER(TRIM(r.department))))))))
                   AND UPPER(s->>'status') = ${param}
                   AND (${param} <> 'PENDING' OR s->>'stepid' = r.currentstep->>'stepid')
             ))
         )` : `UPPER(r.workflowstatus) = ${param}`);
     }
-    if (visibility) conditions.push(`(NOT r.assigned OR EXISTS (
+    if (visibility) conditions.push(`(r.createdby = $1 OR NOT r.assigned OR EXISTS (
         SELECT 1 FROM jsonb_array_elements(r.steps) s
         WHERE COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE
-                  AND ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
-            OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(r.actorrole))))
+                  AND ((r.actorregionaleligible AND s->>'approvertype' = 'REGIONAL' AND s->>'assigneduserid' = $1::text)
+            OR (r.actororganizationaccess AND ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
+            OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(r.actorrole))
+                      AND (UPPER(s->>'role') <> 'HOD' OR (r.actordepartmentorganizationid = r.organizationid
+                        AND NULLIF(TRIM(r.department), '') IS NOT NULL
+                        AND UPPER(TRIM(r.actordepartmentname)) = UPPER(TRIM(r.department))))))))
           AND (UPPER(s->>'status') <> 'PENDING' OR s->>'stepid' = r.currentstep->>'stepid')
     ))`);
     return { cte: base, where: conditions.length ? " WHERE " + conditions.join(" AND ") : "", values };
@@ -139,6 +168,7 @@ const buildQuery = (data = {}, visibility = true) => {
 
 const mapRow = (row, userID) => {
     const actor = { userid: userID, usertype: row.actorrole,
+        organizationaccess: row.actororganizationaccess, regionaleligible: row.actorregionaleligible,
         departmentname: row.actordepartmentname, departmentorganizationid: row.actordepartmentorganizationid };
     const steps = row.steps || [];
     // Configuration detail IDs change on every save. Display columns identify
@@ -259,8 +289,12 @@ const report = async (data, grouping = null) => {
         WHEN r.assigned THEN COALESCE((
             SELECT s->>'status' FROM jsonb_array_elements(r.steps) s
             WHERE COALESCE((s->>'ismandatory')::boolean, TRUE) = TRUE
-                  AND ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
-                OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(r.actorrole))))
+                  AND ((r.actorregionaleligible AND s->>'approvertype' = 'REGIONAL' AND s->>'assigneduserid' = $1::text)
+                OR (r.actororganizationaccess AND ((s->>'approvertype' = 'USER' AND s->>'assigneduserid' = $1::text)
+                OR (s->>'approvertype' = 'ROLE' AND UPPER(s->>'role') = UPPER(TRIM(r.actorrole))
+                      AND (UPPER(s->>'role') <> 'HOD' OR (r.actordepartmentorganizationid = r.organizationid
+                        AND NULLIF(TRIM(r.department), '') IS NOT NULL
+                        AND UPPER(TRIM(r.actordepartmentname)) = UPPER(TRIM(r.department))))))))
               AND (UPPER(s->>'status') <> 'PENDING' OR s->>'stepid' = r.currentstep->>'stepid')
             ORDER BY (s->>'stepid' = r.currentstep->>'stepid') DESC NULLS LAST,
                 (s->>'level')::integer DESC LIMIT 1

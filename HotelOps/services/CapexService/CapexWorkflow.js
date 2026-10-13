@@ -6,9 +6,32 @@ const statuses = { APPROVE: "Approved", REJECT: "Rejected", RETURN: "Returned", 
 // Assignment and business stage are independent. A USER may approve a GM stage
 // without holding the GM role; the persisted assignment is the authority.
 const validUserID = value => /^[1-9]\d*$/.test(String(value ?? ""));
-const isAssigned = (step, actor) => {
+// Match the Builder's REGIONAL dropdown: the selected user's primary
+// organization is the hotel's parent company (or the company itself).
+const regionalEligibilitySQL = (user = "um", organization = "om") => `EXISTS (
+    SELECT 1 FROM user_primary_organization upo
+    JOIN organization_master company ON company.organizationid = upo.organizationid
+    WHERE upo.userid = ${user}.userid
+      AND upo.organizationid = COALESCE(${organization}.parentorganizationid, ${organization}.organizationid)
+      AND upo.isactive = TRUE AND upo.isdeleted = FALSE
+      AND company.isactive = TRUE AND company.isdeleted = FALSE AND company.activationstatus = TRUE
+)`;
+const regionalAccessSQL = (user, organization, capexID) => `(
+    ${regionalEligibilitySQL(user, organization)} AND EXISTS (
+        SELECT 1 FROM capex_workflow_step regional_step
+        WHERE regional_step.capexid = ${capexID} AND regional_step.approvertype = 'REGIONAL'
+          AND regional_step.assigneduserid = ${user}.userid
+          AND regional_step.ismandatory = TRUE
+    )
+)`;
+const isAssigned = (step, actor, record) => {
+    if (record && normalized(step.approvertype) === "ROLE" && normalized(step.role) === "HOD" &&
+        (String(actor?.departmentorganizationid) !== String(record.organizationid) ||
+         !normalized(record.department) || normalized(actor?.departmentname) !== normalized(record.department))) return false;
     if (!validUserID(actor?.userid)) return false;
-    if (normalized(step.approvertype) === "USER") {
+    if (normalized(step.approvertype) === "REGIONAL" && actor.regionaleligible === false) return false;
+    if (normalized(step.approvertype) !== "REGIONAL" && actor.organizationaccess === false) return false;
+    if (["USER", "REGIONAL"].includes(normalized(step.approvertype))) {
         return validUserID(step.assigneduserid) && String(step.assigneduserid) === String(actor.userid);
     }
     return normalized(step.approvertype) === "ROLE" && !!normalized(step.role) &&
@@ -49,6 +72,7 @@ const hasActionSQL = `(
 )`;
 
 const canModify = (record, actor) => {
+    if (actor?.organizationaccess === false) return false;
     if (record.isdeleted || record.isvoid || record.hasaction !== false || !validUserID(actor?.userid)) return false;
     const creator = validUserID(record.createdby) && String(record.createdby) === String(actor.userid);
     // Department comes from user_master.departmentid -> department_master;
@@ -61,7 +85,7 @@ const canModify = (record, actor) => {
 
 const allowedActions = (record, steps, step, actor) => {
     if (record.isvoid || record.isdeleted || normalized(record.finalstatus) === "APPROVED" ||
-        !isAssigned(step, actor)) return [];
+        !isAssigned(step, actor, record)) return [];
     return Object.keys(statuses).filter(action => canAct(steps, step, action));
 };
 
@@ -71,18 +95,18 @@ const permissions = (record, steps, actor) => ({
 });
 
 const authorizeApproval = (record, steps, actor, action, stepID) => {
-    const step = chooseStep(steps, actor, action, stepID);
+    const step = chooseStep(steps, actor, action, stepID, record);
     if (!allowedActions(record, steps, step, actor).includes(action)) {
         throw new AppError("You cannot perform this action on this CAPEX", 403);
     }
     return step;
 };
 
-const chooseStep = (steps, actor, action, stepID) => {
-    if (stepID == null && steps.filter(step => isAssigned(step, actor)).length > 1) {
+const chooseStep = (steps, actor, action, stepID, record) => {
+    if (stepID == null && steps.filter(step => isAssigned(step, actor, record)).length > 1) {
         throw new AppError("ApprovalStepID is required for repeated approver assignments", 400);
     }
-    const candidates = steps.filter(step => isAssigned(step, actor) && canAct(steps, step, action) &&
+    const candidates = steps.filter(step => isAssigned(step, actor, record) && canAct(steps, step, action) &&
         (stepID == null || String(step.stepid) === String(stepID)));
     if (candidates.length !== 1) {
         throw new AppError(candidates.length
@@ -104,10 +128,16 @@ const validateAction = data => {
     return { action, remarks, quantity, status: statuses[action] };
 };
 
-const getActor = async (client, organizationID, userID) => {
+const getActor = async (client, organizationID, userID, capexID = null) => {
     const result = await client.query(`
         SELECT um.userid, um.usertype, dm.departmentname,
-            dm.organizationid AS departmentorganizationid FROM user_master um
+            dm.organizationid AS departmentorganizationid,
+            ${regionalEligibilitySQL()} AS regionaleligible,
+            (COALESCE((um.logintype = 'SuperAdmin' AND um.allorganizationaccess = TRUE), FALSE)
+              OR EXISTS (SELECT 1 FROM user_org_mapping membership
+                WHERE membership.userid = um.userid AND membership.organizationid = om.organizationid
+                  AND membership.isactive = TRUE AND membership.isdeleted = FALSE)) AS organizationaccess
+        FROM user_master um
         JOIN organization_master om ON om.organizationid = $2
         LEFT JOIN department_master dm ON dm.departmentid = um.departmentid AND dm.isdeleted = FALSE
         WHERE um.userid = $1
@@ -116,8 +146,9 @@ const getActor = async (client, organizationID, userID) => {
           AND ((um.logintype = 'SuperAdmin' AND um.allorganizationaccess = TRUE)
             OR EXISTS (SELECT 1 FROM user_org_mapping uom
                 WHERE uom.userid = um.userid AND uom.organizationid = om.organizationid
-                  AND uom.isactive = TRUE AND uom.isdeleted = FALSE))
-    `, [userID, organizationID]);
+                  AND uom.isactive = TRUE AND uom.isdeleted = FALSE)
+            OR ${regionalAccessSQL("um", "om", "$3")})
+    `, [userID, organizationID, capexID]);
     if (!result.rows.length) throw new AppError("You do not have access to this CAPEX organization", 403);
     return result.rows[0];
 };
@@ -154,15 +185,15 @@ const snapshot = async (client, capexID, organizationID) => {
         }
         levels.add(step.level);
         step.approvertype = normalized(step.approvertype);
-        if (!["ROLE", "USER"].includes(step.approvertype) || !String(step.approvaltype || "").trim()) {
+        if (!["ROLE", "USER", "REGIONAL"].includes(step.approvertype) || !String(step.approvaltype || "").trim()) {
             throw new AppError("Invalid CAPEX approval assignment or business stage", 400);
         }
-        // Builder stores the selected user's ID in Role for USER steps.
+        // Builder stores the selected user's ID in Role for USER/REGIONAL steps.
         // Snapshot it separately; ApprovalType remains the business stage label.
         const assignment = String(step.role ?? "").trim();
-        step.assigneduserid = step.approvertype === "USER" ? assignment : null;
-        if (step.approvertype === "USER" && !validUserID(assignment)) {
-            throw new AppError("USER approval requires a valid selected user ID", 400);
+        step.assigneduserid = ["USER", "REGIONAL"].includes(step.approvertype) ? assignment : null;
+        if (step.assigneduserid !== null && !validUserID(assignment)) {
+            throw new AppError(step.approvertype + " approval requires a valid selected user ID", 400);
         }
         step.role = step.approvertype === "ROLE" ? normalized(assignment) : null;
         if (step.approvertype === "ROLE" && !step.role) throw new AppError("Approval role is required", 400);
@@ -170,17 +201,21 @@ const snapshot = async (client, capexID, organizationID) => {
         if (step.ismandatory === false) continue;
         const recipients = await client.query(`
             SELECT 1 FROM user_master um
-            JOIN user_org_mapping uom ON uom.userid = um.userid
-            WHERE uom.organizationid = $1
-              AND (($2::text = 'ROLE' AND UPPER(TRIM(um.usertype)) = $3)
-                OR ($2::text = 'USER' AND um.userid::text = $3))
-              AND uom.isactive = TRUE AND uom.isdeleted = FALSE
+            JOIN organization_master om ON om.organizationid = $1
+            WHERE om.isactive = TRUE AND om.isdeleted = FALSE AND om.activationstatus = TRUE
+              AND (($2::text IN ('ROLE', 'USER') AND EXISTS (
+                SELECT 1 FROM user_org_mapping uom WHERE uom.userid = um.userid
+                  AND uom.organizationid = $1 AND uom.isactive = TRUE AND uom.isdeleted = FALSE)
+                AND (($2::text = 'ROLE' AND UPPER(TRIM(um.usertype)) = $3)
+                  OR ($2::text = 'USER' AND um.userid::text = $3)))
+                OR ($2::text = 'REGIONAL' AND um.userid::text = $3
+                  AND ${regionalEligibilitySQL()}))
               AND um.isactive = TRUE AND um.isdeleted = FALSE AND um.islocked = FALSE
             LIMIT 1
         `, [organizationID, step.approvertype, step.assigneduserid || step.role]);
         if (!recipients.rows.length) throw new AppError(
-            step.approvertype === "USER"
-                ? "Selected CAPEX approver is unavailable or not mapped to this organization"
+            step.approvertype !== "ROLE"
+                ? "Selected CAPEX approver is unavailable or not mapped to this organization hierarchy"
                 : "No eligible approver for CAPEX role " + step.role, 400);
     }
     await client.query(`
@@ -199,7 +234,7 @@ const snapshot = async (client, capexID, organizationID) => {
 };
 
 const applyAction = async (client, capex, data, verifiedActor) => {
-    const actor = verifiedActor || await getActor(client, capex.organizationid, data.UserID);
+    const actor = verifiedActor || await getActor(client, capex.organizationid, data.UserID, capex.capexid);
     const steps = await loadSteps(client, capex.capexid, true);
     if (!steps.length) return null; // Legacy request: leave its state and mapping untouched.
     if (capex.isvoid) throw new AppError("Void CAPEX cannot be processed for approval", 400);
@@ -229,12 +264,12 @@ const applyAction = async (client, capex, data, verifiedActor) => {
             modifiedby = $2, modifieddate = CURRENT_TIMESTAMP
         WHERE capexid = $3 AND isdeleted = FALSE
     `, [finalStatus, actor.userid, capex.capexid]);
-    const target = change.action === "APPROVE" ? next : step;
+    const target = change.action === "APPROVE" ? next : null;
     return {
         change, step, next, finalStatus, actor,
         roles: target?.approvertype === "ROLE" ? [target.role] : [],
         directUserIds: [
-            ...(target?.approvertype === "USER" ? [target.assigneduserid] : []),
+            ...(["USER", "REGIONAL"].includes(target?.approvertype) ? [target.assigneduserid] : []),
             ...(change.action !== "APPROVE" || !next ? [capex.createdby] : [])
         ]
     };
@@ -242,4 +277,4 @@ const applyAction = async (client, capex, data, verifiedActor) => {
 
 module.exports = { normalized, currentStep, isAssigned, canAct, chooseStep, hasActionSQL,
     canModify, allowedActions, permissions, authorizeApproval,
-    validateAction, getActor, loadSteps, snapshot, applyAction };
+    validateAction, getActor, loadSteps, snapshot, applyAction, regionalEligibilitySQL, regionalAccessSQL };

@@ -1,3 +1,5 @@
+const OpexWorkflow = require("./OpexWorkflow");
+const OpexWorkflowRead = require("./OpexWorkflowRead");
 const { pool } = require("../../db");
 const {
   retryableDatabaseResponse,
@@ -194,6 +196,7 @@ const opexNotificationContent = ({ kind, item, qty, department, description,
     ? `OPEX - ${String(item || "").trim()} (${String(qty ?? "").trim()}) - ${String(department || "").trim()} - ${organizationShortName}`
     : `OPEX - ${String(item || "").trim()} - ${String(department || "").trim()} - ${organizationShortName}`;
   if (kind === "CREATE") return { title, message: String(description || "").trim() };
+  if (kind === "AUTO_APPROVED") return {title,message:"Your OPEX is fully approved because no mandatory approval steps are configured."};
   const actionLabel = { APPROVE: "Approved", REJECT: "Rejected", RETURN: "Returned", HOLD: "Hold" }[kind];
   return { title, message: `${actionLabel} by ${actorName || approverRole}` };
 };
@@ -691,37 +694,11 @@ const createOpex = async (data) => {
     // ========================================================
     // 4. Approval Configuration
     // ========================================================
-    const approvalConfigResult = await client.query(
-      `
-      SELECT
-        ApprovalLevel AS LevelNo,
-        ApprovalRole
-      FROM Opex_Approval_Config
-      WHERE OrganizationID = $1
-        AND IsDeleted = FALSE
-      ORDER BY
-        ApprovalOrder ASC,
-        ApprovalLevel ASC,
-        OpexApprovalConfigID ASC;
-      `,
-      [data.OrganizationID],
-    );
-
-    const approvals = mergeApprovalConfiguration(approvalConfigResult.rows);
-
-    // ========================================================
-    // 5. Validate Approval Configuration
-    // ========================================================
-    if (!approvalConfigurationIsValid(approvals)) {
-      return await cleanupAndFail(
-        client,
-        transactionStarted,
-        fail(
-          "Opex approval configuration contains an invalid approval role.",
-          400,
-        ),
-      );
-    }
+    await OpexWorkflow.getActor(client,data.OrganizationID,data.CreatedBy);
+    const workflowSteps = await OpexWorkflow.snapshot(client,OpexID,data.OrganizationID);
+    const firstStep = OpexWorkflow.currentStep(workflowSteps);
+    const recipients = await OpexWorkflow.recipientIds(client,{organizationid:data.OrganizationID,
+        department:data.Department,createdby:data.CreatedBy},firstStep);
 
     // ========================================================
     // 6. Create Approval
@@ -759,69 +736,24 @@ const createOpex = async (data) => {
       [OpexID, data.CreatedBy],
     );
 
+    if (!firstStep) await client.query(`UPDATE opex_approval SET finalstatus='Approved',
+        finalstatusdatetime=CURRENT_TIMESTAMP WHERE opexid=$1 AND NOT isdeleted`,[OpexID]);
+
     // ========================================================
     // 7. Commit
     // ========================================================
     await client.query("COMMIT");
     transactionStarted = false;
 
-    // // const firstApprovalRole = String(approvals[0]?.ApprovalRole || "").trim().toUpperCase();
-    // const firstApprovalRole = String(
-    //   approvals[0]?.ApprovalRole || ""
-    // )
-    //   .trim()
-    //   .toUpperCase();
-
-    // const createNotificationRoles =
-    //   firstApprovalRole === "HOD" &&
-    //     String(data.Department || "").trim().toUpperCase() === "FINANCE"
-    //     ? ["GM"]
-    //     : firstApprovalRole
-    //       ? [firstApprovalRole]
-    //       : [];
-
-    // // notifyCommittedOpex({
-    // //   organizationID: data.OrganizationID, opexID: OpexID,
-    // //   department: data.Department, roles: firstApprovalRole ? [firstApprovalRole] : [],
-    // //   directUserIds: [], kind: "CREATE", item: data.Item, qty: data.Qty,
-    // //   rate: data.Rate, total, description: data.Description, action: "CREATED"
-    // // });
-    // notifyCommittedOpex({
-    //   organizationID: data.OrganizationID,
-    //   opexID: OpexID,
-    //   department: data.Department,
-    //   roles: createNotificationRoles,
-    //   directUserIds: [],
-    //   kind: "CREATE",
-    //   item: data.Item,
-    //   qty: data.Qty,
-    //   description: data.Description,
-    //   action: "CREATED",
-    // });
-
-    const firstApprovalRole = String(
-      approvals[0]?.ApprovalRole || "",
-    ).trim().toUpperCase();
-
-    const isFinanceOpex =
-      String(data.Department || "").trim().toUpperCase() === "FINANCE";
-
-    const creatorIsFinanceHod =
-      isFinanceOpex &&
-      await isFinanceHodCreator(data.CreatedBy, data.OrganizationID);
-
-    const createNotificationExcludeUserID =
-      creatorIsFinanceHod ? data.CreatedBy : null;
-
     notifyCommittedOpex({
       organizationID: data.OrganizationID,
       opexID: OpexID,
       department: data.Department,
-      roles: firstApprovalRole ? [firstApprovalRole] : [],
-      directUserIds: [],
-      excludeUserID: createNotificationExcludeUserID,
+      roles: [],
+      directUserIds: recipients,
+      excludeUserID: null,
       actorUserID: data.CreatedBy,
-      kind: "CREATE",
+      kind: firstStep ? "CREATE" : "AUTO_APPROVED",
       item: data.Item,
       qty: data.Qty,
       rate: data.Rate,
@@ -839,6 +771,7 @@ const createOpex = async (data) => {
 
     console.error("Create Opex Error:", error.message);
 
+    if (error.statusCode) return fail(error.message,error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
 
     if (retryResponse) return retryResponse;
@@ -858,520 +791,6 @@ const createOpex = async (data) => {
 };
 // ============================================================ Read Query and Mapping Helpers(Get Helpers)
 // The lateral query derives the first non-approved stage for each Opex.
-const Opex_SELECT = `
-  SELECT 
-    cm.OpexID, 
-    cm.OrganizationID, 
-    om.ShortName AS OrganizationShortName,
-    cm.OpexNumber, 
-    cm.Department, 
-    cm.Item, 
-    cm.Description, 
-    cm.Make, 
-    cm.Qty, 
-    cm.Rate, 
-    cm.Total, 
-    cm.IsVoid, 
-    cm.VoidRemarks, 
-    cm.CreatedBy,
-    cm.CreatedDate, 
-
-    CASE 
-      WHEN UPPER(COALESCE(approval_state.FinalStatus, 'PENDING'))
-           IN ('APPROVED', 'REJECTED')
-      THEN NULL
-      ELSE current_stage.ApprovalRole
-    END AS CurrentApprovalRole,
-
-    CASE 
-      WHEN UPPER(COALESCE(approval_state.FinalStatus, 'PENDING'))
-           IN ('APPROVED', 'REJECTED')
-      THEN approval_state.FinalStatus
-
-      ELSE COALESCE(
-        current_stage.Status,
-        approval_state.FinalStatus,
-        'Pending'
-      )
-    END AS CurrentStatus
-
-  FROM Opex_Master cm
-
-  INNER JOIN Organization_Master om
-    ON om.OrganizationID = cm.OrganizationID
-   AND om.IsActive = TRUE
-   AND om.IsDeleted = FALSE
-   AND om.ActivationStatus = TRUE
-
-  LEFT JOIN Opex_Approval approval_state
-    ON approval_state.OpexID = cm.OpexID
-   AND approval_state.IsDeleted = FALSE
-
-  LEFT JOIN LATERAL
-  (
-    SELECT 
-      cfg.ApprovalRole,
-
-      CASE UPPER(cfg.ApprovalRole)
-
-        WHEN 'HOD'
-          THEN COALESCE(approval_state.HODStatus, 'PENDING')
-
-        WHEN 'FC'
-          THEN COALESCE(approval_state.FCStatus, 'PENDING')
-
-        WHEN 'GM'
-          THEN COALESCE(approval_state.GMStatus, 'PENDING')
-
-        WHEN 'RD-FC'
-          THEN COALESCE(approval_state.RDFCStatus, 'PENDING')
-
-        WHEN 'CEO'
-          THEN COALESCE(approval_state.CEOStatus, 'PENDING')
-
-      END AS Status,
-
-      cfg.ApprovalLevel,
-      cfg.ApprovalOrder
-
-    FROM
-    (
-      SELECT configured.ApprovalLevel, configured.ApprovalRole, configured.ApprovalOrder
-      FROM Opex_Approval_Config configured
-      WHERE configured.OrganizationID = cm.OrganizationID
-        AND configured.IsDeleted = FALSE
-
-      UNION ALL
-
-      SELECT defaults.ApprovalLevel, defaults.ApprovalRole, defaults.ApprovalOrder
-      FROM
-      (
-        VALUES
-          (1, 'HOD', 1),
-          (2, 'FC', 2),
-          (3, 'GM', 3),
-          (4, 'RD-FC', 4),
-          (5, 'CEO', 5)
-      ) AS defaults(ApprovalLevel, ApprovalRole, ApprovalOrder)
-      WHERE NOT EXISTS
-      (
-        SELECT 1
-        FROM Opex_Approval_Config configured
-        WHERE configured.OrganizationID = cm.OrganizationID
-          AND configured.IsDeleted = FALSE
-      )
-    ) cfg
-
-    WHERE TRUE
-
-      AND UPPER(
-        CASE UPPER(cfg.ApprovalRole)
-
-          WHEN 'HOD'
-            THEN COALESCE(approval_state.HODStatus, 'PENDING')
-
-          WHEN 'FC'
-            THEN COALESCE(approval_state.FCStatus, 'PENDING')
-
-          WHEN 'GM'
-            THEN COALESCE(approval_state.GMStatus, 'PENDING')
-
-          WHEN 'RD-FC'
-            THEN COALESCE(approval_state.RDFCStatus, 'PENDING')
-
-          WHEN 'CEO'
-            THEN COALESCE(approval_state.CEOStatus, 'PENDING')
-
-        END
-      ) <> 'APPROVED'
-
-    ORDER BY
-      cfg.ApprovalOrder ASC,
-      cfg.ApprovalLevel ASC
-
-    LIMIT 1
-
-  ) current_stage ON TRUE
-
-  WHERE cm.IsDeleted = FALSE
-`;
-// Convert PostgreSQL lowercase row keys into the public Opex response shape.
-const mapMaster = (row) => ({
-  OpexID: Number(row.opexid),
-  OrganizationID: Number(row.organizationid),
-  OrganizationShortName: row.organizationshortname,
-  OpexNumber: Number(row.opexnumber),
-  Department: row.department,
-  Item: row.item,
-  Description: row.description,
-  Make: row.make,
-  Qty: Number(row.qty),
-  Rate: Number(row.rate),
-  Total: Number(row.total),
-  IsVoid: row.isvoid,
-  VoidRemarks: row.voidremarks,
-  CreatedDate: formatDate(row.createddate),
-  CurrentStatus: row.currentstatus,
-  Documents: [],
-  Approvals: [],
-});
-// Generate a short-lived read URL while preserving stored blob paths in the DB.
-const mapDocument = (row) => ({
-  OpexDocumentID: Number(row.opexdocumentid),
-  FileName: row.filename,
-  FilePath: row.filepath ? generateDocumentUrl(row.filepath) : null,
-});
-// Return approval fields without exposing soft-delete/audit internals.
-const mapApproval = (row) => ({
-  OpexApprovalID: Number(row.opexapprovalid),
-  ApprovalRole: row.approvalrole,
-  Status: row.status,
-  ApprovedQuantity:
-    row.approvedquantity === null || row.approvedquantity === undefined
-      ? null
-      : Number(row.approvedquantity),
-  Remarks: row.remarks,
-});
-// Fetch documents and approvals in batches to avoid N+1 database queries.
-const attachRelatedData = async (OpexRows) => {
-  if (OpexRows.length === 0) return [];
-
-  const OpexIDs = OpexRows.map((row) => Number(row.opexid));
-
-  const [documentsResult, approvalsResult] = await Promise.all([
-    pool.query(
-      `
-        SELECT
-          OpexDocumentID,
-          OpexID,
-          OpexNumber,
-          FileName,
-          FilePath,
-          FileType,
-          FileSize
-        FROM Opex_Documents
-        WHERE OpexID = ANY($1::bigint[])
-          AND IsDeleted = FALSE
-        ORDER BY OpexID ASC, OpexDocumentID ASC;
-      `,
-      [OpexIDs],
-    ),
-
-    pool.query(
-      `
-        SELECT
-          ca.OpexApprovalID,
-          ca.OpexID,
-
-          cfg.ApprovalLevel AS LevelNo,
-          cfg.ApprovalRole,
-
-          CASE UPPER(cfg.ApprovalRole)
-            WHEN 'HOD' THEN ca.HODStatus
-            WHEN 'FC' THEN ca.FCStatus
-            WHEN 'GM' THEN ca.GMStatus
-            WHEN 'RD-FC' THEN ca.RDFCStatus
-            WHEN 'CEO' THEN ca.CEOStatus
-          END AS Status,
-
-          CASE UPPER(cfg.ApprovalRole)
-            WHEN 'HOD' THEN ca.HODStatusDateTime
-            WHEN 'FC' THEN ca.FCStatusDateTime
-            WHEN 'GM' THEN ca.GMStatusDateTime
-            WHEN 'RD-FC' THEN ca.RDFCStatusDateTime
-            WHEN 'CEO' THEN ca.CEOStatusDateTime
-          END AS StatusDateTime,
-
-          CASE UPPER(cfg.ApprovalRole)
-            WHEN 'HOD' THEN ca.HODStatusApprovedBy
-            WHEN 'FC' THEN ca.FCStatusApprovedBy
-            WHEN 'GM' THEN ca.GMStatusApprovedBy
-            WHEN 'RD-FC' THEN ca.RDFCStatusApprovedBy
-            WHEN 'CEO' THEN ca.CEOStatusApprovedBy
-          END AS StatusApprovedBy,
-
-          CASE UPPER(cfg.ApprovalRole)
-            WHEN 'HOD' THEN ca.HODApprovedQuantity
-            WHEN 'FC' THEN ca.FCApprovedQuantity
-            WHEN 'GM' THEN ca.GMApprovedQuantity
-            WHEN 'RD-FC' THEN ca.RDFCApprovedQuantity
-            WHEN 'CEO' THEN ca.CEOApprovedQuantity
-          END AS ApprovedQuantity,
-
-          CASE UPPER(cfg.ApprovalRole)
-            WHEN 'HOD' THEN ca.HODRemarks
-            WHEN 'FC' THEN ca.FCRemarks
-            WHEN 'GM' THEN ca.GMRemarks
-            WHEN 'RD-FC' THEN ca.RDFCRemarks
-            WHEN 'CEO' THEN ca.CEORemarks
-          END AS Remarks
-
-        FROM Opex_Approval ca
-
-        INNER JOIN Opex_Master master
-          ON master.OpexID = ca.OpexID
-
-        CROSS JOIN LATERAL
-        (
-          SELECT configured.ApprovalLevel, configured.ApprovalRole, configured.ApprovalOrder
-          FROM Opex_Approval_Config configured
-          WHERE configured.OrganizationID = master.OrganizationID
-            AND configured.IsDeleted = FALSE
-
-          UNION ALL
-
-          SELECT defaults.ApprovalLevel, defaults.ApprovalRole, defaults.ApprovalOrder
-          FROM
-          (
-            VALUES
-              (1, 'HOD', 1),
-              (2, 'FC', 2),
-              (3, 'GM', 3),
-              (4, 'RD-FC', 4),
-              (5, 'CEO', 5)
-          ) AS defaults(ApprovalLevel, ApprovalRole, ApprovalOrder)
-          WHERE NOT EXISTS
-          (
-            SELECT 1
-            FROM Opex_Approval_Config configured
-            WHERE configured.OrganizationID = master.OrganizationID
-              AND configured.IsDeleted = FALSE
-          )
-        ) cfg
-
-        WHERE ca.OpexID = ANY($1::bigint[])
-          AND ca.IsDeleted = FALSE
-
-        ORDER BY
-          ca.OpexID ASC,
-          cfg.ApprovalOrder ASC,
-          cfg.ApprovalLevel ASC,
-          ca.OpexApprovalID ASC;
-      `,
-      [OpexIDs],
-    ),
-  ]);
-
-  // ============================================================
-  // Map Opex
-  // ============================================================
-
-  const byID = new Map(
-    OpexRows.map((row) => {
-      const Opex = mapMaster(row);
-
-      // ✅ FIX
-      return [Opex.OpexID, Opex];
-    }),
-  );
-
-  // ============================================================
-  // Attach Documents
-  // ============================================================
-
-  for (const row of documentsResult.rows) {
-    byID.get(Number(row.opexid))?.Documents.push(mapDocument(row));
-  }
-
-  // ============================================================
-  // Attach Approvals
-  // ============================================================
-
-  for (const row of approvalsResult.rows) {
-    byID.get(Number(row.opexid))?.Approvals.push(mapApproval(row));
-  }
-
-  // ============================================================
-  // Return
-  // ============================================================
-
-  return OpexRows.map((row) => byID.get(Number(row.opexid)));
-};
-
-// Add frontend permissions to already-visible OPEX rows without exposing the
-// audit CreatedBy field. Approval uses the effective workflow role, while edit
-// and delete actions use the authenticated JWT role exactly as requested.
-const addOpexListPermissions = (
-  opexRows,
-  rawRows,
-  data = {},
-  effectiveRole,
-) => {
-  const userID = Number(data.UserID);
-  const userType = String(data.UserType || "").trim().toUpperCase();
-  const approvalRole = String(effectiveRole || userType).trim().toUpperCase();
-  const rawRowsByID = new Map(
-    rawRows.map((row) => [Number(row.opexid), row]),
-  );
-
-  return opexRows.map((opex) => {
-    const rawRow = rawRowsByID.get(Number(opex.OpexID)) || {};
-    const currentApprovalRole = String(rawRow.currentapprovalrole || "")
-      .trim()
-      .toUpperCase();
-    const currentStatus = String(rawRow.currentstatus || "")
-      .trim()
-      .toUpperCase();
-    const createdBy = Number(rawRow.createdby);
-
-    return {
-      ...opex,
-      CanApprove:
-        APPROVAL_ROLES.has(approvalRole) &&
-        currentApprovalRole === approvalRole &&
-        currentStatus === "PENDING",
-      CanAction:
-        (Number.isSafeInteger(userID) &&
-          userID > 0 &&
-          Number.isSafeInteger(createdBy) &&
-          createdBy === userID) ||
-        ["HOD", "GM"].includes(userType),
-    };
-  });
-};
-
-// Approval-role default view is the union of every role-specific status tab:
-// records currently pending at that role, plus records already acted on by it.
-const appendOpexRoleStatusFilter = (
-  query,
-  params,
-  userType,
-  approverStatusColumn,
-  approvalStatus,
-  financeHod = false,
-) => {
-  // A Finance HOD normally acts as FC, but must first be able to see the
-  // Finance OPEX while its configured current stage is HOD.
-  if (userType === "FC" && financeHod && approvalStatus === "PENDING") {
-    params.push(userType);
-    const roleParameter = `$${params.length}`;
-    return `${query}
-      AND (
-        (
-          UPPER(BTRIM(COALESCE(approval_state.HODStatus, 'PENDING'))) = 'APPROVED'
-          AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = ${roleParameter}
-          AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-        )
-        OR (
-          UPPER(COALESCE(current_stage.ApprovalRole, '')) = 'HOD'
-          AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-          AND UPPER(TRIM(cm.Department)) = 'FINANCE'
-        )
-      )
-    `;
-  }
-
-  if (userType === "FC" && financeHod && !approvalStatus) {
-    params.push(userType);
-    const roleParameter = `$${params.length}`;
-    return `${query}
-      AND (
-        (
-          UPPER(BTRIM(COALESCE(approval_state.HODStatus, 'PENDING'))) = 'APPROVED'
-          AND (
-            (UPPER(COALESCE(current_stage.ApprovalRole, '')) = ${roleParameter}
-              AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING')
-            OR UPPER(COALESCE(approval_state.FCStatus, ''))
-              IN ('APPROVED', 'REJECTED', 'HOLD', 'RETURNED')
-          )
-        )
-        OR (
-          UPPER(COALESCE(current_stage.ApprovalRole, '')) = 'HOD'
-          AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-          AND UPPER(TRIM(cm.Department)) = 'FINANCE'
-        )
-      )
-    `;
-  }
-
-  // FC must never see or act on an OPEX until the HOD stage is approved.
-  // This applies to Pending/default as well as FC's historical status tabs.
-  if (userType === "FC") {
-    query = `${query}
-      AND UPPER(BTRIM(COALESCE(approval_state.HODStatus, 'PENDING')))
-          = 'APPROVED'
-    `;
-  }
-
-  if (approvalStatus === "PENDING") {
-    params.push(userType);
-    return `${query}
-      AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = $${params.length}
-      AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-    `;
-  }
-
-  if (approvalStatus) {
-    params.push(approvalStatus);
-    return `${query}
-      AND UPPER(COALESCE(${approverStatusColumn}, 'PENDING'))
-          = $${params.length}
-    `;
-  }
-
-  params.push(userType);
-  return `${query}
-    AND (
-      (
-        UPPER(COALESCE(current_stage.ApprovalRole, '')) = $${params.length}
-        AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-      )
-      OR UPPER(COALESCE(${approverStatusColumn}, ''))
-           IN ('APPROVED', 'REJECTED', 'HOLD', 'RETURNED')
-    )
-  `;
-};
-
-// Normal users see the overall workflow result instead of a single approval
-// role's column. A terminal action takes precedence over later pending stages.
-const appendOpexUserStatusFilter = (query, params, approvalStatus) => {
-  if (!approvalStatus) return query;
-
-  const workflowStatusColumns = [
-    "approval_state.HODStatus",
-    "approval_state.FCStatus",
-    "approval_state.GMStatus",
-    "approval_state.RDFCStatus",
-    "approval_state.CEOStatus",
-    "approval_state.FinalStatus",
-  ];
-  const normalizedStatus = (column) =>
-    `UPPER(BTRIM(COALESCE(${column}, '')))`;
-  const hasTerminalStatus = workflowStatusColumns
-    .map(
-      (column) =>
-        `${normalizedStatus(column)} IN ('REJECTED', 'HOLD', 'RETURNED')`,
-    )
-    .join(" OR ");
-
-  if (["REJECTED", "HOLD", "RETURNED"].includes(approvalStatus)) {
-    params.push(approvalStatus);
-    const statusParameter = `$${params.length}`;
-    const hasRequestedStatus = workflowStatusColumns
-      .map((column) => `${normalizedStatus(column)} = ${statusParameter}`)
-      .join(" OR ");
-
-    return `${query}
-      AND (${hasRequestedStatus})
-    `;
-  }
-
-  if (approvalStatus === "APPROVED") {
-    params.push(approvalStatus);
-    return `${query}
-      AND ${normalizedStatus("approval_state.FinalStatus")} = $${params.length}
-      AND NOT (${hasTerminalStatus})
-    `;
-  }
-
-  return `${query}
-    AND current_stage.ApprovalRole IS NOT NULL
-    AND ${normalizedStatus("current_stage.Status")} = 'PENDING'
-    AND ${normalizedStatus("approval_state.FinalStatus")} <> 'APPROVED'
-    AND NOT (${hasTerminalStatus})
-  `;
-};
-
 const normalizeOptionalOpexDate = (value) => {
   const normalized = String(value ?? "").trim();
   return normalized || null;
@@ -1386,509 +805,12 @@ const isValidOpexDate = (value) => {
   );
 };
 
-const appendOpexDateFilter = (query, params, fromDate, toDate) => {
-  if (fromDate) {
-    params.push(fromDate);
-    query += `
-      AND cm.CreatedDate >= $${params.length}::date
-    `;
-  }
-
-  if (toDate) {
-    params.push(toDate);
-    query += `
-      AND cm.CreatedDate < ($${params.length}::date + INTERVAL '1 day')
-    `;
-  }
-
-  return query;
+const getAllOpex = async data => {
+  try {return await OpexWorkflowRead.list(data);} catch(error){return fail(error.message,error.statusCode||503);}
 };
-
-// Apply ApprovalFlow inside the caller's existing visibility scope. Completed
-// actions belong to the selected role's status column; only Pending is tied to
-// current_stage because later workflow columns may still default to Pending.
-const appendOpexApprovalFlowFilter = (
-  query,
-  params,
-  approvalFlow,
-  approvalStatus,
-) => {
-  if (!approvalFlow) return query;
-
-  const statusColumns = {
-    HOD: "approval_state.HODStatus",
-    FC: "approval_state.FCStatus",
-    GM: "approval_state.GMStatus",
-    "RD-FC": "approval_state.RDFCStatus",
-    CEO: "approval_state.CEOStatus",
-  };
-  const statusColumn = statusColumns[approvalFlow];
-
-  params.push(approvalFlow);
-  const approvalFlowParameter = `$${params.length}`;
-  query = `${query}
-    AND (
-      EXISTS (
-        SELECT 1
-        FROM Opex_Approval_Config flow_cfg
-        WHERE flow_cfg.OrganizationID = cm.OrganizationID
-          AND flow_cfg.IsDeleted = FALSE
-          AND UPPER(BTRIM(flow_cfg.ApprovalRole)) = ${approvalFlowParameter}
-      )
-      OR (
-        NOT EXISTS (
-          SELECT 1
-          FROM Opex_Approval_Config configured_flow
-          WHERE configured_flow.OrganizationID = cm.OrganizationID
-            AND configured_flow.IsDeleted = FALSE
-        )
-        AND ${approvalFlowParameter} IN ('HOD', 'FC', 'GM', 'RD-FC', 'CEO')
-      )
-    )
-  `;
-
-  if (!approvalStatus) return query;
-
-  if (approvalStatus === "PENDING") {
-    return `${query}
-      AND UPPER(BTRIM(COALESCE(current_stage.ApprovalRole, '')))
-          = ${approvalFlowParameter}
-      AND UPPER(BTRIM(COALESCE(current_stage.Status, 'PENDING')))
-          = 'PENDING'
-      AND UPPER(BTRIM(COALESCE(approval_state.FinalStatus, 'PENDING')))
-          = 'PENDING'
-    `;
-  }
-
-  params.push(approvalStatus);
-  return `${query}
-    AND UPPER(BTRIM(COALESCE(${statusColumn}, 'PENDING')))
-        = $${params.length}
-  `;
+const getOpexById = async data => {
+  try {return await OpexWorkflowRead.detail(data);} catch(error){return fail(error.message,error.statusCode||503);}
 };
-// ============================================================ Get All Opex
-const getAllOpex = async (data) => {
-  try {
-    // console.log("GET ALL Opex DATA:", JSON.stringify(data));
-
-    // =====================================================
-    // Pagination
-    // =====================================================
-
-    const page = Number(data.page) || 1;
-    const PageSize = Number(data.PageSize) || 10;
-
-    if (!Number.isInteger(page) || page < 1) {
-      return {
-        success: false,
-        message: "Page must be a positive integer.",
-      };
-    }
-
-    if (!Number.isInteger(PageSize) || PageSize < 1) {
-      return {
-        success: false,
-        message: "PageSize must be a positive integer.",
-      };
-    }
-
-    const offset = (page - 1) * PageSize;
-
-    // =====================================================
-    // User Type
-    // =====================================================
-
-    const access = await resolveOpexAccess(data);
-    if (access.error) return access.error;
-
-    const userType = access.effectiveRole;
-    const departmentName = access.departmentScope;
-    const requestedDepartment =
-      data.Department !== undefined &&
-        data.Department !== null &&
-        String(data.Department).trim() !== ""
-        ? String(data.Department).trim()
-        : null;
-    const fromDate = normalizeOptionalOpexDate(data.FromDate);
-    const toDate = normalizeOptionalOpexDate(data.ToDate);
-
-    if (fromDate && !isValidOpexDate(fromDate)) {
-      return fail("FromDate must be a valid date in YYYY-MM-DD format.", 400);
-    }
-
-    if (toDate && !isValidOpexDate(toDate)) {
-      return fail("ToDate must be a valid date in YYYY-MM-DD format.", 400);
-    }
-
-    if (fromDate && toDate && fromDate > toDate) {
-      return fail("FromDate cannot be greater than ToDate.", 400);
-    }
-
-    // =====================================================
-    // Status
-    // =====================================================
-
-    const approvalStatus =
-      data.Status !== undefined &&
-        data.Status !== null &&
-        String(data.Status).trim() !== ""
-        ? String(data.Status).trim().toUpperCase()
-        : null;
-
-    const validStatuses = [
-      "PENDING",
-      "APPROVED",
-      "REJECTED",
-      "HOLD",
-      "RETURNED",
-    ];
-
-    if (approvalStatus && !validStatuses.includes(approvalStatus)) {
-      return {
-        success: false,
-        message:
-          "Status must be Pending, Approved, Rejected, Hold, or Returned.",
-      };
-    }
-
-    const approvalFlow =
-      data.ApprovalFlow !== undefined &&
-        data.ApprovalFlow !== null &&
-        String(data.ApprovalFlow).trim() !== ""
-        ? String(data.ApprovalFlow).trim().toUpperCase()
-        : null;
-
-    if (approvalFlow && !APPROVAL_ROLES.has(approvalFlow)) {
-      return fail("ApprovalFlow must be HOD, FC, GM, RD-FC, or CEO.", 400);
-    }
-
-    // With an explicit flow, Status belongs to that selected stage. The
-    // effective login role still defines the base visible dataset, but must not
-    // additionally require the same Status in its own approval column.
-    const visibilityStatus = approvalFlow ? null : approvalStatus;
-
-    // =====================================================
-    // MAIN QUERY
-    // =====================================================
-
-    let query = `
-      ${Opex_SELECT}
-    `;
-
-    const params = [];
-
-    // =====================================================
-    // Organization Filter
-    // =====================================================
-
-    // if (
-    //   !access.centralizedRdfc &&
-    //   data.OrganizationID !== null &&
-    //   data.OrganizationID !== undefined
-    // ) {
-    //   params.push(data.OrganizationID);
-
-    //   query += `
-    //     AND cm.OrganizationID = $${params.length}
-    //   `;
-    // }
-    if (access.centralizedRdfc) {
-      const selectedOrganizationID =
-        access.selectedOrganizationID;
-
-      if (
-        selectedOrganizationID !== null &&
-        selectedOrganizationID !== CENTRAL_RDFC_ORGANIZATION_ID
-      ) {
-        params.push(selectedOrganizationID);
-
-        query += `
-      AND cm.OrganizationID = $${params.length}
-    `;
-      } else {
-        /*
-         * Organization 10 selection means:
-         * show all organizations mapped to the RD.
-         */
-        params.push(access.rdfcMappedOrganizations);
-
-        query += `
-      AND cm.OrganizationID = ANY($${params.length}::int[])
-    `;
-      }
-    } else if (
-      data.OrganizationID !== null &&
-      data.OrganizationID !== undefined
-    ) {
-      params.push(data.OrganizationID);
-
-      query += `
-    AND cm.OrganizationID = $${params.length}
-  `;
-    }
-
-    // HOD visibility is restricted to the department stored in the JWT.
-    if (departmentName) {
-      params.push(departmentName);
-
-      query += `
-        AND LOWER(TRIM(cm.Department)) = LOWER(TRIM($${params.length}))
-      `;
-    }
-
-    if (requestedDepartment) {
-      params.push(requestedDepartment);
-      query += `
-        AND LOWER(TRIM(cm.Department)) = LOWER(TRIM($${params.length}))
-      `;
-    }
-
-    query = appendOpexDateFilter(query, params, fromDate, toDate);
-    query = appendOpexApprovalFlowFilter(
-      query,
-      params,
-      approvalFlow,
-      approvalStatus,
-    );
-
-    // =====================================================
-    // STATUS FILTER
-    // =====================================================
-
-    const approverStatusColumns = {
-      HOD: "approval_state.HODStatus",
-      FC: "approval_state.FCStatus",
-      GM: "approval_state.GMStatus",
-      "RD-FC": "approval_state.RDFCStatus",
-      CEO: "approval_state.CEOStatus",
-    };
-    const approverStatusColumn = approverStatusColumns[userType];
-
-    if (approverStatusColumn) {
-      query = appendOpexRoleStatusFilter(
-        query,
-        params,
-        userType,
-        approverStatusColumn,
-        visibilityStatus,
-        access.financeHod,
-      );
-    } else if (userType === "USER") {
-      query = appendOpexUserStatusFilter(query, params, visibilityStatus);
-    }
-
-    // =====================================================
-    // LIMIT + OFFSET
-    // =====================================================
-
-    const limitParameter = params.length + 1;
-    const offsetParameter = params.length + 2;
-
-    query += `
-      ORDER BY
-        cm.CreatedDate DESC,
-        cm.OpexID DESC
-
-      LIMIT $${limitParameter}
-      OFFSET $${offsetParameter};
-    `;
-
-    params.push(PageSize);
-    params.push(offset);
-
-    // =====================================================
-    // COUNT QUERY
-    // =====================================================
-
-    let countQuery = `
-      SELECT COUNT(*) AS TotalCount
-      FROM (
-        ${Opex_SELECT}
-    `;
-
-    const countParams = [];
-
-    // =====================================================
-    // Organization Count Filter
-    // =====================================================
-
-    // if (
-    //   !access.centralizedRdfc &&
-    //   data.OrganizationID !== null &&
-    //   data.OrganizationID !== undefined
-    // ) {
-    //   countParams.push(data.OrganizationID);
-
-    //   countQuery += `
-    //     AND cm.OrganizationID = $${countParams.length}
-    //   `;
-    // }
-    if (access.centralizedRdfc) {
-      const selectedOrganizationID =
-        access.selectedOrganizationID;
-
-      if (
-        selectedOrganizationID !== null &&
-        selectedOrganizationID !== CENTRAL_RDFC_ORGANIZATION_ID
-      ) {
-        countParams.push(selectedOrganizationID);
-
-        countQuery += `
-      AND cm.OrganizationID = $${countParams.length}
-    `;
-      } else {
-        countParams.push(access.rdfcMappedOrganizations);
-
-        countQuery += `
-      AND cm.OrganizationID = ANY($${countParams.length}::int[])
-    `;
-      }
-    } else if (
-      data.OrganizationID !== null &&
-      data.OrganizationID !== undefined
-    ) {
-      countParams.push(data.OrganizationID);
-
-      countQuery += `
-    AND cm.OrganizationID = $${countParams.length}
-  `;
-    }
-
-    if (departmentName) {
-      countParams.push(departmentName);
-
-      countQuery += `
-        AND LOWER(TRIM(cm.Department)) = LOWER(TRIM($${countParams.length}))
-      `;
-    }
-
-    if (requestedDepartment) {
-      countParams.push(requestedDepartment);
-      countQuery += `
-        AND LOWER(TRIM(cm.Department)) = LOWER(TRIM($${countParams.length}))
-      `;
-    }
-
-    countQuery = appendOpexDateFilter(
-      countQuery,
-      countParams,
-      fromDate,
-      toDate,
-    );
-    countQuery = appendOpexApprovalFlowFilter(
-      countQuery,
-      countParams,
-      approvalFlow,
-      approvalStatus,
-    );
-
-    // =====================================================
-    // COUNT STATUS FILTER
-    // =====================================================
-
-    if (approverStatusColumn) {
-      countQuery = appendOpexRoleStatusFilter(
-        countQuery,
-        countParams,
-        userType,
-        approverStatusColumn,
-        visibilityStatus,
-        access.financeHod,
-      );
-    } else if (userType === "USER") {
-      countQuery = appendOpexUserStatusFilter(
-        countQuery,
-        countParams,
-        visibilityStatus,
-      );
-    }
-
-    countQuery += `
-      ) filtered_opex
-    `;
-
-    // =====================================================
-    // Execute
-    // =====================================================
-
-    const [result, countResult] = await Promise.all([
-      pool.query(query, params),
-      pool.query(countQuery, countParams),
-    ]);
-
-    // =====================================================
-    // Attach Related Data
-    // =====================================================
-
-    const opexWithRelatedData = await attachRelatedData(result.rows);
-    const Opex = addOpexListPermissions(
-      opexWithRelatedData,
-      result.rows,
-      data,
-      userType,
-    );
-
-    // =====================================================
-    // Pagination Count
-    // =====================================================
-
-    const totalCount = Number(countResult.rows[0].totalcount);
-
-    const totalPages = Math.ceil(totalCount / PageSize);
-
-    // =====================================================
-    // Response
-    // =====================================================
-
-    return {
-      success: true,
-      message: "Opex records fetched successfully.",
-
-      TotalCount: totalCount,
-      PageCount: Opex.length,
-      CurrentPage: page,
-      PageSize: PageSize,
-      TotalPages: totalPages,
-
-      data: Opex,
-    };
-  } catch (error) {
-    console.error("Get All Opex Error:", error.message);
-
-    return fail("Unable to fetch Opex records at this time.", 503);
-  }
-};
-// ============================================================ Get Opex By ID
-const getOpexById = async (data) => {
-  try {
-    const result = await pool.query(
-      `
-      ${Opex_SELECT}
-      AND cm.OpexID = $1
-      LIMIT 1;
-      `,
-      [data.OpexID],
-    );
-
-    if (result.rows.length === 0) {
-      return fail("Opex record not found.", 404);
-    }
-
-    const [Opex] = await attachRelatedData(result.rows);
-
-    return {
-      success: true,
-      message: "Opex record fetched successfully.",
-      data: Opex,
-    };
-  } catch (error) {
-    console.error("Get Opex By ID Error:", error.message);
-    return fail("Unable to fetch Opex record at this time.", 503);
-  }
-};
-
-// ============================================================ Mutation Helpers (Update ,Delete,Approval Helpers)
-// Read the effective approval configuration for one organization.
 const getMergedApprovals = async (client, organizationID) => {
   const result = await client.query(
     `
@@ -1948,6 +870,7 @@ const updateOpex = async (data) => {
 
     await client.query("BEGIN");
     transactionStarted = true;
+    await OpexWorkflow.authorizeModify(client,data.OpexID,data.UserID);
 
     // ============================================================
     // Changes
@@ -2366,6 +1289,7 @@ const updateOpex = async (data) => {
 
     console.error("Update OPEX Error:", error.message);
 
+    if (error.statusCode) return fail(error.message,error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
 
     if (retryResponse) {
@@ -2404,6 +1328,7 @@ const deleteOpex = async (data) => {
 
     await client.query("BEGIN");
     transactionStarted = true;
+    await OpexWorkflow.authorizeModify(client,data.OpexID,data.UserID);
 
     // ============================================================
     // SOFT DELETE Opex
@@ -2492,6 +1417,7 @@ const deleteOpex = async (data) => {
 
     console.error("Delete Opex Error:", error.message);
 
+    if (error.statusCode) return fail(error.message,error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
 
     if (retryResponse) {
@@ -2517,10 +1443,7 @@ const processOpexApproval = async (data) => {
     // 1. NORMALIZE INPUT
     // ============================================================
 
-    const access = await resolveOpexAccess(data, pool, { approvalAction: true });
-    if (access.error) return access.error;
-
-    let approverRole = access.effectiveRole;
+    let access, approverRole;
 
     const action = String(data.Action || "")
       .trim()
@@ -2558,10 +1481,6 @@ const processOpexApproval = async (data) => {
     // ============================================================
     // 4. VALIDATE ROLE
     // ============================================================
-
-    if (!APPROVAL_ROLES.has(approverRole)) {
-      return fail("Your role is not authorized for Opex approval.", 403);
-    }
 
     // ============================================================
     // 5. DB CONNECTION
@@ -2617,6 +1536,27 @@ const processOpexApproval = async (data) => {
     }
 
     const Opex = masterResult.rows[0];
+    const actor=await OpexWorkflow.getActor(client,Opex.organizationid,data.UserID);
+    const dynamic=await OpexWorkflow.applyAction(client,Opex,data,actor);
+    if(dynamic) {
+      const target=dynamic.change.action === "APPROVE" ? dynamic.next : dynamic.step;
+      const recipients=[...new Set([...(target ? await OpexWorkflow.recipientIds(client,Opex,target) : []),String(Opex.createdby)])];
+      await client.query("COMMIT");
+      transactionStarted=false;
+      notifyCommittedOpex({organizationID:Opex.organizationid,opexID:Opex.opexid,
+        department:Opex.department,roles:[],directUserIds:recipients,actorUserID:data.UserID,
+        excludeUserID:dynamic.change.action === "APPROVE" ? null : data.UserID,
+        kind:dynamic.change.action,item:Opex.item,qty:Opex.qty,rate:Opex.rate,total:Opex.total,
+        description:Opex.description,actionQuantity:dynamic.change.quantity,remark:dynamic.change.remarks,
+        actionDate:new Date().toISOString(),approverRole:dynamic.step.approvaltype,action:dynamic.change.status.toUpperCase()});
+      return {success:true,message:dynamic.finalStatus === "Approved" ? "OPEX finally approved successfully." : "OPEX action recorded successfully."};
+    }
+    // Existing requests retain Finance auto-approval and central RD-FC rules.
+    access=await resolveOpexAccess({...data,UserType:actor.usertype,DepartmentName:actor.departmentname},client,{approvalAction:true});
+    if(access.error) return await cleanupAndFail(client,transactionStarted,access.error);
+    approverRole=access.effectiveRole;
+    if(!APPROVAL_ROLES.has(approverRole)) return await cleanupAndFail(client,transactionStarted,fail("Not authorized for OPEX approval",403));
+
 
     if (Opex.isvoid === true) {
       await rollback(client, transactionStarted);
@@ -2881,6 +1821,12 @@ CEORemarks,
     // ============================================================
     // 15. FIND USER'S STAGE
     // ============================================================
+
+    OpexWorkflow.authorizeApproval(Opex, stages.map(stage => ({...stage,
+      stepid:"legacy:"+stage.role,approvertype:"ROLE",approvaltype:stage.role,
+      organizationid:Opex.organizationid,requestdepartment:Opex.department,
+      actionby:stage.approval?.approvedBy,actiondatetime:stage.approval?.statusDateTime,
+      ismandatory:true})), actor, action, data.ApprovalStepID || "legacy:"+currentRole);
 
     const userStageIndex = stages.findIndex(
       (stage) => stage.role === approverRole,
@@ -3494,6 +2440,7 @@ CEORemarks,
 
     console.error("Opex Approval Error:", error.message);
 
+    if (error.statusCode) return fail(error.message,error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
 
     if (retryResponse) {
@@ -3510,126 +2457,6 @@ CEORemarks,
 
 // ============================================================ Report SQL (Summary and other reports Helpers)
 // PostgreSQL derives effective status and aggregates authorized Opex records.
-const REPORT_DATA_CTE = `
-  WITH Opex_data AS
-  (
-    SELECT
-      cm.OpexID,
-      cm.OrganizationID,
-      cm.Department,
-      cm.CreatedDate,
-      COALESCE(cm.Total, 0)::numeric AS Total,
-
-      CASE
-
-        -- ====================================================
-        -- 1. VOID
-        -- ====================================================
-        WHEN cm.IsVoid = TRUE
-          THEN 'Void'
-
-        -- ====================================================
-        -- 2. REJECTED
-        -- ====================================================
-        WHEN
-          UPPER(COALESCE(ca.HODStatus, '')) = 'REJECTED'
-          OR UPPER(COALESCE(ca.FCStatus, '')) = 'REJECTED'
-          OR UPPER(COALESCE(ca.GMStatus, '')) = 'REJECTED'
-          OR UPPER(COALESCE(ca.RDFCStatus, '')) = 'REJECTED'
-          OR UPPER(COALESCE(ca.CEOStatus, '')) = 'REJECTED'
-          OR UPPER(COALESCE(ca.FinalStatus, '')) = 'REJECTED'
-        THEN 'Rejected'
-
-        -- ====================================================
-        -- 3. HOLD
-        -- ====================================================
-        WHEN
-          UPPER(COALESCE(ca.HODStatus, '')) = 'HOLD'
-          OR UPPER(COALESCE(ca.FCStatus, '')) = 'HOLD'
-          OR UPPER(COALESCE(ca.GMStatus, '')) = 'HOLD'
-          OR UPPER(COALESCE(ca.RDFCStatus, '')) = 'HOLD'
-          OR UPPER(COALESCE(ca.CEOStatus, '')) = 'HOLD'
-          OR UPPER(COALESCE(ca.FinalStatus, '')) = 'HOLD'
-        THEN 'Hold'
-
-        -- ====================================================
-        -- 4. RETURNED
-        -- ====================================================
-        WHEN
-          UPPER(COALESCE(ca.HODStatus, '')) = 'RETURNED'
-          OR UPPER(COALESCE(ca.FCStatus, '')) = 'RETURNED'
-          OR UPPER(COALESCE(ca.GMStatus, '')) = 'RETURNED'
-          OR UPPER(COALESCE(ca.RDFCStatus, '')) = 'RETURNED'
-          OR UPPER(COALESCE(ca.CEOStatus, '')) = 'RETURNED'
-          OR UPPER(COALESCE(ca.FinalStatus, '')) = 'RETURNED'
-        THEN 'Returned'
-
-        -- ====================================================
-        -- 5. FINALLY APPROVED
-        -- ====================================================
-        WHEN UPPER(COALESCE(ca.FinalStatus, '')) = 'APPROVED'
-        THEN 'Approved'
-
-        -- ====================================================
-        -- 6. OTHERWISE PENDING
-        -- ====================================================
-        ELSE 'Pending'
-
-      END AS Status
-
-    FROM Opex_Master cm
-
-    LEFT JOIN Opex_Approval ca
-      ON ca.OpexID = cm.OpexID
-      AND ca.IsDeleted = FALSE
-
-    WHERE cm.IsDeleted = FALSE
-
-      -- ====================================================
-      -- OPTIONAL ORGANIZATION FILTER
-      --
-      -- $1 = NULL
-      --     => ALL organizations
-      --
-      -- $1 = 10
-      --     => ONLY organization 10
-      -- ====================================================
-      AND (
-        $1::bigint IS NULL
-        OR cm.OrganizationID = $1::bigint
-      )
-  )
-`;
-// Keep parameter positions identical for every report query.
-const reportParameters = (data) => {
-  const filters = data.Filters || {};
-
-  return [filters.OrganizationID ?? null];
-};
-const departmentReportParameters = (data) => {
-  const filters = data.Filters || data || {};
-  const department =
-    filters.Department !== undefined &&
-      filters.Department !== null &&
-      String(filters.Department).trim() !== ""
-      ? String(filters.Department).trim()
-      : null;
-
-  return [
-    filters.OrganizationID ?? null,
-    department,
-    normalizeOptionalOpexDate(filters.FromDate),
-    normalizeOptionalOpexDate(filters.ToDate),
-  ];
-};
-const organizationReportParameters = (data) => {
-  const filters = data.Filters || data || {};
-  return [
-    filters.OrganizationID ?? null,
-    normalizeOptionalOpexDate(filters.FromDate),
-    normalizeOptionalOpexDate(filters.ToDate),
-  ];
-};
 const validateOpexReportDates = (data) => {
   const filters = data.Filters || data || {};
   const fromDate = normalizeOptionalOpexDate(filters.FromDate);
@@ -3671,335 +2498,11 @@ const opexSummaryData = (row) => ({
   VoidAmount: Number(row.voidamount),
 });
 // ============================================================ Summary Report
-const getOpexSummaryReport = async (data) => {
-  try {
-    const OrganizationID = Number(data?.Filters?.OrganizationID);
-    const access = await resolveOpexAccess(data);
-    if (access.error) return access.error;
-
-    const UserType = access.effectiveRole;
-    const DepartmentName = access.departmentScope;
-
-    if (!Number.isSafeInteger(OrganizationID) || OrganizationID < 1) {
-      return fail("OrganizationID is required.", 400);
-    }
-
-    if (!APPROVAL_ROLES.has(UserType)) {
-      const result = await pool.query(
-        `
-        WITH organization_opex AS
-        (
-          SELECT
-            COALESCE(cm.Total, 0)::numeric AS Total,
-            CASE
-              WHEN cm.IsVoid = TRUE THEN 'Void'
-              WHEN UPPER(COALESCE(ca.FinalStatus, 'PENDING')) = 'APPROVED' THEN 'Approved'
-              WHEN UPPER(COALESCE(ca.FinalStatus, 'PENDING')) = 'REJECTED' THEN 'Rejected'
-              WHEN UPPER(COALESCE(ca.FinalStatus, 'PENDING')) = 'HOLD' THEN 'Hold'
-              WHEN UPPER(COALESCE(ca.FinalStatus, 'PENDING')) = 'RETURNED' THEN 'Returned'
-              ELSE 'Pending'
-            END AS Status
-          FROM Opex_Master cm
-          LEFT JOIN Opex_Approval ca
-            ON ca.OpexID = cm.OpexID
-           AND ca.IsDeleted = FALSE
-          WHERE cm.OrganizationID = $1
-            AND cm.IsDeleted = FALSE
-        )
-        SELECT
-          COUNT(*)::bigint AS TotalOpex,
-          COALESCE(SUM(Total), 0) AS TotalAmount,
-          COUNT(*) FILTER (WHERE Status = 'Pending')::bigint AS PendingCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Pending'), 0) AS PendingAmount,
-          COUNT(*) FILTER (WHERE Status = 'Approved')::bigint AS ApprovedCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Approved'), 0) AS ApprovedAmount,
-          COUNT(*) FILTER (WHERE Status = 'Rejected')::bigint AS RejectedCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Rejected'), 0) AS RejectedAmount,
-          COUNT(*) FILTER (WHERE Status = 'Hold')::bigint AS HoldCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Hold'), 0) AS HoldAmount,
-          COUNT(*) FILTER (WHERE Status = 'Returned')::bigint AS ReturnedCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Returned'), 0) AS ReturnedAmount,
-          COUNT(*) FILTER (WHERE Status = 'Void')::bigint AS VoidCount,
-          COALESCE(SUM(Total) FILTER (WHERE Status = 'Void'), 0) AS VoidAmount
-        FROM organization_opex;
-        `,
-        [OrganizationID],
-      );
-
-      return {
-        success: true,
-        message: "Opex summary report fetched successfully.",
-        data: opexSummaryData(result.rows[0]),
-      };
-    }
-
-    const result = await pool.query(
-      `
-      WITH role_opex AS
-      (
-        SELECT
-          cm.OpexID,
-          COALESCE(cm.Total, 0)::numeric AS Total,
-          cm.IsVoid,
-          UPPER(COALESCE(ca.FinalStatus, 'PENDING')) AS FinalStatus,
-
-          UPPER(COALESCE(
-            CASE $2::text
-              WHEN 'HOD' THEN ca.HODStatus
-              WHEN 'FC' THEN ca.FCStatus
-              WHEN 'GM' THEN ca.GMStatus
-              WHEN 'RD-FC' THEN ca.RDFCStatus
-              WHEN 'CEO' THEN ca.CEOStatus
-            END,
-            'PENDING'
-          )) AS RoleStatus,
-
-          UPPER(COALESCE(current_stage.ApprovalRole, '')) AS CurrentApprovalRole,
-          UPPER(COALESCE(current_stage.Status, 'PENDING')) AS CurrentStageStatus,
-
-          -- Keep the summary aligned with list visibility: a property Finance
-          -- HOD also owns Finance OPEX while its configured HOD stage is pending.
-          ($5::boolean = TRUE
-            AND UPPER(TRIM(cm.Department)) = 'FINANCE'
-            AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = 'HOD'
-            AND UPPER(COALESCE(current_stage.Status, 'PENDING')) = 'PENDING'
-            AND UPPER(COALESCE(ca.FinalStatus, 'PENDING')) = 'PENDING'
-          ) AS FinanceHodPending
-
-        FROM Opex_Master cm
-
-        LEFT JOIN Opex_Approval ca
-          ON ca.OpexID = cm.OpexID
-         AND ca.IsDeleted = FALSE
-
-        LEFT JOIN LATERAL
-        (
-          SELECT
-            cfg.ApprovalRole,
-            CASE UPPER(cfg.ApprovalRole)
-              WHEN 'HOD' THEN COALESCE(ca.HODStatus, 'Pending')
-              WHEN 'FC' THEN COALESCE(ca.FCStatus, 'Pending')
-              WHEN 'GM' THEN COALESCE(ca.GMStatus, 'Pending')
-              WHEN 'RD-FC' THEN COALESCE(ca.RDFCStatus, 'Pending')
-              WHEN 'CEO' THEN COALESCE(ca.CEOStatus, 'Pending')
-            END AS Status,
-            cfg.ApprovalLevel,
-            cfg.ApprovalOrder
-          FROM
-          (
-            SELECT
-              configured.ApprovalLevel,
-              configured.ApprovalRole,
-              configured.ApprovalOrder
-            FROM Opex_Approval_Config configured
-            WHERE configured.OrganizationID = cm.OrganizationID
-              AND configured.IsDeleted = FALSE
-
-            UNION ALL
-
-            SELECT
-              defaults.ApprovalLevel,
-              defaults.ApprovalRole,
-              defaults.ApprovalOrder
-            FROM
-            (
-              VALUES
-                (1, 'HOD', 1),
-                (2, 'FC', 2),
-                (3, 'GM', 3),
-                (4, 'RD-FC', 4),
-                (5, 'CEO', 5)
-            ) defaults(ApprovalLevel, ApprovalRole, ApprovalOrder)
-            WHERE NOT EXISTS
-            (
-              SELECT 1
-              FROM Opex_Approval_Config configured
-              WHERE configured.OrganizationID = cm.OrganizationID
-                AND configured.IsDeleted = FALSE
-            )
-          ) cfg
-          WHERE UPPER(
-            CASE UPPER(cfg.ApprovalRole)
-              WHEN 'HOD' THEN COALESCE(ca.HODStatus, 'Pending')
-              WHEN 'FC' THEN COALESCE(ca.FCStatus, 'Pending')
-              WHEN 'GM' THEN COALESCE(ca.GMStatus, 'Pending')
-              WHEN 'RD-FC' THEN COALESCE(ca.RDFCStatus, 'Pending')
-              WHEN 'CEO' THEN COALESCE(ca.CEOStatus, 'Pending')
-            END
-          ) NOT IN ('APPROVED', 'REJECTED')
-          ORDER BY cfg.ApprovalOrder ASC, cfg.ApprovalLevel ASC
-          LIMIT 1
-        ) current_stage ON TRUE
-
-        WHERE ($4::boolean = TRUE OR cm.OrganizationID = $1)
-          AND cm.IsDeleted = FALSE
-          AND (
-            $2::text <> 'HOD'
-            OR LOWER(TRIM(cm.Department)) = LOWER(TRIM($3::text))
-          )
-      ),
-
-      visible_opex AS
-      (
-        SELECT
-          OpexID,
-          Total,
-          CASE
-            WHEN IsVoid = TRUE THEN 'Void'
-            WHEN RoleStatus = 'PENDING'
-              AND CurrentApprovalRole = $2
-              AND CurrentStageStatus = 'PENDING'
-              AND FinalStatus = 'PENDING'
-            THEN 'Pending'
-            WHEN FinanceHodPending THEN 'Pending'
-            WHEN RoleStatus = 'APPROVED' THEN 'Approved'
-            WHEN RoleStatus = 'REJECTED' THEN 'Rejected'
-            WHEN RoleStatus = 'HOLD' THEN 'Hold'
-            WHEN RoleStatus = 'RETURNED' THEN 'Returned'
-            ELSE NULL
-          END AS Status
-        FROM role_opex
-        WHERE RoleStatus IN ('APPROVED', 'REJECTED', 'HOLD', 'RETURNED')
-           OR (
-             RoleStatus = 'PENDING'
-             AND CurrentApprovalRole = $2
-             AND CurrentStageStatus = 'PENDING'
-             AND FinalStatus = 'PENDING'
-           )
-           OR FinanceHodPending
-      )
-
-      SELECT
-
-        -- ====================================================
-        -- TOTAL
-        -- ====================================================
-
-        COUNT(*)::bigint AS TotalOpex,
-
-        COALESCE(
-          SUM(Total),
-          0
-        ) AS TotalAmount,
-
-
-        -- ====================================================
-        -- PENDING
-        -- ====================================================
-
-        COUNT(*) FILTER (
-          WHERE Status = 'Pending'
-        )::bigint AS PendingCount,
-
-        COALESCE(
-          SUM(Total) FILTER (
-            WHERE Status = 'Pending'
-          ),
-          0
-        ) AS PendingAmount,
-
-
-        -- ====================================================
-        -- APPROVED
-        -- ====================================================
-
-        COUNT(*) FILTER (
-          WHERE Status = 'Approved'
-        )::bigint AS ApprovedCount,
-
-        COALESCE(
-          SUM(Total) FILTER (
-            WHERE Status = 'Approved'
-          ),
-          0
-        ) AS ApprovedAmount,
-
-
-        -- ====================================================
-        -- REJECTED
-        -- ====================================================
-
-        COUNT(*) FILTER (
-          WHERE Status = 'Rejected'
-        )::bigint AS RejectedCount,
-
-        COALESCE(
-          SUM(Total) FILTER (
-            WHERE Status = 'Rejected'
-          ),
-          0
-        ) AS RejectedAmount,
-
-
-        -- ====================================================
-        -- HOLD
-        -- ====================================================
-
-        COUNT(*) FILTER (
-          WHERE Status = 'Hold'
-        )::bigint AS HoldCount,
-
-        COALESCE(
-          SUM(Total) FILTER (
-            WHERE Status = 'Hold'
-          ),
-          0
-        ) AS HoldAmount,
-
-
-        -- ====================================================
-        -- RETURNED
-        -- ====================================================
-
-        COUNT(*) FILTER (
-          WHERE Status = 'Returned'
-        )::bigint AS ReturnedCount,
-
-        COALESCE(
-          SUM(Total) FILTER (
-            WHERE Status = 'Returned'
-          ),
-          0
-        ) AS ReturnedAmount,
-
-
-        -- ====================================================
-        -- VOID
-        -- ====================================================
-
-        COUNT(*) FILTER (
-          WHERE Status = 'Void'
-        )::bigint AS VoidCount,
-
-        COALESCE(
-          SUM(Total) FILTER (
-            WHERE Status = 'Void'
-          ),
-          0
-        ) AS VoidAmount
-
-      FROM visible_opex
-      WHERE Status IS NOT NULL;
-      `,
-      [OrganizationID, UserType, DepartmentName || null, access.centralizedRdfc,
-        access.financeHod && !access.centralizedRdfc],
-    );
-
-    const row = result.rows[0];
-
-    return {
-      success: true,
-
-      message: "Opex summary report fetched successfully.",
-
-      data: opexSummaryData(row),
-    };
-  } catch (error) {
-    return reportFailure(error, "Opex summary report");
-  }
+const getOpexSummaryReport = async data => {
+  try { const [row]=await OpexWorkflowRead.report(data);
+    return {success:true,data:opexSummaryData({...row,totalopex:row.count})};
+  } catch(error){return fail(error.message,error.statusCode||503);}
 };
-// ===========================================================================(Department and Organization Reports Helpers)
-// Normalize grouped PostgreSQL results into the public API response shape.
 const groupedReportRows = (rows, groupField) =>
   rows.map((row) => ({
     [groupField]:
@@ -4015,125 +2518,15 @@ const groupedReportRows = (rows, groupField) =>
     ReturnedCount: Number(row.returnedcount),
   }));
 // ============================================================ Department Report
-const getOpexDepartmentReport = async (data) => {
-  try {
-    const dateValidationError = validateOpexReportDates(data);
-    if (dateValidationError) return dateValidationError;
-
-    const result = await pool.query(
-      `${REPORT_DATA_CTE}
-       SELECT
-         COALESCE(Department, 'Unspecified') AS Department,
-         COUNT(*)::bigint AS Count,
-         COALESCE(SUM(Total), 0) AS TotalAmount,
-         COUNT(*) FILTER (WHERE Status = 'Approved')::bigint AS ApprovedCount,
-         COUNT(*) FILTER (WHERE Status = 'Pending')::bigint AS PendingCount,
-         COUNT(*) FILTER (WHERE Status = 'Rejected')::bigint AS RejectedCount,
-         COUNT(*) FILTER (WHERE Status = 'Hold')::bigint AS HoldCount,
-         COUNT(*) FILTER (WHERE Status = 'Returned')::bigint AS ReturnedCount
-       FROM Opex_data
-       WHERE (
-         $2::text IS NULL
-         OR LOWER(TRIM(COALESCE(Department, 'Unspecified')))
-            = LOWER(TRIM($2::text))
-       )
-         AND ($3::date IS NULL OR CreatedDate >= $3::date)
-         AND (
-           $4::date IS NULL
-           OR CreatedDate < ($4::date + INTERVAL '1 day')
-         )
-       GROUP BY COALESCE(Department, 'Unspecified')
-       ORDER BY COALESCE(Department, 'Unspecified') ASC;`,
-      departmentReportParameters(data),
-    );
-
-    return {
-      success: true,
-      message: "Opex department report fetched successfully.",
-      data: groupedReportRows(result.rows, "Department"),
-    };
-  } catch (error) {
-    return reportFailure(error, "Opex department report");
-  }
+const getOpexDepartmentReport = async data => {
+  try {return {success:true,data:groupedReportRows(await OpexWorkflowRead.report(data,"department"),"Department")};}
+  catch(error){return fail(error.message,error.statusCode||503);}
 };
-// ============================================================ Organization Report
-const getOpexOrganizationReport = async (data) => {
-  try {
-    const dateValidationError = validateOpexReportDates(data);
-    if (dateValidationError) return dateValidationError;
-
-    const result = await pool.query(
-      `${REPORT_DATA_CTE}
-       SELECT
-         cm.OrganizationID,
-         COALESCE(om.ShortName, 'Unspecified') AS ShortName,
-
-         COUNT(*)::bigint AS Count,
-
-         COALESCE(SUM(cm.Total), 0) AS TotalAmount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Approved'
-         )::bigint AS ApprovedCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Pending'
-         )::bigint AS PendingCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Rejected'
-         )::bigint AS RejectedCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Hold'
-         )::bigint AS HoldCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Returned'
-         )::bigint AS ReturnedCount
-
-       FROM Opex_data cm
-
-       LEFT JOIN Organization_Master om
-         ON om.OrganizationID = cm.OrganizationID
-         AND om.IsDeleted = FALSE
-
-       WHERE ($2::date IS NULL OR cm.CreatedDate >= $2::date)
-         AND (
-           $3::date IS NULL
-           OR cm.CreatedDate < ($3::date + INTERVAL '1 day')
-         )
-
-       GROUP BY
-         cm.OrganizationID,
-         om.ShortName
-
-       ORDER BY
-         cm.OrganizationID ASC;`,
-      organizationReportParameters(data),
-    );
-
-    return {
-      success: true,
-      message: "Opex organization report fetched successfully.",
-      data: result.rows.map((row) => ({
-        OrganizationID: Number(row.organizationid),
-        ShortName: row.shortname,
-        Count: Number(row.count),
-        TotalAmount: Number(row.totalamount),
-        ApprovedCount: Number(row.approvedcount),
-        PendingCount: Number(row.pendingcount),
-        RejectedCount: Number(row.rejectedcount),
-        HoldCount: Number(row.holdcount),
-        ReturnedCount: Number(row.returnedcount),
-      })),
-    };
-  } catch (error) {
-    return reportFailure(error, "Opex organization report");
-  }
+const getOpexOrganizationReport = async data => {
+  try {const rows=await OpexWorkflowRead.report(data,"organization");
+    return {success:true,data:groupedReportRows(rows,"OrganizationID").map((row,i)=>({...row,OrganizationID:Number(rows[i].organizationid),ShortName:rows[i].shortname}))};}
+  catch(error){return fail(error.message,error.statusCode||503);}
 };
-
-// ============================================================ Get Approval Config
 const getApprovalConfig = async (data) => {
   try {
     const { OrganizationID } = data;
@@ -4191,6 +2584,7 @@ const getApprovalConfig = async (data) => {
   } catch (error) {
     console.error("Get Opex Approval Config Error:", error.message);
 
+    if (error.statusCode) return fail(error.message,error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
     if (retryResponse) return retryResponse;
 
@@ -4526,6 +2920,7 @@ const createApprovalConfig = async (data) => {
 
     console.error("Save Opex Approval Config Error:", error.message);
 
+    if (error.statusCode) return fail(error.message,error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
 
     if (retryResponse) return retryResponse;
@@ -4604,6 +2999,7 @@ const deleteApprovalConfig = async (data) => {
 
     console.error("Delete Opex Approval Config Error:", error.message);
 
+    if (error.statusCode) return fail(error.message,error.statusCode);
     const retryResponse = retryableDatabaseResponse(error);
     if (retryResponse) return retryResponse;
 
@@ -5043,6 +3439,7 @@ const generateLegacyOpexDetailPdf = async (Opex) => {
 const generateOpexListPdf = async (data) => {
   try {
     const rows = [];
+    let approvalColumns = [];
     const exportPageSize = 1000;
     let page = 1;
     let totalPages = 1;
@@ -5056,13 +3453,13 @@ const generateOpexListPdf = async (data) => {
 
       if (!response.success) return response;
 
+      if(page===1) approvalColumns=response.ApprovalColumns || [];
       rows.push(...response.data);
       totalPages = response.TotalPages;
       page += 1;
     } while (page <= totalPages);
 
-    const access = await resolveOpexAccess(data);
-    if (access.error) return access.error;
+    const access = {effectiveRole:data.UserType || "User"}; // Presentation only; reads enforce persisted access.
 
     const organizationId = Number(data.OrganizationID);
     let organizationName = data.OrganizationName || null;
@@ -5101,7 +3498,7 @@ const generateOpexListPdf = async (data) => {
     const approvalValue = (row, role) => {
       const approval = (row.Approvals || []).find(
         (item) =>
-          String(item.ApprovalRole || "").trim().toUpperCase() === role,
+          item.ColumnKey === role,
       );
 
       if (!approval) return "-";
@@ -5120,19 +3517,7 @@ const generateOpexListPdf = async (data) => {
 
     // Build approval columns from the configured flow returned with the OPEX
     // records. Preserve workflow order and include each role only once.
-    const approvalRoles = [];
-    const approvalRoleSet = new Set();
-
-    for (const row of rows) {
-      for (const approval of row.Approvals || []) {
-        const role = String(approval.ApprovalRole || "").trim().toUpperCase();
-
-        if (role && !approvalRoleSet.has(role)) {
-          approvalRoleSet.add(role);
-          approvalRoles.push(role);
-        }
-      }
-    }
+    const approvalRoles=approvalColumns.map(column=>column.Key);
     const pdfBuffer = await generatePdf({
       title: "OPEX LIST REPORT",
       reportName: "OPEX List Report",
@@ -5224,7 +3609,7 @@ const generateOpexListPdf = async (data) => {
           align: "left",
         },
         ...approvalRoles.map((role) => ({
-          header: role,
+          header: approvalColumns.find(column=>column.Key===role)?.Label || role,
           value: (row) => approvalValue(row, role),
           width: 75,
           align: "left",
@@ -5253,51 +3638,7 @@ const getOpexDepartmentReportPdf = async (data) => {
     if (dateValidationError) return dateValidationError;
 
     // Same query as OPEX Department Report GET API
-    const result = await pool.query(
-      `${REPORT_DATA_CTE}
-       SELECT
-         COALESCE(Department, 'Unspecified') AS Department,
-         COUNT(*)::bigint AS Count,
-         COALESCE(SUM(Total), 0) AS TotalAmount,
-
-         COUNT(*) FILTER (
-           WHERE Status = 'Approved'
-         )::bigint AS ApprovedCount,
-
-         COUNT(*) FILTER (
-           WHERE Status = 'Pending'
-         )::bigint AS PendingCount,
-
-         COUNT(*) FILTER (
-           WHERE Status = 'Rejected'
-         )::bigint AS RejectedCount,
-
-         COUNT(*) FILTER (
-           WHERE Status = 'Hold'
-         )::bigint AS HoldCount,
-
-         COUNT(*) FILTER (
-           WHERE Status = 'Returned'
-         )::bigint AS ReturnedCount
-
-       FROM Opex_data
-
-       WHERE (
-         $2::text IS NULL
-         OR LOWER(TRIM(COALESCE(Department, 'Unspecified')))
-            = LOWER(TRIM($2::text))
-       )
-         AND ($3::date IS NULL OR CreatedDate >= $3::date)
-         AND (
-           $4::date IS NULL
-           OR CreatedDate < ($4::date + INTERVAL '1 day')
-         )
-
-       GROUP BY COALESCE(Department, 'Unspecified')
-
-       ORDER BY COALESCE(Department, 'Unspecified') ASC;`,
-      departmentReportParameters(data),
-    );
+    const result = {rows: await OpexWorkflowRead.report(data,"department")};
 
     const rows = result.rows;
 
@@ -5421,56 +3762,7 @@ const getOpexOrganizationReportPdf = async (data) => {
     if (dateValidationError) return dateValidationError;
 
     // Same query as OPEX Organization Report GET API
-    const result = await pool.query(
-      `${REPORT_DATA_CTE}
-       SELECT
-         cm.OrganizationID,
-         COALESCE(om.ShortName, 'Unspecified') AS ShortName,
-
-         COUNT(*)::bigint AS Count,
-
-         COALESCE(SUM(cm.Total), 0) AS TotalAmount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Approved'
-         )::bigint AS ApprovedCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Pending'
-         )::bigint AS PendingCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Rejected'
-         )::bigint AS RejectedCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Hold'
-         )::bigint AS HoldCount,
-
-         COUNT(*) FILTER (
-           WHERE cm.Status = 'Returned'
-         )::bigint AS ReturnedCount
-
-       FROM Opex_data cm
-
-       LEFT JOIN Organization_Master om
-         ON om.OrganizationID = cm.OrganizationID
-         AND om.IsDeleted = FALSE
-
-       WHERE ($2::date IS NULL OR cm.CreatedDate >= $2::date)
-         AND (
-           $3::date IS NULL
-           OR cm.CreatedDate < ($3::date + INTERVAL '1 day')
-         )
-
-       GROUP BY
-         cm.OrganizationID,
-         om.ShortName
-
-       ORDER BY
-         cm.OrganizationID ASC;`,
-      organizationReportParameters(data),
-    );
+    const result = {rows: await OpexWorkflowRead.report(data,"organization")};
 
     const rows = result.rows.map((row) => ({
       organizationid: Number(row.organizationid),
@@ -5623,31 +3915,8 @@ const generateOpexByIdPdf = async (data) => {
     // Same query as Get By ID API
     // ==========================================================
 
-    const result = await pool.query(
-      `
-      ${Opex_SELECT}
-      AND cm.OpexID = $1
-      LIMIT 1;
-      `,
-      [opexID],
-    );
-
-    if (result.rows.length === 0) {
-      return fail(
-        "OPEX record not found.",
-        404,
-      );
-    }
-
-    // ==========================================================
-    // ATTACH DOCUMENTS + APPROVALS
-    // Same data as Get By ID API
-    // ==========================================================
-
-    const [opex] =
-      await attachRelatedData(
-        result.rows,
-      );
+    const detail = await OpexWorkflowRead.detail({...data,OpexID:opexID});
+    const opex = detail.data;
 
     const approvals =
       Array.isArray(

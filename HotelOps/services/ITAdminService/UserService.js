@@ -2271,6 +2271,7 @@ const getUserDropdown = async (
 
 };
 
+
 // ============================================================
 // GET USER DROPDOWN BY PRIMARY ORGANIZATION
 //
@@ -2280,8 +2281,8 @@ const getUserDropdown = async (
 // FullName
 // ApproverType
 //
-// REGIONAL -> Primary Organization 10 (Nile)
-// Other types -> Requested Primary Organization
+// REGIONAL -> Parent/Company Organization's primary users
+// Other types -> Requested Organization's primary users
 // ============================================================
 
 const getUserDropdownByPrimaryOrganization = async (
@@ -2291,6 +2292,39 @@ const getUserDropdownByPrimaryOrganization = async (
   ApproverType
 ) => {
   try {
+    // ========================================================
+    // VALIDATE ORGANIZATION ID
+    // ========================================================
+
+    if (
+      OrganizationID === undefined ||
+      OrganizationID === null ||
+      String(OrganizationID).trim() === ""
+    ) {
+      return {
+        success: false,
+        message: "OrganizationID is required"
+      };
+    }
+
+    const organizationID = Number(OrganizationID);
+
+    if (
+      !Number.isSafeInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return {
+        success: false,
+        message: "Invalid OrganizationID"
+      };
+    }
+
+    const approverTypeValue = String(
+      ApproverType || ""
+    ).trim().toUpperCase();
+
+    const filterValues = [organizationID];
+
     const filters = [
       `um.IsDeleted = FALSE`,
       `um.IsActive = TRUE`,
@@ -2298,58 +2332,31 @@ const getUserDropdownByPrimaryOrganization = async (
       `upo.IsActive = TRUE`
     ];
 
-    const filterValues = [];
-
     // ========================================================
     // PRIMARY ORGANIZATION FILTER
     // ========================================================
 
-    const approverTypeValue = String(
-      ApproverType || ""
-    ).trim().toUpperCase();
-
     if (approverTypeValue === "REGIONAL") {
-      // Regional: only users whose primary organization is Nile (10)
-      filterValues.push(10);
-
-      filters.push(
-        `upo.OrganizationID = $${filterValues.length}`
-      );
-
+      // Resolve the owning company dynamically.
+      // If the requested organization is itself a company,
+      // use its own OrganizationID.
+      filters.push(`
+        upo.OrganizationID = (
+          SELECT COALESCE(
+            om.ParentOrganizationID,
+            om.OrganizationID
+          )
+          FROM organization_master om
+          WHERE om.OrganizationID = $1
+        )
+      `);
     } else {
-      // Other approver types: requested primary organization
-      if (
-        OrganizationID === undefined ||
-        OrganizationID === null ||
-        String(OrganizationID).trim() === ""
-      ) {
-        return {
-          success: false,
-          message: "OrganizationID is required"
-        };
-      }
-
-      const organizationID = Number(OrganizationID);
-
-      if (
-        !Number.isSafeInteger(organizationID) ||
-        organizationID <= 0
-      ) {
-        return {
-          success: false,
-          message: "Invalid OrganizationID"
-        };
-      }
-
-      filterValues.push(organizationID);
-
-      filters.push(
-        `upo.OrganizationID = $${filterValues.length}`
-      );
+      // Regular approver: requested organization only.
+      filters.push(`upo.OrganizationID = $1`);
     }
 
     // ========================================================
-    // USERNAME FILTER — PARTIAL SEARCH
+    // USERNAME FILTER
     // ========================================================
 
     if (
@@ -2367,7 +2374,7 @@ const getUserDropdownByPrimaryOrganization = async (
     }
 
     // ========================================================
-    // FULL NAME FILTER — PARTIAL SEARCH
+    // FULL NAME FILTER
     // ========================================================
 
     if (
@@ -2406,7 +2413,7 @@ const getUserDropdownByPrimaryOrganization = async (
     );
 
     // ========================================================
-    // RESPONSE DATA
+    // RESPONSE
     // ========================================================
 
     const users = result.rows.map((row) => ({
@@ -2423,17 +2430,18 @@ const getUserDropdownByPrimaryOrganization = async (
     };
 
   } catch (error) {
-    console.log(
+    console.error(
       "Get User Dropdown By Primary Organization Error:",
-      error.message
+      error
     );
 
     return {
       success: false,
-      message: error.message
+      message: "Failed to fetch users"
     };
   }
 };
+
 
 // ============================================================User wise Organization
 const getUserOrganizations = async (UserID) => {

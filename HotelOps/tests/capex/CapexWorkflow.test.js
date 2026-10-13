@@ -28,6 +28,67 @@ test("USER assignment is independent of business stage and actor role", () => {
     assert.ok(!workflow.isAssigned(step, gm));
     assert.equal(workflow.chooseStep([step], { userid: 42 }, "APPROVE").approvaltype, "GM");
 });
+
+test("Regional assignment grants only the selected stage and preserves ordinary organization authorization", () => {
+    const step = { ...stages()[0], approvertype: "REGIONAL", role: null, assigneduserid: "42", approvaltype: "RD-FC" };
+    const actor = { userid: 42, usertype: "GM", organizationaccess: false, regionaleligible: true };
+    assert.ok(workflow.isAssigned(step, actor));
+    assert.ok(!workflow.isAssigned(step, { ...actor, userid: 43 }));
+    assert.ok(!workflow.isAssigned(step, { ...actor, regionaleligible: false }));
+    assert.ok(!workflow.isAssigned(stages()[0], actor));
+    assert.ok(!workflow.isAssigned({ ...step, approvertype: "USER" }, actor));
+    assert.equal(workflow.canModify({ ...capex, createdby: 42, hasaction: false }, actor), false);
+});
+
+test("Reordered Regional and USER stages execute by persisted level and skip optional stages", async () => {
+    const steps = [
+        { ...stages()[1], level: 1, approvertype: "REGIONAL", role: null, assigneduserid: "42", approvaltype: "RD-FC" },
+        { ...stages()[0], level: 2, ismandatory: false },
+        { ...stages()[0], stepid: "3", level: 3, approvertype: "USER", role: null, assigneduserid: "7", approvaltype: "FC" }
+    ];
+    assert.throws(() => workflow.chooseStep(steps, { userid: 7 }, "APPROVE"), /not authorized/);
+    const result = await workflow.applyAction(actionClient(steps, { userid: 42, organizationaccess: false, regionaleligible: true }),
+        capex, { UserID: 42, Action: "APPROVE", ApprovalStepID: "2" });
+    assert.equal(result.next.approvaltype, "FC");
+    assert.deepEqual(result.directUserIds, ["7"]);
+    assert.throws(() => workflow.chooseStep(steps, { userid: 42 }, "APPROVE"), /not authorized/);
+});
+
+for (const invalid of ["missing stage", "unknown type", "bad Regional ID", "ineligible Regional"]) {
+    test("Snapshot retains strict validation for " + invalid, async () => {
+        const step = { approvalid: "48", level: 1, approvertype: "REGIONAL", role: "42", approvaltype: "RD-FC", ismandatory: true };
+        if (invalid === "missing stage") step.approvaltype = " ";
+        if (invalid === "unknown type") step.approvertype = "UNKNOWN";
+        if (invalid === "bad Regional ID") step.role = "Regional Director";
+        const writes = [];
+        const client = { query: async (sql, values) => {
+            if (sql.includes("SELECT approvalmasterid")) return { rows: [{ approvalmasterid: "6" }] };
+            if (sql.includes("SELECT approvalid")) return { rows: [step] };
+            if (/^\s*INSERT/.test(sql)) writes.push({ sql, values });
+            return { rows: [] };
+        } };
+        await assert.rejects(workflow.snapshot(client, 7, 20));
+        assert.equal(writes.length, 0);
+    });
+}
+
+test("Regional snapshot preserves selected user, business stage and reordered Level", async () => {
+    const calls = [];
+    const client = { query: async (sql, values) => {
+        calls.push({ sql, values });
+        if (sql.includes("SELECT approvalmasterid")) return { rows: [{ approvalmasterid: "6" }] };
+        if (sql.includes("SELECT approvalid")) return { rows: [
+            { approvalid: "48", level: 1, approvertype: "regional", role: "42", approvaltype: "RD-FC", ismandatory: true }
+        ] };
+        if (sql.includes("SELECT 1 FROM user_master")) return { rows: [{}] };
+        return { rows: [] };
+    } };
+    await workflow.snapshot(client, 7, 20);
+    assert.deepEqual(calls.find(c => c.sql.includes("INSERT INTO capex_workflow_step")).values,
+        [7, "48", 1, "REGIONAL", null, "RD-FC", true, "42"]);
+    assert.match(calls.find(c => c.sql.includes("SELECT 1 FROM user_master")).sql,
+        /upo.organizationid = COALESCE\(om.parentorganizationid, om.organizationid\)/);
+});
 for (const status of ["Pending","Rejected","Returned","Hold"]) {
     for (const action of ["APPROVE","REJECT","RETURN","HOLD"]) {
         test(status + " current step validates " + action, () => {
@@ -78,7 +139,7 @@ for (const Action of ["APPROVE","REJECT","RETURN","HOLD"]) {
         });
         assert.equal(result.step.status, workflow.validateAction({Action,Remarks:"Reviewed"}).status);
         assert.ok(client.calls.some(call => call.sql.includes("INSERT INTO capex_workflow_action")));
-        assert.deepEqual(result.roles, [Action === "APPROVE" ? "CEO" : "GM"]);
+        assert.deepEqual(result.roles, Action === "APPROVE" ? ["CEO"] : []);
         assert.deepEqual(result.directUserIds, Action === "APPROVE" ? [] : ["3"]);
         assert.ok(!client.calls.some(call => call.sql === "COMMIT")); // Caller owns transaction.
     });
@@ -133,7 +194,7 @@ function loadService(client, workflowMock, dispatch, mocks = {}) {
     context.require=name=>{
         if (Object.hasOwn(mocks, name)) return mocks[name];
         if(name==="../../db") return {pool:{connect:async()=>client,query:async()=>({rows:[{userid:"10",organization_short_name:"TEST"}]})}};
-        if(name==="./CapexWorkflow") return workflowMock;
+        if(name==="./CapexWorkflow") return {...workflow,...workflowMock};
         if(name==="../../producer/producer") return {sendMessage:dispatch};
         return require(name.startsWith(".")?path.resolve(path.dirname(file),name):name);
     };
@@ -554,4 +615,37 @@ test("Service-verified actor avoids a duplicate actor lookup",async()=>{
     const client=actionClient(stages());
     await workflow.applyAction(client,capex,{UserID:9,Action:"APPROVE",Quantity:1},gm);
     assert.ok(!client.calls.some(call=>call.sql.includes("SELECT um.userid")));
+});
+
+for (const approvertype of ["ROLE", "USER", "REGIONAL"]) {
+    for (const Action of ["REJECT", "RETURN", "HOLD"]) {
+        test(`${approvertype} ${Action} notifies only creator, including when creator is actor`, async () => {
+            const step = { ...stages()[0], approvertype, assigneduserid: "9" };
+            const result = await workflow.applyAction(actionClient([step]), { ...capex, createdby: "9" },
+                { UserID: 9, Action, Remarks: "Reviewed" });
+            assert.deepEqual(result.roles, []);
+            assert.deepEqual(result.directUserIds, ["9"]);
+        });
+    }
+}
+
+test("ROLE HOD approval and read permissions are limited to the CAPEX department", () => {
+    const record = { ...capex, department: "Engineering" };
+    const steps = [{ ...stages()[0], role: "HOD", approvaltype: "HOD" },
+        { ...stages()[1], role: "FC", approvaltype: "FC" }];
+    const engineering = { userid: "8", usertype: "HOD", departmentname: "Engineering", departmentorganizationid: "20" };
+    const finance = { ...engineering, userid: "10", departmentname: "Finance" };
+    assert.equal(workflow.permissions(record, steps, engineering).CanApprove, true);
+    assert.equal(workflow.permissions(record, steps, finance).CanApprove, false);
+    for (const Action of ["APPROVE", "REJECT", "RETURN", "HOLD"]) {
+        assert.throws(() => workflow.authorizeApproval(record, steps, finance, Action), /authorized|cannot/);
+    }
+    const fc = { userid: "11", usertype: "FC" };
+    assert.equal(workflow.permissions(record, steps, fc).CanApprove, false);
+    steps[0].status = "Approved";
+    assert.equal(workflow.permissions(record, steps, fc).CanApprove, true);
+    assert.equal(workflow.permissions(record, steps, engineering).CanApprove, false);
+    // Explicit USER selection retains its authority regardless of account role/department.
+    const selected = [{ ...steps[0], approvertype: "USER", assigneduserid: "10", status: "Pending" }];
+    assert.equal(workflow.permissions(record, selected, finance).CanApprove, true);
 });

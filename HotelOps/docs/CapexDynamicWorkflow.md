@@ -25,7 +25,7 @@ Once snapshot-based requests exist, rolling back to the old backend would lose t
 
 PUT /CapexApprovalSystem retains CapexID, Action, Remarks and Quantity. Add ApprovalStepID and Revision from the list/detail response. ApprovalStepID is required for repeated assignments; otherwise a single actionable assignment can be resolved. Revision detects stale actions.
 
-APPROVE, REJECT, RETURN and HOLD remain supported. Nonapproval actions require remarks. Rejected/returned/held current stages can approve again. Only the current configured stage may act; previous and future stages cannot approve, reject, return or hold. Final approval means no unapproved snapshot step remains. Each action records previous/current status, actor, quantity, remarks and timestamp.
+APPROVE, REJECT, RETURN and HOLD remain supported. Nonapproval actions require remarks. Rejected/returned/held stages cannot act again without an explicit reopen flow. Only the current configured stage may act; previous and future stages cannot approve, reject, return or hold. Final approval means no unapproved snapshot step remains. Each action records previous/current status, actor, quantity, remarks and timestamp.
 
 Authorization uses persisted active organization mappings and the existing SuperAdmin + AllOrganizationAccess rule. Organization access never substitutes for assignment eligibility. CanAction permits only the creator or the related department HOD in the same organization, before any approval action. Any Approve/Reject/Return/Hold, actor timestamp or recorded history locks edit/delete permanently, even if status later returns to Pending. Void/deleted records also deny edits. The CAPEX department name is matched to the persisted user department in department_master.
 
@@ -48,7 +48,7 @@ Delivery remains best-effort post-commit dispatch, not a durable outbox.
 ## Outstanding contracts
 
 - USER mapping verified on 10 October 2026: Builder stores the selected user ID in Role (for example Role="7", ApprovalType="CEO"). Snapshot creation validates active organization membership and persists assigneduserid separately. The selected user acts at the CEO business stage irrespective of their account role. Display names are not used for authorization.
-- IsMandatory=false: snapshot creation rejects it until skip/approval semantics are defined; no silent skipping.
+- IsMandatory=false: snapshots retain the step for display, but execution skips it without fabricating actions or requiring recipients.
 - Frontend repository: required to implement and verify table/action wiring.
 
 ## Tests
@@ -73,3 +73,19 @@ requests even with optional trailing steps. Reject/Return/Hold do not advance th
 current mandatory step. Existing snapshots are not rewritten when configuration changes.
 
 Each approval step accepts one action only. After Approve/Reject/Return/Hold, CanApprove is false and AllowedActions is empty for that step. Only approval advances to the next mandatory step; other actions stop progression. No implicit reopening is supported.
+
+## Regional approvers and reordered steps (12 October 2026)
+
+The configured database now contains USER FC, ROLE GM, REGIONAL RD-FC, and ROLE CEO steps. The create error originated in CapexWorkflow.snapshot, propagated through the queue and CapexController: its assignment whitelist rejected REGIONAL. The database snapshot constraints also rejected that type. The actual business-stage labels were populated; neither a stage-to-role mapping nor a fixed GM/CEO order caused this error.
+
+Apply docs/migrations/capex-regional-approvers.sql after the original dynamic workflow migration and before deploying these changes. Validation and authorization remain enforced. This migration was applied to the configured database on 12 October 2026 after the old constraints caused CAPEX creation to fail. Both updated constraints were verified after application; existing request rows were preserved.
+
+Builder stores the selected Regional user's ID in Role, just as for USER. CAPEX copies it into AssignedUserID while retaining ApproverType=REGIONAL and the original ApprovalType. Eligibility requires an active, unlocked user and active primary membership in COALESCE(ParentOrganizationID, OrganizationID), matching the existing Builder dropdown. The owning company must also be active and activated. No organization IDs are encoded in runtime logic.
+
+A Regional user without hotel membership may read and act only on CAPEX snapshots that explicitly assign a mandatory Regional step to that user. Assignment never grants hotel-wide access or creator/HOD modification rights. Live hierarchy and membership are rechecked; removal revokes access. Ordinary Role/User assignments continue to require hotel access. The same restrictions apply to API/PDF reads, summaries, notifications and Firebase device resolution. Email uses the finalized recipients.
+
+Builder already sorts and persists updated Level values when saving. CAPEX snapshots and loads those values in ascending order, bypasses optional steps, and transitions to the next mandatory pending step. ApprovalType remains a business-stage label and is never inferred from position. Reordering affects new requests; existing snapshots and legacy requests retain their stored execution behavior.
+
+Focused regressions: node --test tests/capex/CapexWorkflow.test.js tests/capex/CapexSummary.test.js tests/capex/CapexPdfController.test.js tests/capex/CapexRegionalNotification.test.js
+
+Database regression: set CAPEX_REGIONAL_DB_TEST=1 and run node --test tests/capex/CapexRegional.integration.test.js. The test discovers an existing Regional CAPEX flow, captures queue commands locally, and rolls back migration, Builder saves, requests, membership changes and actions. Identity sequences may advance as PostgreSQL sequence allocation is not transactional. It verifies create/update, unsorted reordered Builder save, immutable older snapshots, Regional reads/actions without hotel membership, rejection, next-step/final notification recipients, action history, edit locks and revocation. No email or Firebase messages are delivered during this test.

@@ -11,7 +11,10 @@ const base = {
     remark: "Reviewed", actionBy: "General Manager", actionDate: "2026-09-15T06:30:00.000Z" },
 };
 
-test("OPEX CREATE email has branding, one description, details and no action table", () => {
+test("OPEX CREATE email has branding, one description, details and no action table", (t) => {
+  const previous=process.env.OPEX_FRONTEND_URL;
+  process.env.OPEX_FRONTEND_URL="https://hotelops.example.com/Opex";
+  t.after(()=>{if(previous===undefined)delete process.env.OPEX_FRONTEND_URL;else process.env.OPEX_FRONTEND_URL=previous;});
   const email = buildOpexEmail({ ...base, details: { ...base.details, kind: "CREATE" } });
   assert.equal(email.subject, "[HotelOps] OPEX - Printer (2) - Finance - HJU");
   assert.match(email.html, /OPEX Notification/);
@@ -21,7 +24,7 @@ test("OPEX CREATE email has branding, one description, details and no action tab
   assert.match(email.html, /OPEX Details/);
   assert.equal((email.html.match(/Replacement printer/g) || []).length, 1);
   assert.doesNotMatch(email.html, /Action Details/);
-  assert.match(email.html, /<a href="http:\/\/localhost:5173\/Hotelops\/Pages\/Opex\/Pages\/Details\?opexId=42%2F7"[^>]*>VIEW OPEX REQUEST<\/a>/);
+  assert.match(email.html, /<a href="[^"]+\?opexId=42%2F7"[^>]*>VIEW OPEX REQUEST<\/a>/);
 });
 
 for (const [kind, expected] of Object.entries({

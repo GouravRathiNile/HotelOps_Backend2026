@@ -139,6 +139,7 @@ if (!Department) {
 }
     const userID = req.user.UserID;
     const data = {
+      ...authenticatedUser(req),
       OrganizationID,
       Department,
       Item,
@@ -202,12 +203,6 @@ exports.getAllOpex = async (req, res) => {
   try {
     const user = authenticatedUser(req);
 
-    if (user.UserType.toUpperCase() === "HOD" && !user.DepartmentName) {
-      throw new AppError(
-        "Department information is required for HOD OPEX access",
-        STATUS_CODES.FORBIDDEN
-      );
-    }
 
     let OrganizationID = null;
 
@@ -255,15 +250,6 @@ exports.getAllOpex = async (req, res) => {
       ? String(req.query.ApprovalFlow).trim().toUpperCase()
       : null;
 
-    if (
-      ApprovalFlow &&
-      !["HOD", "FC", "GM", "RD-FC", "CEO"].includes(ApprovalFlow)
-    ) {
-      throw new AppError(
-        "ApprovalFlow must be HOD, FC, GM, RD-FC, or CEO",
-        STATUS_CODES.BAD_REQUEST,
-      );
-    }
 
     const Department =
       req.query.Department !== undefined &&
@@ -732,6 +718,14 @@ exports.approveOpex = async (req, res) => {
         ? null
         : positiveNumber(req.body.Quantity, "Quantity");
 
+    const stepID=req.body?.ApprovalStepID;
+    if(stepID!=null && !isPositiveInteger(stepID) && !/^legacy:[A-Z][A-Z-]*$/.test(String(stepID))) {
+      throw new AppError("ApprovalStepID is invalid",STATUS_CODES.BAD_REQUEST);
+    }
+    const revision=req.body?.Revision;
+    if(revision!=null && (!/^\d+$/.test(String(revision)) || !Number.isSafeInteger(Number(revision)))) {
+      throw new AppError("Revision must be a nonnegative integer",STATUS_CODES.BAD_REQUEST);
+    }
     const user = authenticatedUser(req);
 
     const response = await producer.sendMessage(
@@ -745,6 +739,8 @@ exports.approveOpex = async (req, res) => {
           Action: action,
           Remarks: remarks || null,
           Quantity,
+          ApprovalStepID: req.body?.ApprovalStepID,
+          Revision: req.body?.Revision,
           UserID: user.UserID,
           UserType: user.UserType,
           DepartmentName: user.DepartmentName,
@@ -854,14 +850,9 @@ exports.getOpexSummaryReport = async (req, res) => {
     const user = authenticatedUser(req);
     const UserType = user.UserType.toUpperCase();
 
-    if (UserType === "HOD" && !user.DepartmentName) {
-      throw new AppError(
-        "Department information is required for HOD OPEX access",
-        STATUS_CODES.FORBIDDEN
-      );
-    }
 
     const response = await OpexService.getOpexSummaryReport({
+      ...authenticatedUser(req),
       Filters: {
         OrganizationID: Number(req.query.OrganizationID),
       },
@@ -887,6 +878,7 @@ exports.getOpexSummaryReport = async (req, res) => {
 exports.getOpexDepartmentReport = async (req, res) => {
   try {
     const response = await OpexService.getOpexDepartmentReport({
+      ...authenticatedUser(req),
       Filters: reportFilters(req),
     });
 
@@ -907,6 +899,7 @@ exports.getOpexDepartmentReport = async (req, res) => {
 exports.getOpexOrganizationReport = async (req, res) => {
   try {
     const response = await OpexService.getOpexOrganizationReport({
+      ...authenticatedUser(req),
       Filters: reportFilters(req),
     });
 
@@ -1001,6 +994,7 @@ exports.getOpexApprovalConfig = async (req, res) => {
     }
 
     const response = await OpexService.getApprovalConfig({
+      ...authenticatedUser(req),
       OrganizationID,
     });
 
@@ -1093,15 +1087,6 @@ exports.generateOpexListPdf = async (req, res) => {
       ? String(req.query.ApprovalFlow).trim().toUpperCase()
       : null;
 
-    if (
-      ApprovalFlow &&
-      !["HOD", "FC", "GM", "RD-FC", "CEO"].includes(ApprovalFlow)
-    ) {
-      throw new AppError(
-        "ApprovalFlow must be HOD, FC, GM, RD-FC, or CEO",
-        STATUS_CODES.BAD_REQUEST,
-      );
-    }
 
     const Department =
       req.query.Department !== undefined &&
@@ -1171,6 +1156,7 @@ exports.generateOpexListPdf = async (req, res) => {
 exports.getOpexDepartmentReportPdf = async (req, res) => {
   try {
     const data = {
+      ...authenticatedUser(req),
       OrganizationID:
         req.query.OrganizationID !== undefined &&
         req.query.OrganizationID !== null &&
@@ -1292,6 +1278,7 @@ exports.getOpexOrganizationReportPdf = async (req, res) => {
     ).trim();
 
     const data = {
+      ...authenticatedUser(req),
       OrganizationID:
         organizationValue !== ""
           ? Number(organizationValue)
@@ -1412,6 +1399,7 @@ exports.generateOpexByIdPdf = async (req, res) => {
     // ==========================================================
     const result =
       await OpexService.generateOpexByIdPdf({
+      ...authenticatedUser(req),
         OpexID: opexID,
 
         UserID:
