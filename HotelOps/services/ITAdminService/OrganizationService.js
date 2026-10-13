@@ -1,7 +1,7 @@
 const { pool } = require("../../db");
 const generateUrl = require("../../AzurConfigration/ITAdmin/OrganizationMaster/AzureGetData");
 const moment = require("moment");
-const {formatDate} = require("../../utils/dateFormatter");
+const { formatDate } = require("../../utils/dateFormatter");
 const { retryableDatabaseResponse } = require("../../utils/retryableDatabaseError");
 // =========================================Create Organization
 const createOrganization = async (data) => {
@@ -20,6 +20,8 @@ const createOrganization = async (data) => {
       OrganizationName,
       OrganizationCode,
       ShortName,
+
+      ParentOrganizationID,
 
       Country,
       State,
@@ -101,7 +103,7 @@ const createOrganization = async (data) => {
 
                 ActivationStatus,
                 IsActive,
-IsDeleted,
+                IsDeleted,
                 FinancialYearStart,
 
                 FinanceModule,
@@ -121,7 +123,9 @@ IsDeleted,
 
                 BrandID,
 
-                CreatedBy
+                CreatedBy,
+
+                ParentOrganizationID
 
             )
 
@@ -146,7 +150,8 @@ IsDeleted,
                 $28,
                 $29,
                 $30,
-                $31
+                $31,
+                $32
 
             )
 
@@ -202,6 +207,7 @@ IsDeleted,
       BrandID,
 
       CreatedBy,
+      ParentOrganizationID ? Number(ParentOrganizationID) : null
     ];
 
     const organizationResult = await client.query(
@@ -400,8 +406,8 @@ const getAllOrganizations = async (
 
           FinancialYearStart: row.financialyearstart
             ? moment()
-                .month(row.financialyearstart - 1)
-                .format("MMM")
+              .month(row.financialyearstart - 1)
+              .format("MMM")
             : null,
 
           FinanceModule: row.financemodule,
@@ -463,6 +469,7 @@ const updateOrganization = async (data) => {
 
     const {
       OrganizationID,
+      ParentOrganizationID,
 
       OrganizationName,
       OrganizationCode,
@@ -561,7 +568,9 @@ const updateOrganization = async (data) => {
         ModifiedBy = $27,
         ModifiedDateTime = NOW()
 
-      WHERE OrganizationID = $28
+        ParentOrganizationID = $28
+
+      WHERE OrganizationID = $29
         AND IsDeleted = FALSE
 
       RETURNING *;
@@ -612,6 +621,8 @@ const updateOrganization = async (data) => {
 
       ModifiedBy,
 
+      ParentOrganizationID ? Number(ParentOrganizationID) : null,
+
       OrganizationID,
     ];
 
@@ -626,25 +637,80 @@ const updateOrganization = async (data) => {
       };
     }
 
-    // ================= Update Logos =================
+    // // ================= Update Logos =================
 
-    if (Logos && Logos.length > 0) {
+    // if (Logos && Logos.length > 0) {
+    //   for (const logo of Logos) {
+    //     await client.query(
+    //       `
+    //       UPDATE Organization_Master_Logo
+    //       SET
+    //           LogoName = $1,
+    //           ModifiedBy = $2,
+    //           ModifiedDateTime = NOW()
+    //       WHERE OrganizationID = $3
+    //         AND LogoType = $4
+    //         AND IsDeleted = FALSE
+    //       `,
+    //       [logo.LogoName, ModifiedBy, OrganizationID, logo.LogoType],
+    //     );
+    //   }
+    // }
+
+
+    // ================= Update / Add Logos =================
+
+    if (Array.isArray(Logos) && Logos.length > 0) {
       for (const logo of Logos) {
-        await client.query(
+        if (!logo.LogoType || !logo.LogoName) {
+          continue;
+        }
+
+        // First try to update an existing logo
+        const logoUpdateResult = await client.query(
           `
-          UPDATE Organization_Master_Logo
-          SET
-              LogoName = $1,
-              ModifiedBy = $2,
-              ModifiedDateTime = NOW()
-          WHERE OrganizationID = $3
-            AND LogoType = $4
-            AND IsDeleted = FALSE
-          `,
-          [logo.LogoName, ModifiedBy, OrganizationID, logo.LogoType],
+      UPDATE Organization_Master_Logo
+      SET
+        LogoName = $1,
+        ModifiedBy = $2,
+        ModifiedDateTime = NOW()
+      WHERE OrganizationID = $3
+        AND LogoType = $4
+        AND IsDeleted = FALSE
+      `,
+          [
+            logo.LogoName,
+            ModifiedBy,
+            OrganizationID,
+            logo.LogoType
+          ]
         );
+
+        // If logo doesn't exist, insert a new record
+        if (logoUpdateResult.rowCount === 0) {
+          await client.query(
+            `
+        INSERT INTO Organization_Master_Logo
+        (
+          OrganizationID,
+          LogoType,
+          LogoName,
+          CreatedBy,
+          IsDeleted
+        )
+        VALUES ($1, $2, $3, $4, FALSE)
+        `,
+            [
+              OrganizationID,
+              logo.LogoType,
+              logo.LogoName,
+              ModifiedBy
+            ]
+          );
+        }
       }
     }
+
 
     await client.query("COMMIT");
 
@@ -691,17 +757,17 @@ const updateOrganization = async (data) => {
 // ========================================= Delete Organization
 const deleteOrganization = async (data) => {
 
-    const client = await pool.connect();
+  const client = await pool.connect();
 
-    try {
+  try {
 
-        await client.query("BEGIN");
+    await client.query("BEGIN");
 
-        const { OrganizationID, DeletedBy } = data;
+    const { OrganizationID, DeletedBy } = data;
 
-        // Soft Delete Organization
-        const organizationResult = await client.query(
-            `
+    // Soft Delete Organization
+    const organizationResult = await client.query(
+      `
             UPDATE Organization_Master
             SET
                 IsDeleted = TRUE,
@@ -711,23 +777,23 @@ const deleteOrganization = async (data) => {
               AND IsDeleted = FALSE
             RETURNING *;
             `,
-            [DeletedBy, OrganizationID]
-        );
+      [DeletedBy, OrganizationID]
+    );
 
-        if (organizationResult.rows.length === 0) {
+    if (organizationResult.rows.length === 0) {
 
-            await client.query("ROLLBACK");
+      await client.query("ROLLBACK");
 
-            return {
-                success: false,
-                message: "Organization Not Found"
-            };
+      return {
+        success: false,
+        message: "Organization Not Found"
+      };
 
-        }
+    }
 
-        // Soft Delete Organization Logos
-        await client.query(
-            `
+    // Soft Delete Organization Logos
+    await client.query(
+      `
             UPDATE Organization_Master_Logo
             SET
                 IsDeleted = TRUE,
@@ -736,32 +802,32 @@ const deleteOrganization = async (data) => {
             WHERE OrganizationID = $2
               AND IsDeleted = FALSE;
             `,
-            [DeletedBy, OrganizationID]
-        );
+      [DeletedBy, OrganizationID]
+    );
 
-        await client.query("COMMIT");
+    await client.query("COMMIT");
 
-        return {
-            success: true,
-            message: "Organization Deleted Successfully"
-        };
+    return {
+      success: true,
+      message: "Organization Deleted Successfully"
+    };
 
-    } catch (error) {
+  } catch (error) {
 
-        await client.query("ROLLBACK");
+    await client.query("ROLLBACK");
 
-        console.log("Delete Organization Error :", error.message);
+    console.log("Delete Organization Error :", error.message);
 
-        return {
-            success: false,
-            message: error.message
-        };
+    return {
+      success: false,
+      message: error.message
+    };
 
-    } finally {
+  } finally {
 
-        client.release();
+    client.release();
 
-    }
+  }
 
 };
 // ==========================================Get OrganizationList for Dropdown

@@ -22,38 +22,151 @@ const normalizeIDs = (data = {}, requireMasterID = false) => ({
         : {})
 });
 
+// const normalizeSave = (data = {}) => {
+//     // Create forms send an empty ID; only a populated ID selects an update.
+//     const masterID = data.ApprovalMasterID;
+//     const ids = normalizeIDs({
+//         ...data,
+//         ApprovalMasterID: typeof masterID === "string" && !masterID.trim()
+//             ? undefined : masterID
+//     });
+//     if (data.IsActive !== undefined && typeof data.IsActive !== "boolean") {
+//         throw new AppError("IsActive must be a boolean", 400);
+//     }
+//     if (data.Description != null && typeof data.Description !== "string") {
+//         throw new AppError("Description must be a string", 400);
+//     }
+//     if (!Array.isArray(data.Details) || !data.Details.length) {
+//         throw new AppError("At least one approval level is required", 400);
+//     }
+//     return {
+//         ...ids,
+//         FlowName: requiredText(data.FlowName, "FlowName"),
+//         ModuleName: requiredText(data.ModuleName, "ModuleName"),
+//         Description: data.Description?.trim() || null,
+//         IsActive: data.IsActive,
+//         Details: data.Details.map((detail) => {
+//             if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+//                 throw new AppError("Each approval level must be an object", 400);
+//             }
+//             if (detail.IsMandatory !== undefined && typeof detail.IsMandatory !== "boolean") {
+//                 throw new AppError("IsMandatory must be a boolean", 400);
+//             }
+//             return { ...detail, IsMandatory: detail.IsMandatory ?? true };
+//         })
+//     };
+// };
+
+
 const normalizeSave = (data = {}) => {
     // Create forms send an empty ID; only a populated ID selects an update.
     const masterID = data.ApprovalMasterID;
+
     const ids = normalizeIDs({
         ...data,
-        ApprovalMasterID: typeof masterID === "string" && !masterID.trim()
-            ? undefined : masterID
+        ApprovalMasterID:
+            typeof masterID === "string" && !masterID.trim()
+                ? undefined
+                : masterID
     });
-    if (data.IsActive !== undefined && typeof data.IsActive !== "boolean") {
+
+    if (
+        data.IsActive !== undefined &&
+        typeof data.IsActive !== "boolean"
+    ) {
         throw new AppError("IsActive must be a boolean", 400);
     }
-    if (data.Description != null && typeof data.Description !== "string") {
+
+    if (
+        data.Description != null &&
+        typeof data.Description !== "string"
+    ) {
         throw new AppError("Description must be a string", 400);
     }
+
     if (!Array.isArray(data.Details) || !data.Details.length) {
-        throw new AppError("At least one approval level is required", 400);
+        throw new AppError(
+            "At least one approval level is required",
+            400
+        );
     }
+
+    const Details = data.Details.map((detail) => {
+        if (
+            !detail ||
+            typeof detail !== "object" ||
+            Array.isArray(detail)
+        ) {
+            throw new AppError(
+                "Each approval level must be an object",
+                400
+            );
+        }
+
+        // Validate Level
+        const level = Number(detail.Level);
+
+        if (
+            detail.Level === undefined ||
+            detail.Level === null ||
+            String(detail.Level).trim() === "" ||
+            !Number.isSafeInteger(level) ||
+            level <= 0
+        ) {
+            throw new AppError(
+                "Level must be a positive integer",
+                400
+            );
+        }
+
+        if (
+            detail.IsMandatory !== undefined &&
+            typeof detail.IsMandatory !== "boolean"
+        ) {
+            throw new AppError(
+                "IsMandatory must be a boolean",
+                400
+            );
+        }
+
+        return {
+            ...detail,
+            Level: level,
+            IsMandatory: detail.IsMandatory ?? true
+        };
+    });
+
+    // Validate unique levels
+    const levels = Details.map(detail => detail.Level);
+
+    if (new Set(levels).size !== levels.length) {
+        throw new AppError(
+            "Approval step levels must be unique",
+            400
+        );
+    }
+
+    // Enforce sequential levels: 1, 2, 3...
+    const sortedLevels = [...levels].sort((a, b) => a - b);
+
+    if (
+        sortedLevels.some(
+            (level, index) => level !== index + 1
+        )
+    ) {
+        throw new AppError(
+            "Approval step levels must be sequential starting from 1",
+            400
+        );
+    }
+
     return {
         ...ids,
         FlowName: requiredText(data.FlowName, "FlowName"),
         ModuleName: requiredText(data.ModuleName, "ModuleName"),
         Description: data.Description?.trim() || null,
         IsActive: data.IsActive,
-        Details: data.Details.map((detail) => {
-            if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
-                throw new AppError("Each approval level must be an object", 400);
-            }
-            if (detail.IsMandatory !== undefined && typeof detail.IsMandatory !== "boolean") {
-                throw new AppError("IsMandatory must be a boolean", 400);
-            }
-            return { ...detail, IsMandatory: detail.IsMandatory ?? true };
-        })
+        Details
     };
 };
 

@@ -13,9 +13,9 @@ const notificationUserIds = (values) => [...new Set((Array.isArray(values) ? val
   .filter((value) => value != null && /^[1-9]\d*$/.test(String(value).trim()))
   .map((value) => String(value).trim()))].sort();
 
-// Resolve only active users mapped to the CAPEX record's organization. Roles
-// come from the effective approval configuration; direct IDs are used for the creator.
-const resolveCapexNotificationRecipients = async ({ organizationID, roles = [], directUserIds = [], excludeUserID = null, actorUserID = null }) => {
+// Resolve active hotel users or explicitly assigned Regional users in its
+// company hierarchy. Direct IDs represent selected approvers and the creator.
+const resolveCapexNotificationRecipients = async ({ organizationID, capexID, roles = [], directUserIds = [], excludeUserID = null, actorUserID = null }) => {
   const normalizedRoles = [...new Set(roles.map((role) => String(role || "").trim().toUpperCase()).filter(Boolean))];
   const normalizedUserIds = notificationUserIds(directUserIds);
   const result = await pool.query(`
@@ -23,18 +23,26 @@ const resolveCapexNotificationRecipients = async ({ organizationID, roles = [], 
       COALESCE(NULLIF(TRIM(om.shortname), ''), om.organizationname) AS organization_short_name,
       COALESCE(NULLIF(TRIM(actor.fullname), ''), NULLIF(TRIM(actor.username), '')) AS actor_name
     FROM user_master um
-    INNER JOIN user_org_mapping uom ON uom.userid = um.userid
-    INNER JOIN organization_master om ON om.organizationid = uom.organizationid
+    INNER JOIN organization_master om ON om.organizationid = $1
     LEFT JOIN user_master actor ON actor.userid::text = $5::text
-    WHERE uom.organizationid = $1
-      AND uom.isactive = TRUE AND uom.isdeleted = FALSE
-      AND om.isactive = TRUE AND om.activationstatus = TRUE AND om.isdeleted = FALSE
+    WHERE om.isactive = TRUE AND om.activationstatus = TRUE AND om.isdeleted = FALSE
       AND um.isactive = TRUE AND um.isdeleted = FALSE AND um.islocked = FALSE
-      AND (UPPER(TRIM(um.usertype)) = ANY($2::text[]) OR um.userid::text = ANY($3::text[]))
+      AND ((EXISTS (SELECT 1 FROM user_org_mapping uom
+          WHERE uom.userid = um.userid AND uom.organizationid = $1
+            AND uom.isactive = TRUE AND uom.isdeleted = FALSE)
+          AND ((UPPER(TRIM(um.usertype)) = ANY($2::text[])
+              AND (UPPER(TRIM(um.usertype)) <> 'HOD' OR EXISTS (
+                SELECT 1 FROM department_master dm JOIN capex_master cm ON cm.capexid = $6
+                WHERE dm.departmentid = um.departmentid AND dm.isdeleted = FALSE
+                  AND dm.organizationid = cm.organizationid
+                  AND NULLIF(TRIM(cm.department), '') IS NOT NULL
+                  AND UPPER(TRIM(dm.departmentname)) = UPPER(TRIM(cm.department)))))
+            OR um.userid::text = ANY($3::text[])))
+        OR (um.userid::text = ANY($3::text[]) AND ${CapexWorkflow.regionalAccessSQL("um", "om", "$6")}))
       AND ($4::text IS NULL OR um.userid::text <> $4::text)`,
     [organizationID, normalizedRoles, normalizedUserIds,
       excludeUserID == null ? null : String(excludeUserID),
-      actorUserID == null ? null : String(actorUserID)]);
+      actorUserID == null ? null : String(actorUserID), capexID ?? null]);
   return {
     userIds: notificationUserIds(result.rows.map((row) => row.userid)),
     organizationShortName: String(result.rows[0]?.organization_short_name || "").trim(),
@@ -44,28 +52,26 @@ const resolveCapexNotificationRecipients = async ({ organizationID, roles = [], 
 
 // Build only notification presentation text here; workflow and recipients stay
 // independent so content changes cannot alter CAPEX approval behavior.
-const capexNotificationContent = ({ kind, item, qty, department, description,
-  organizationShortName, actorName, approverRole, title, message }) => {
-  if (kind === "CREATE") {
-    return {
-      title: `CAPEX - ${String(item || "").trim()} (${String(qty ?? "").trim()}) - ${String(department || "").trim()} - ${organizationShortName}`,
-      message: String(description || "").trim(),
-    };
-  }
-  if (kind === "APPROVE") {
-    return {
-      title: `CAPEX - ${String(item || "").trim()} - ${String(department || "").trim()} - ${organizationShortName}`,
-      message: `Approved by ${actorName || approverRole}`,
-    };
-  }
-  if (["REJECT", "RETURN", "HOLD"].includes(kind)) {
-    const actionLabel = { REJECT: "Rejected", RETURN: "Returned", HOLD: "Hold" }[kind];
-    return {
-      title: `CAPEX - ${String(item || "").trim()} - ${String(department || "").trim()} - ${organizationShortName}`,
-      message: `${actionLabel} by ${actorName || approverRole}`,
-    };
-  }
-  return { title, message };
+const capexNotificationContent = ({ kind, item, qty, department,
+  organizationShortName, actorName, approverRole, title, message, isFinalApproval = false }) => {
+  const displayValue = value => String(value ?? "").trim() || "-";
+  const quantity = displayValue(qty).replace(/^(\d+)\.(\d*?)0+$/, (_, whole, fraction) =>
+    fraction ? `${whole}.${fraction}` : whole);
+  const actor = String(actorName ?? "").trim() || String(approverRole ?? "").trim() || "System";
+  const messages = {
+    CREATE: "A new Capex request has been created and is awaiting your review.",
+    APPROVE: isFinalApproval
+      ? `Your Capex request has been fully approved by ${actor}.`
+      : `The Capex request has been approved by ${actor} and is awaiting your review.`,
+    AUTO_APPROVED: `Your Capex request has been fully approved by ${actor}.`,
+    REJECT: `The Capex request has been rejected by ${actor}.`,
+    RETURN: `The Capex request has been returned by ${actor} for revision.`,
+    HOLD: `The Capex request has been put on hold by ${actor}.`,
+  };
+  return {
+    title: `Capex - ${displayValue(item)} (${quantity}) - ${displayValue(department)} - ${displayValue(organizationShortName)}`,
+    message: messages[kind] ?? message,
+  };
 };
 
 // CAPEX owns its recipient and content rules; the shared notification service
@@ -73,14 +79,14 @@ const capexNotificationContent = ({ kind, item, qty, department, description,
 const notifyCapex = async ({ organizationID, capexID, roles, directUserIds,
   excludeUserID, actorUserID, kind, item, qty, department, description,
   rate, total, actionQuantity, remark, actionDate,
-  approverRole, title, message, action }) => {
+  approverRole, title, message, action, isFinalApproval = false }) => {
   const recipientContext = await resolveCapexNotificationRecipients({
-    organizationID, roles, directUserIds, excludeUserID, actorUserID,
+    organizationID, capexID, roles, directUserIds, excludeUserID, actorUserID,
   });
   const { userIds } = recipientContext;
   if (!userIds.length) return;
   const content = capexNotificationContent({
-    kind, item, qty, department, description, approverRole, title, message,
+    kind, item, qty, department, description, approverRole, title, message, isFinalApproval,
     organizationShortName: recipientContext.organizationShortName,
     actorName: recipientContext.actorName,
   });
@@ -1109,7 +1115,7 @@ const processCapexApproval = async (data) => {
 
     const capex = masterResult.rows[0];
 
-    const verifiedActor = await CapexWorkflow.getActor(client, capex.organizationid, data.UserID);
+    const verifiedActor = await CapexWorkflow.getActor(client, capex.organizationid, data.UserID, capex.capexid);
     approverRole = CapexWorkflow.normalized(verifiedActor.usertype);
     const dynamicAction = await CapexWorkflow.applyAction(client, capex, data, verifiedActor);
     if (dynamicAction) {
@@ -1120,8 +1126,9 @@ const processCapexApproval = async (data) => {
         organizationID: capex.organizationid, capexID: capex.capexid,
         roles, directUserIds,
         // A user assigned consecutive dynamic steps still needs the next task.
-        excludeUserID: change.action === "APPROVE" ? null : data.UserID,
+        excludeUserID: null,
         actorUserID: data.UserID, kind: change.action,
+        isFinalApproval: change.action === "APPROVE" && !next,
         item: capex.item, qty: capex.qty, department: capex.department,
         description: capex.description, rate: capex.rate, total: capex.total,
         actionQuantity: change.quantity, remark: change.remarks,
@@ -1333,7 +1340,7 @@ const processCapexApproval = async (data) => {
     // Build one post-commit notification from the already locked CAPEX and
     // effective workflow stages; no request-supplied organization is trusted.
     const notifyApprovalCommitted = ({ kind, title, message, notificationAction,
-      roles = [], includeCreator = false, excludeActor = false }) => {
+      roles = [], includeCreator = false, excludeActor = false, isFinalApproval = false }) => {
       notifyCommittedCapex({
         organizationID: capex.organizationid,
         capexID: capex.capexid,
@@ -1342,6 +1349,7 @@ const processCapexApproval = async (data) => {
         excludeUserID: excludeActor ? data.UserID : null,
         actorUserID: data.UserID,
         kind,
+        isFinalApproval,
         item: capex.item,
         qty: capex.qty,
         rate: capex.rate,
@@ -1504,8 +1512,7 @@ const processCapexApproval = async (data) => {
           kind: "APPROVE",
           notificationAction: "APPROVED",
           roles: [followingStage.role],
-          // includeCreator: true,
-          excludeActor: true,
+
         });
 
         return {
@@ -1551,6 +1558,7 @@ const processCapexApproval = async (data) => {
 
       notifyApprovalCommitted({
         kind: "APPROVE",
+        isFinalApproval: true,
         notificationAction: "APPROVED",
         includeCreator: true,
       });
@@ -1607,9 +1615,7 @@ const processCapexApproval = async (data) => {
       notifyApprovalCommitted({
         kind: "REJECT",
         notificationAction: "REJECTED",
-        roles: [approverRole],
         includeCreator: true,
-        excludeActor: true,
       });
 
       return {
@@ -1668,9 +1674,7 @@ const processCapexApproval = async (data) => {
       notifyApprovalCommitted({
         kind: "RETURN",
         notificationAction: "RETURNED",
-        roles: [approverRole],
         includeCreator: true,
-        excludeActor: true,
       });
 
       return {
@@ -1736,9 +1740,7 @@ const processCapexApproval = async (data) => {
       notifyApprovalCommitted({
         kind: "HOLD",
         notificationAction: "HOLD",
-        roles: [currentRole],
         includeCreator: true,
-        excludeActor: true,
       });
 
       return {

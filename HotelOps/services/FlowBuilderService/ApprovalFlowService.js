@@ -76,15 +76,46 @@ const saveApprovalFlow = async (data = {}) => {
             `, [OrganizationID, FlowName, ModuleName, Description, IsActive, data.UserID]);
             ApprovalMasterID = result.rows[0].approvalmasterid;
         }
-        for (const detail of Details) {
+        // for (const detail of Details) {
+        //     await client.query(`
+        //         INSERT INTO public.approval_master_details
+        //             (approvalmasterid, level, approvertype, role, approvaltype,
+        //              createdby, createddatetime, isdelete, ismandatory)
+        //         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, FALSE, $7)
+        //     `, [ApprovalMasterID, detail.Level, detail.ApproverType, detail.Role,
+        //         detail.ApprovalType, data.UserID, detail.IsMandatory]);
+        // }
+
+        const orderedDetails = [...Details].sort(
+            (a, b) => a.Level - b.Level
+        );
+
+        for (const detail of orderedDetails) {
             await client.query(`
-                INSERT INTO public.approval_master_details
-                    (approvalmasterid, level, approvertype, role, approvaltype,
-                     createdby, createddatetime, isdelete, ismandatory)
-                VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, FALSE, $7)
-            `, [ApprovalMasterID, detail.Level, detail.ApproverType, detail.Role,
-                detail.ApprovalType, data.UserID, detail.IsMandatory]);
+        INSERT INTO public.approval_master_details
+            (
+                approvalmasterid,
+                level,
+                approvertype,
+                role,
+                approvaltype,
+                createdby,
+                createddatetime,
+                isdelete,
+                ismandatory
+            )
+        VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, FALSE, $7)
+    `, [
+                ApprovalMasterID,
+                detail.Level,
+                detail.ApproverType,
+                detail.Role,
+                detail.ApprovalType,
+                data.UserID,
+                detail.IsMandatory
+            ]);
         }
+
         const result = await client.query(`
             SELECT ${masterColumns}, ${detailsColumn}
             FROM public.approval_master am
@@ -129,7 +160,7 @@ const getApprovalFlowList = async (data = {}) => {
                 FROM public.approval_master am WHERE ${where}
                 ORDER BY am.approvalmasterid DESC
                 LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
-            [...values, limit, (page - 1) * limit]),
+                [...values, limit, (page - 1) * limit]),
             pool.query(`SELECT COUNT(*) AS totalcount
                 FROM public.approval_master am WHERE ${where}`, values)
         ]);

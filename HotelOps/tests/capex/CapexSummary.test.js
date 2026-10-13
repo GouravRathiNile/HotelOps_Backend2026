@@ -12,8 +12,12 @@ test("CAPEX notifications use organization-scoped configured-role recipients", (
   const source = fs.readFileSync(path.join(__dirname, "../../services/CapexService/CapexService.js"), "utf8");
   const resolver = source.match(/const resolveCapexNotificationRecipients[\s\S]*?const notifyCapex/)?.[0] || "";
   assert.match(resolver, /SELECT DISTINCT um\.userid/);
-  assert.match(resolver, /INNER JOIN user_org_mapping uom ON uom\.userid = um\.userid/);
-  assert.match(resolver, /WHERE uom\.organizationid = \$1/);
+  assert.match(resolver, /SELECT 1 FROM user_org_mapping uom/);
+  assert.match(resolver, /uom\.organizationid = \$1/);
+  assert.match(resolver, /CapexWorkflow\.regionalAccessSQL/);
+  assert.match(resolver, /dm.departmentid = um.departmentid/);
+  assert.match(resolver, /dm.organizationid = cm.organizationid/);
+  assert.match(resolver, /UPPER\(TRIM\(dm.departmentname\)\) = UPPER\(TRIM\(cm.department\)\)/);
   assert.match(resolver, /UPPER\(TRIM\(um\.usertype\)\) = ANY\(\$2::text\[\]\)/);
   assert.match(resolver, /um\.userid::text = ANY\(\$3::text\[\]\)/);
   assert.match(resolver, /um\.userid::text <> \$4::text/);
@@ -28,12 +32,14 @@ test("CAPEX create and approval notifications follow configured stages and recip
   const approvalBlock = source.match(/const processCapexApproval = async[\s\S]*?\/\/ =+ Summary/)?.[0] || source.match(/const processCapexApproval = async[\s\S]*?const getCapexSummaryReport/)?.[0] || "";
   assert.match(createBlock, /CapexWorkflow\.snapshot/);
   assert.match(createBlock, /roles: firstApprovalRole \? \[firstApprovalRole\] : \[\]/);
-  assert.match(approvalBlock, /roles: \[followingStage\.role\][\s\S]*includeCreator: true,[\s\S]*excludeActor: true/);
+  assert.match(approvalBlock, /roles: \[followingStage\.role\]/);
   assert.match(approvalBlock, /kind: "APPROVE"[\s\S]*includeCreator: true/);
-  for (const action of ["REJECT", "RETURN"]) {
-    assert.match(approvalBlock, new RegExp(`kind: "${action}"[\\s\\S]*roles: \\[approverRole\\][\\s\\S]*includeCreator: true,[\\s\\S]*excludeActor: true`));
+  for (const kind of ["REJECT", "RETURN", "HOLD"]) {
+    const event = approvalBlock.slice(approvalBlock.indexOf(`kind: "${kind}"`));
+    const config = event.slice(0, event.indexOf("});"));
+    assert.match(config, /includeCreator: true/);
+    assert.doesNotMatch(config, /roles:|excludeActor:/);
   }
-  assert.match(approvalBlock, /kind: "HOLD"[\s\S]*roles: \[currentRole\][\s\S]*includeCreator: true,[\s\S]*excludeActor: true/);
 });
 
 test("CAPEX notification payloads are canonical and never include CAPEX number", () => {
@@ -53,21 +59,38 @@ test("CAPEX notification payloads are canonical and never include CAPEX number",
   assert.doesNotMatch(notifier, /data\.moduleName|req\.body/);
 });
 
-test("CAPEX create and approve notification content uses item, quantity, department and organization", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
+test("CAPEX notification text is consistent across actions and handles missing values", () => {
+  const vm = require("node:vm");
   const source = fs.readFileSync(path.join(__dirname, "../../services/CapexService/CapexService.js"), "utf8");
-  const content = source.match(/const capexNotificationContent[\s\S]*?const notifyCapex/)?.[0] || "";
-  assert.match(content, /kind === "CREATE"/);
-  assert.match(content, /title: `CAPEX - \$\{String\(item[\s\S]*\(\$\{String\(qty[\s\S]* - \$\{String\(department[\s\S]* - \$\{organizationShortName\}`/);
-  assert.match(content, /message: String\(description \|\| ""\)\.trim\(\)/);
-  assert.match(content, /kind === "APPROVE"/);
-  assert.match(content, /title: `CAPEX - \$\{String\(item[\s\S]* - \$\{String\(department[\s\S]* - \$\{organizationShortName\}`/);
-  assert.match(content, /message: `Approved by \$\{actorName \|\| approverRole\}`/);
-  assert.match(content, /\["REJECT", "RETURN", "HOLD"\]\.includes\(kind\)/);
-  assert.match(content, /REJECT: "Rejected", RETURN: "Returned", HOLD: "Hold"/);
-  assert.match(content, /message: `\$\{actionLabel\} by \$\{actorName \|\| approverRole\}`/);
-  assert.doesNotMatch(content, /CapexNumber|capexNumber|approvedQuantity|remarks/i);
+  const content = source.slice(source.indexOf("const capexNotificationContent ="), source.indexOf("// CAPEX owns its recipient"));
+  const context = { module: { exports: {} } };
+  vm.runInNewContext(content + "\nmodule.exports = capexNotificationContent;", context);
+  const format = context.module.exports;
+  const values = { item: " Pump ", qty: 2, department: " Engineering ", organizationShortName: " TEST ", actorName: " Alex " };
+  const expected = [
+    ["CREATE", false, "A new Capex request has been created and is awaiting your review."],
+    ["APPROVE", false, "The Capex request has been approved by Alex and is awaiting your review."],
+    ["APPROVE", true, "Your Capex request has been fully approved by Alex."],
+    ["AUTO_APPROVED", false, "Your Capex request has been fully approved by Alex."],
+    ["REJECT", false, "The Capex request has been rejected by Alex."],
+    ["RETURN", false, "The Capex request has been returned by Alex for revision."],
+    ["HOLD", false, "The Capex request has been put on hold by Alex."],
+  ];
+  for (const [kind, isFinalApproval, message] of expected) {
+    const result = format({ ...values, kind, isFinalApproval });
+    assert.equal(result.title, "Capex - Pump (2) - Engineering - TEST");
+    assert.equal(result.message, message);
+  }
+  assert.equal(format({ kind: "CREATE" }).title, "Capex - - (-) - - - -");
+  assert.equal(format({ ...values, qty: 0 }).title, "Capex - Pump (0) - Engineering - TEST");
+  assert.equal(format({ ...values, qty: "120.00" }).title, "Capex - Pump (120) - Engineering - TEST");
+  assert.equal(format({ ...values, qty: "1.50" }).title, "Capex - Pump (1.5) - Engineering - TEST");
+  assert.equal(format({ ...values, qty: "1.25" }).title, "Capex - Pump (1.25) - Engineering - TEST");
+  assert.equal(format({ kind: "REJECT", actorName: " ", approverRole: " GM " }).message,
+    "The Capex request has been rejected by GM.");
+  assert.equal(format({ kind: "AUTO_APPROVED" }).message, "Your Capex request has been fully approved by System.");
+  assert.match(source, /isFinalApproval: change.action === "APPROVE" && !next/);
+  assert.match(source, /kind: "APPROVE",\s*isFinalApproval: true,\s*notificationAction: "APPROVED"/);
 });
 
 test("CAPEX notifications are triggered only after commit and failures are isolated", () => {
