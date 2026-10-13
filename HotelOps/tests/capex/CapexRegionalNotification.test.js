@@ -24,9 +24,13 @@ test("CAPEX Firebase resolves saved Regional assignment; other modules keep dire
     assert.match(calls[0].sql, /regional_step.capexid = \$3::bigint/);
     assert.match(calls[0].sql, /COALESCE\(om.parentorganizationid, om.organizationid\)/);
     assert.deepEqual(JSON.parse(JSON.stringify(calls[0].values)), [["42"], "20", "7"]);
-    await context.module.exports.testPush({ ...event, module_name: "Opex", entity_type: "Opex" }, ["42"]);
+    await context.module.exports.testPush({ ...event, module_name: "Guest Glitch", entity_type: "Guest Glitch" }, ["42"]);
     assert.match(calls[1].sql, /INNER JOIN user_org_mapping uom ON uom.userid = um.userid/);
     assert.ok(!calls[1].sql.includes("regional_step"));
     assert.equal(calls[1].values.length, 2);
     assert.equal(pushed.length, 2);
+    await context.module.exports.testPush({ ...event, module_name: "Opex", entity_type: "Opex" }, ["42"]);
+    assert.match(calls[2].sql, /FROM opex_workflow_step regional_step/);
+    assert.match(calls[2].sql, /regional_step.opexid = \$3::bigint/);
+    assert.equal(pushed.length, 3);
 });

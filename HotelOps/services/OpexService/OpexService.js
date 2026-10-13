@@ -97,7 +97,7 @@ const isFinanceHodCreator = async (userID, organizationID) => {
 };
 // Resolve recipients with the same effective-role rules used by OPEX approval:
 // property/department HOD, property FC/GM/CEO, and central-org Finance HOD for RD-FC.
-const resolveOpexNotificationRecipients = async ({ organizationID, department, roles = [],
+const resolveOpexNotificationRecipients = async ({ organizationID, opexID, department, roles = [],
   directUserIds = [], excludeUserID = null, actorUserID = null }) => {
   const normalizedRoles = [...new Set(roles.map((role) => String(role || "").trim().toUpperCase())
     .filter((role) => APPROVAL_ROLES.has(role)))];
@@ -117,7 +117,8 @@ const resolveOpexNotificationRecipients = async ({ organizationID, department, r
         (um.userid::text = ANY($3::text[]) AND EXISTS (
           SELECT 1 FROM user_org_mapping direct_uom
           WHERE direct_uom.userid = um.userid AND direct_uom.organizationid = $1
-            AND direct_uom.isactive = TRUE AND direct_uom.isdeleted = FALSE))
+            AND direct_uom.isactive = TRUE AND direct_uom.isdeleted = FALSE)
+          OR (um.userid::text = ANY($3::text[]) AND ${OpexWorkflow.regionalAccessSQL("um", "om", "$8")}))
         OR ('HOD' = ANY($2::text[]) AND UPPER(TRIM(um.usertype)) = 'HOD'
           AND UPPER(TRIM(COALESCE(dm.departmentname, ''))) = UPPER(TRIM($6))
           AND dm.isdeleted = FALSE
@@ -150,7 +151,7 @@ const resolveOpexNotificationRecipients = async ({ organizationID, department, r
     [organizationID, normalizedRoles, normalizedUserIds,
       excludeUserID == null ? null : String(excludeUserID),
       actorUserID == null ? null : String(actorUserID), String(department || ""),
-      CENTRAL_RDFC_ORGANIZATION_ID]);
+      CENTRAL_RDFC_ORGANIZATION_ID, opexID ?? null]);
   return {
     userIds: notificationUserIds(result.rows.map((row) => row.userid)),
     emails: [...new Map(result.rows
@@ -206,7 +207,7 @@ const notifyOpex = async ({ organizationID, opexID, department, roles, directUse
   excludeUserID, actorUserID, kind, item, qty, rate, total, description,
   actionQuantity, remark, actionDate, approverRole, action }) => {
   const context = await resolveOpexNotificationRecipients({
-    organizationID, department,
+    organizationID, opexID, department,
     roles, directUserIds, excludeUserID, actorUserID
   });
   if (!context.userIds.length) return;
@@ -1536,7 +1537,7 @@ const processOpexApproval = async (data) => {
     }
 
     const Opex = masterResult.rows[0];
-    const actor=await OpexWorkflow.getActor(client,Opex.organizationid,data.UserID);
+    const actor=await OpexWorkflow.getActor(client,Opex.organizationid,data.UserID,Opex.opexid);
     const dynamic=await OpexWorkflow.applyAction(client,Opex,data,actor);
     if(dynamic) {
       const target=dynamic.change.action === "APPROVE" ? dynamic.next : dynamic.step;

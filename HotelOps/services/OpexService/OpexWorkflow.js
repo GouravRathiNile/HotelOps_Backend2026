@@ -6,9 +6,27 @@ const statuses = { APPROVE: "Approved", REJECT: "Rejected", RETURN: "Returned", 
 // Assignment and business stage are independent. A USER may approve a GM stage
 // without holding the GM role; the persisted assignment is the authority.
 const validUserID = value => /^[1-9]\d*$/.test(String(value ?? ""));
+const regionalEligibilitySQL = (user = "um", organization = "om") => `EXISTS (
+    SELECT 1 FROM user_primary_organization upo
+    JOIN organization_master company ON company.organizationid = upo.organizationid
+    WHERE upo.userid = ${user}.userid
+      AND upo.organizationid = COALESCE(${organization}.parentorganizationid, ${organization}.organizationid)
+      AND upo.isactive = TRUE AND upo.isdeleted = FALSE
+      AND company.isactive = TRUE AND company.isdeleted = FALSE AND company.activationstatus = TRUE
+)`;
+const regionalAccessSQL = (user, organization, opexID) => `(
+    ${regionalEligibilitySQL(user, organization)} AND EXISTS (
+        SELECT 1 FROM opex_workflow_step regional_step
+        WHERE regional_step.opexid = ${opexID} AND regional_step.approvertype = 'REGIONAL'
+          AND regional_step.assigneduserid = ${user}.userid
+          AND regional_step.ismandatory = TRUE
+    )
+)`;
 const isAssigned = (step, actor) => {
     if (!validUserID(actor?.userid)) return false;
-    if (normalized(step.approvertype) === "USER") {
+    if (normalized(step.approvertype) !== "REGIONAL" && actor.organizationaccess === false) return false;
+    if (normalized(step.approvertype) === "REGIONAL" && actor.regionaleligible !== true) return false;
+    if (["USER", "REGIONAL"].includes(normalized(step.approvertype))) {
         return validUserID(step.assigneduserid) && String(step.assigneduserid) === String(actor.userid);
     }
     if (normalized(step.approvertype) !== "ROLE") return false;
@@ -59,6 +77,7 @@ const hasActionSQL = `(
 )`;
 
 const canModify = (record, actor) => {
+    if (actor?.organizationaccess === false) return false;
     if (record.isdeleted || record.isvoid || record.hasaction !== false || !validUserID(actor?.userid)) return false;
     const creator = validUserID(record.createdby) && String(record.createdby) === String(actor.userid);
     // Department comes from user_master.departmentid -> department_master;
@@ -114,10 +133,14 @@ const validateAction = data => {
     return { action, remarks, quantity, status: statuses[action] };
 };
 
-const getActor = async (client, organizationID, userID) => {
+const getActor = async (client, organizationID, userID, opexID = null) => {
     const result = await client.query(`
         SELECT um.userid, um.usertype, dm.departmentname,
             dm.organizationid AS departmentorganizationid,
+            ${regionalEligibilitySQL()} AS regionaleligible,
+            EXISTS (SELECT 1 FROM user_org_mapping membership WHERE membership.userid=um.userid
+                AND membership.organizationid=om.organizationid AND membership.isactive AND NOT membership.isdeleted)
+                OR COALESCE(um.logintype='SuperAdmin' AND um.allorganizationaccess, FALSE) AS organizationaccess,
             EXISTS (SELECT 1 FROM user_org_mapping central WHERE central.userid=um.userid
                 AND central.organizationid=10 AND central.isactive AND NOT central.isdeleted) AS centralfinance
             FROM user_master um
@@ -129,8 +152,9 @@ const getActor = async (client, organizationID, userID) => {
           AND ((um.logintype = 'SuperAdmin' AND um.allorganizationaccess = TRUE)
             OR EXISTS (SELECT 1 FROM user_org_mapping uom
                 WHERE uom.userid = um.userid AND uom.organizationid = om.organizationid
-                  AND uom.isactive = TRUE AND uom.isdeleted = FALSE))
-    `, [userID, organizationID]);
+                  AND uom.isactive = TRUE AND uom.isdeleted = FALSE)
+            OR ${regionalAccessSQL("um", "om", "$3")})
+    `, [userID, organizationID, opexID]);
     if (!result.rows.length) throw new AppError("You do not have access to this OPEX organization", 403);
     return result.rows[0];
 };
@@ -169,15 +193,15 @@ const snapshot = async (client, opexID, organizationID) => {
         }
         levels.add(step.level);
         step.approvertype = normalized(step.approvertype);
-        if (!["ROLE", "USER"].includes(step.approvertype) || !String(step.approvaltype || "").trim()) {
+        if (!["ROLE", "USER", "REGIONAL"].includes(step.approvertype) || !String(step.approvaltype || "").trim()) {
             throw new AppError("Invalid OPEX approval assignment or business stage", 400);
         }
-        // Builder stores the selected user's ID in Role for USER steps.
+        // Builder stores the selected user's ID in Role for USER/REGIONAL steps.
         // Snapshot it separately; ApprovalType remains the business stage label.
         const assignment = String(step.role ?? "").trim();
-        step.assigneduserid = step.approvertype === "USER" ? assignment : null;
-        if (step.approvertype === "USER" && !validUserID(assignment)) {
-            throw new AppError("USER approval requires a valid selected user ID", 400);
+        step.assigneduserid = ["USER", "REGIONAL"].includes(step.approvertype) ? assignment : null;
+        if (step.assigneduserid !== null && !validUserID(assignment)) {
+            throw new AppError(step.approvertype + " approval requires a valid selected user ID", 400);
         }
         step.role = step.approvertype === "ROLE" ? normalized(assignment) : null;
         if (step.approvertype === "ROLE" && !step.role) throw new AppError("Approval role is required", 400);
@@ -185,13 +209,18 @@ const snapshot = async (client, opexID, organizationID) => {
         if (step.ismandatory === false) continue;
         if (!candidates) candidates = await client.query(`
             SELECT um.userid,um.usertype,dm.departmentname,dm.organizationid AS departmentorganizationid,
+                ${regionalEligibilitySQL()} AS regionaleligible,
+                EXISTS (SELECT 1 FROM user_org_mapping uom WHERE uom.userid=um.userid AND uom.organizationid=$1
+                  AND uom.isactive AND NOT uom.isdeleted) AS organizationaccess,
                 EXISTS(SELECT 1 FROM user_org_mapping central WHERE central.userid=um.userid
                     AND central.organizationid=10 AND central.isactive AND NOT central.isdeleted) AS centralfinance,
                 m.department AS requestdepartment
-            FROM user_master um JOIN user_org_mapping uom ON uom.userid=um.userid
+            FROM user_master um JOIN organization_master om ON om.organizationid=$1
             JOIN opex_master m ON m.opexid=$2
             LEFT JOIN department_master dm ON dm.departmentid=um.departmentid AND NOT dm.isdeleted
-            WHERE uom.organizationid=$1 AND uom.isactive AND NOT uom.isdeleted
+            WHERE om.isactive AND NOT om.isdeleted AND om.activationstatus
+                AND (EXISTS (SELECT 1 FROM user_org_mapping uom WHERE uom.userid=um.userid AND uom.organizationid=$1
+                  AND uom.isactive AND NOT uom.isdeleted) OR ${regionalEligibilitySQL()})
                 AND um.isactive AND NOT um.isdeleted AND NOT um.islocked
         `,[organizationID,opexID]);
         const recipients = {rows:candidates.rows.filter(actor => isAssigned({ ...step,
@@ -217,7 +246,7 @@ const snapshot = async (client, opexID, organizationID) => {
 };
 
 const applyAction = async (client, opex, data, verifiedActor) => {
-    const actor = verifiedActor || await getActor(client, opex.organizationid, data.UserID);
+    const actor = verifiedActor || await getActor(client, opex.organizationid, data.UserID, opex.opexid);
     const steps = await loadSteps(client, opex.opexid, true);
     if (!steps.length) return null; // Legacy request: leave its state and mapping untouched.
     if (opex.isvoid) throw new AppError("Void OPEX cannot be processed for approval", 400);
@@ -252,7 +281,7 @@ const applyAction = async (client, opex, data, verifiedActor) => {
         change, step, next, finalStatus, actor,
         roles: target?.approvertype === "ROLE" ? [target.role] : [],
         directUserIds: [
-            ...(target?.approvertype === "USER" ? [target.assigneduserid] : []),
+            ...(["USER", "REGIONAL"].includes(target?.approvertype) ? [target.assigneduserid] : []),
             ...(change.action !== "APPROVE" || !next ? [opex.createdby] : [])
         ]
     };
@@ -262,11 +291,16 @@ const recipientIds = async (client, opex, step) => {
     if (!step) return [String(opex.createdby)];
     const users = await client.query(`SELECT u.userid,u.usertype,d.departmentname,
         d.organizationid AS departmentorganizationid,
+        ${regionalEligibilitySQL("u", "om")} AS regionaleligible,
+        EXISTS (SELECT 1 FROM user_org_mapping membership WHERE membership.userid=u.userid
+          AND membership.organizationid=$1 AND membership.isactive AND NOT membership.isdeleted) AS organizationaccess,
         EXISTS(SELECT 1 FROM user_org_mapping central WHERE central.userid=u.userid
             AND central.organizationid=10 AND central.isactive AND NOT central.isdeleted) AS centralfinance
-        FROM user_master u JOIN user_org_mapping m ON m.userid=u.userid
+        FROM user_master u JOIN organization_master om ON om.organizationid=$1
         LEFT JOIN department_master d ON d.departmentid=u.departmentid AND NOT d.isdeleted
-        WHERE m.organizationid=$1 AND m.isactive AND NOT m.isdeleted
+        WHERE om.isactive AND NOT om.isdeleted AND om.activationstatus
+            AND (EXISTS (SELECT 1 FROM user_org_mapping m WHERE m.userid=u.userid AND m.organizationid=$1
+                AND m.isactive AND NOT m.isdeleted) OR ${regionalEligibilitySQL("u", "om")})
             AND u.isactive AND NOT u.isdeleted AND NOT u.islocked`,[opex.organizationid]);
     const ids=users.rows.filter(actor=>isAssigned({...step,organizationid:opex.organizationid,
         requestdepartment:opex.department},actor)).map(actor=>String(actor.userid));
@@ -283,4 +317,4 @@ const authorizeModify = async (client, id, userID) => {
 };
 module.exports = { normalized, currentStep, isAssigned, canAct, chooseStep, hasActionSQL,
     canModify, allowedActions, permissions, authorizeApproval,
-    validateAction, getActor, loadSteps, snapshot, applyAction, recipientIds, authorizeModify };
+    regionalEligibilitySQL, regionalAccessSQL, validateAction, getActor, loadSteps, snapshot, applyAction, recipientIds, authorizeModify };
