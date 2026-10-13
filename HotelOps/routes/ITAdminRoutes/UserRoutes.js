@@ -3,7 +3,7 @@ const router = express.Router();
 const upload = require("../../middleware/upload");
 const authenticateToken = require("../../middleware/authMiddleware");
 const { createUser,getAllUsers,getUserById,getUserDropdown, getUserDropdownByPrimaryOrganization,updateUser,deleteUser,getUserOrganizations, getUserProducts,getUserPersonalDetails,getAllUsersTabel,updateUserPersonalDetails,updateUserOrganizations,updateUserProducts,getUserProductsList, blockUser,verifyTokenAndRegisterDevice } = require("../../controllers/ITAdminController/UserController");
-// const { createUser,getAllUsers,getUserById,getUserDropdown,updateUser,deleteUser,getUserOrganizations, getUserProducts,getUserPersonalDetails,getAllUsersTabel,updateUserPersonalDetails,updateUserOrganizations,updateUserProducts,getUserProductsList,blockUser,verifyTokenAndRegisterDevice } = require("../../controllers/ITAdminController/UserController");
+
 
 // ========================================= Create User
 router.post("/Create", authenticateToken, upload.single("ProfilePhoto"), createUser);
