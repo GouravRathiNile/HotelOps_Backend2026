@@ -14389,7 +14389,7 @@ CreatedDate:
 
  
 });
-// ========================NRGP Approval Mapping
+// ======================== NRGP Approval Mapping
 const mapNRGPApproval = (row) => ({
   NRGPApprovalConfigID:
     row.nrgpapprovalconfigid == null
@@ -14402,7 +14402,12 @@ const mapNRGPApproval = (row) => ({
       : Number(row.approvalmasterdetailid),
 
   ApprovalLevel: Number(row.approvallevel),
+
   ApprovalRole: row.approvalrole,
+
+  // NEW: Unified Approval Flow ApprovalType
+  ApprovalType: row.approvaltype || null,
+
   ApprovalOrder: Number(row.approvalorder),
 
   ApproverType: String(row.approvertype || "ROLE")
@@ -14424,8 +14429,10 @@ const mapNRGPApproval = (row) => ({
       : Number(row.actionby),
 
   ActionByName: row.actionbyname || null,
+
   Remarks: row.remarks,
 });
+// ======================== NRGP Approval Flow Mapping
 const mapNRGPApprovalFlow = (approvalRows) => {
   let flowStopped = false;
 
@@ -14453,11 +14460,11 @@ const mapNRGPApprovalFlow = (approvalRows) => {
     return mappedApproval;
   });
 };
+// ======================== Normalize NRGP Approval Role
 const normalizeNRGPApprovalRole = (role) => {
-  const normalizedRole =
-    String(role || "")
-      .trim()
-      .toUpperCase();
+  const normalizedRole = String(role || "")
+    .trim()
+    .toUpperCase();
 
   if (
     normalizedRole === "FC" ||
@@ -14468,29 +14475,18 @@ const normalizeNRGPApprovalRole = (role) => {
 
   return normalizedRole;
 };
+// ======================== Get NRGP User Approval Role
 const getNRGPUserApprovalRole = (
   userType,
-  departmentName,
+  departmentName
 ) => {
-  const normalizedUserType =
-    String(userType || "")
-      .trim()
-      .toUpperCase();
+  const normalizedUserType = String(userType || "")
+    .trim()
+    .toUpperCase();
 
-  const normalizedDepartment =
-    String(departmentName || "")
-      .trim()
-      .toUpperCase();
-
-  // ============================================================
-  // Finance Controller
-  //
-  // Project condition:
-  // UserType = HOD
-  // DepartmentName = Finance
-  //
-  // FC and DOF are same approval role
-  // ============================================================
+  const normalizedDepartment = String(departmentName || "")
+    .trim()
+    .toUpperCase();
 
   if (
     normalizedUserType === "HOD" &&
@@ -14500,7 +14496,7 @@ const getNRGPUserApprovalRole = (
   }
 
   return normalizeNRGPApprovalRole(
-    normalizedUserType,
+    normalizedUserType
   );
 };
 // ========================Attach NRGP Related Datax`
@@ -16076,8 +16072,7 @@ const getNRGPById = async (data) => {
     // Validate
     // ============================================================
 
-    const NRGPID =
-      Number(data.NRGPID);
+    const NRGPID = Number(data.NRGPID);
 
     if (
       !Number.isInteger(NRGPID) ||
@@ -16085,7 +16080,7 @@ const getNRGPById = async (data) => {
     ) {
       return fail(
         "Valid NRGPID is required.",
-        400,
+        400
       );
     }
 
@@ -16093,9 +16088,8 @@ const getNRGPById = async (data) => {
     // Get Master
     // ============================================================
 
-    const masterResult =
-      await pool.query(
-        `
+    const masterResult = await pool.query(
+      `
         SELECT
           m.NRGPID,
           m.NRGPNumber,
@@ -16115,8 +16109,7 @@ const getNRGPById = async (data) => {
           m.Status,
 
           m.CreatedBy,
-          createdUser.FullName
-            AS CreatedByName,
+          createdUser.FullName AS CreatedByName,
 
           m.CreatedDate,
           m.ModifiedBy,
@@ -16125,53 +16118,138 @@ const getNRGPById = async (data) => {
         FROM Gatepass_NRGP_Entry_Master m
 
         LEFT JOIN department_master d
-          ON d.DepartmentID =
-            m.DepartmentID
+          ON d.DepartmentID = m.DepartmentID
 
         LEFT JOIN user_master createdUser
-          ON createdUser.UserID =
-            m.CreatedBy
+          ON createdUser.UserID = m.CreatedBy
 
         WHERE m.NRGPID = $1
           AND m.IsDeleted = FALSE
 
         LIMIT 1;
-        `,
-        [
-          NRGPID,
-        ],
-      );
+      `,
+      [NRGPID]
+    );
 
     // ============================================================
     // Not Found
     // ============================================================
 
-    if (
-      masterResult.rows.length === 0
-    ) {
+    if (masterResult.rows.length === 0) {
       return fail(
         "NRGP record not found.",
-        404,
+        404
       );
     }
 
     // ============================================================
-    // Attach Items + Approvals
+    // Attach Existing Items + Approvals
     // ============================================================
 
-    const [NRGP] =
-      await attachNRGPRelatedData(
-        masterResult.rows,
+    const [NRGP] = await attachNRGPRelatedData(
+      masterResult.rows
+    );
+
+    // ============================================================
+    // Fetch ApprovalType from Unified Approval Details
+    // ============================================================
+
+    const approvalTypeResult = await pool.query(
+      `
+        SELECT
+          a.NRGPApprovalID,
+          a.ApprovalMasterDetailID,
+          a.ApprovalRole,
+          amd.ApprovalType
+
+        FROM Gatepass_NRGP_Approval a
+
+        LEFT JOIN approval_master_details amd
+          ON amd.approvalid = a.ApprovalMasterDetailID
+
+        WHERE a.NRGPID = $1
+          AND a.IsDeleted = FALSE
+
+        ORDER BY
+          a.ApprovalOrder ASC,
+          a.ApprovalLevel ASC,
+          a.NRGPApprovalID ASC;
+      `,
+      [NRGPID]
+    );
+
+    // ============================================================
+    // Add ApprovalType to Existing Approvals
+    // ============================================================
+
+    const approvalTypeByDetailID = new Map();
+
+    for (const row of approvalTypeResult.rows) {
+      if (row.approvalmasterdetailid != null) {
+        approvalTypeByDetailID.set(
+          String(row.approvalmasterdetailid),
+          row.approvaltype
+        );
+      }
+    }
+
+    const getFallbackApprovalType = (role) => {
+      const normalizedRole = String(role || "")
+        .trim()
+        .toUpperCase();
+
+      if (!normalizedRole) return null;
+
+      if (
+        normalizedRole === "DOF" ||
+        normalizedRole === "FC"
+      ) {
+        return "FC";
+      }
+
+      return normalizedRole;
+    };
+
+    if (NRGP && Array.isArray(NRGP.Approvals)) {
+      NRGP.Approvals = NRGP.Approvals.map(
+        (approval, index) => {
+          const detailID =
+            approval.ApprovalMasterDetailID;
+
+          const actualApprovalType =
+            detailID != null
+              ? approvalTypeByDetailID.get(
+                  String(detailID)
+                )
+              : null;
+
+          return {
+            ...approval,
+
+            ApprovalType:
+              actualApprovalType ||
+              approval.ApprovalType ||
+              getFallbackApprovalType(
+                approval.ApprovalRole
+              ),
+          };
+        }
       );
+    }
+
+    // ============================================================
+    // Response
+    // ============================================================
 
     return ok(
       "NRGP record fetched successfully.",
-      NRGP,
+      NRGP
     );
+
   } catch (error) {
     return databaseFailure(
       error,
-      "Fetch NRGP record",
+      "Fetch NRGP record"
     );
   }
 };
