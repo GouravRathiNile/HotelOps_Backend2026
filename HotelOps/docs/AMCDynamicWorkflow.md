@@ -56,8 +56,10 @@ user and mapping eligibility are rechecked for actions and notifications.
 Regional/central access to a request never permits an unrelated ROLE/USER step.
 
 APPROVE, REJECT and RETURN remain the only actions. Rejection/return consume the
-step; the existing update API does not reopen/resubmit it. No HOLD or new edit/
-delete policy is introduced. Approval writes step state, immutable action
+step; the existing update API does not reopen/resubmit it. No HOLD is introduced.
+Only the creator may edit/delete, before the first approval. Snapshot statuses,
+action history and legacy approval statuses enforce this restriction; completed
+and deleted contracts cannot be modified. Approval writes step state, immutable action
 history and legacy FinalStatus in one transaction. Unambiguous FC/GM/RD/CEO
 stage labels continue to mirror their legacy columns. Repeated/custom labels
 are represented by snapshot rows. Final approval alone updates equipment AMC
@@ -84,11 +86,19 @@ master/equipment/document fields, response envelopes and approval aliases stay.
 Stale revisions return 409. Server authorization always checks the persisted
 current step and live user; client stage/role fields do not select authority.
 
+List Approvals contain only ApprovalType, Status and Remarks. Detail
 Approvals add ApprovalStepID, Level, ApprovalType, ApproverType, Role,
 AssignedUserID, IsMandatory, ColumnKey, Revision, ActionBy, ApprovedByName,
 CanApprove and AllowedActions. Existing LevelNo, ApprovalRole, Status,
 StatusDateTime and Remarks remain. Records add WorkflowSource and
-CurrentApprovalStepID; lists add ApprovalColumns. Render approvals by ColumnKey
+CurrentApprovalStepID. Records expose CanAction, CanEdit, CanDelete, CanApprove,
+AllowedActions and the current Revision. Use CanEdit/CanDelete for edit/delete
+buttons and CanApprove/AllowedActions for approval buttons; do not compare the
+logged-in role to CurrentApprovalRole. A USER assigned to the GM business stage
+has authority instead of other GM accounts. Creator/admin visibility is retained;
+other viewers must match a current mandatory or previously acted assignment.
+Builder edits affect new requests only; existing snapshots retain their assignments.
+Lists add ApprovalColumns. Render detail approvals by ColumnKey
 to distinguish repeated labels and mixed versions. Do not infer order from
 FC/GM/RD/CEO columns. Use `/api/ApprovalFlow/Module-Configurations` for AMC
 configuration; keep legacy AMC configuration endpoints for legacy compatibility.

@@ -110,3 +110,28 @@ test('AMC and AMC Renewal aliases share exactly-one-flow validation',async()=>{
   assert.equal(calls.length,1);
  }
 });
+
+test('Only creator can edit/delete until first approval; role and admin do not grant edit rights',()=>{
+ const pending={...record,createdby:'7',hasapproval:false};
+ assert.equal(workflow.canModify(pending,{userid:'7'}),true);
+ assert.equal(workflow.canModify(pending,{userid:'6',usertype:'GM'}),false);
+ assert.equal(workflow.canModify(pending,{userid:'1',usertype:'SuperAdmin'}),false);
+ assert.equal(workflow.canModify({...pending,hasapproval:true},{userid:'7'}),false);
+ assert.equal(workflow.canModify({...pending,finalstatus:'Approved'},{userid:'7'}),false);
+ assert.equal(workflow.canModify({...pending,isdeleted:true},{userid:'7'}),false);
+ assert.equal(workflow.canModify({...pending,finalstatus:'Returned'},{userid:'7'}),true);
+});
+test('Selected USER acts at GM stage; account GM has no authority',()=>{
+ const assigned={...step,approvertype:'USER',role:null,assigneduserid:'13',approvaltype:'GM'};
+ const user={...actor,userid:'13',usertype:'HOD'};
+ const gm={...actor,userid:'4',usertype:'GM'};
+ assert.equal(workflow.allowedActions(record,[assigned],assigned,user).includes('APPROVE'),true);
+ assert.deepEqual(workflow.allowedActions(record,[assigned],assigned,gm),[]);
+ const mapped=read.mapRow({...record,steps:[assigned],actorrole:'HOD',organizationaccess:true,
+   hasapproval:false},'13',row=>({AMCID:Number(row.amcid),Documents:[]}));
+ assert.equal(mapped.CanApprove,true);assert.equal(mapped.CanEdit,false);
+ assert.deepEqual(mapped.AllowedActions,['APPROVE','REJECT','RETURN']);
+ const other=read.mapRow({...record,steps:[assigned],actorrole:'GM',organizationaccess:true,
+   hasapproval:false},'4',row=>({Documents:[]}));
+ assert.equal(other.CanApprove,false);assert.deepEqual(other.AllowedActions,[]);
+});

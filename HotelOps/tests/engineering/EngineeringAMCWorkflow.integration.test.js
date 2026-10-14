@@ -65,7 +65,7 @@ test('AMC migration preserves legacy data; Builder snapshots, actions and equipm
   const details=[
    {Level:1,ApproverType:'REGIONAL',Role:String(regional.userid),ApprovalType:'REGIONAL REVIEW',IsMandatory:true},
    {Level:2,ApproverType:'ROLE',Role:'FC',ApprovalType:'FC',IsMandatory:false},
-   {Level:3,ApproverType:'USER',Role:String(creator.userid),ApprovalType:'CUSTOM FINAL',IsMandatory:true},
+   {Level:3,ApproverType:'USER',Role:String(creator.userid),ApprovalType:'GM',IsMandatory:true},
   ];
   const saved=await builder.saveApprovalFlow({OrganizationID:amc.organizationid,ApprovalMasterID:flow.approvalmasterid,
    FlowName:'AMC reordered test',ModuleName:'AMC',Details:details.slice().reverse(),UserID:creator.userid});
@@ -93,6 +93,20 @@ test('AMC migration preserves legacy data; Builder snapshots, actions and equipm
   assert.deepEqual(Array.from(sent.at(-1).data.userIds),[String(regional.userid)]);
   const steps=await workflow.loadSteps(client,record.amcid);
   assert.deepEqual(steps.map(s=>s.approvaltype),details.map(s=>s.ApprovalType));
+  const creatorDetail=await service.getAMCById({AMCID:record.amcid,EquipmentID:record.equipmentid,UserID:creator.userid});
+  assert.equal(creatorDetail.data.CanEdit,true);assert.equal(creatorDetail.data.CanDelete,true);
+  const deniedEdit=await service.updateAMC({AMCID:record.amcid,OrganizationID:record.organizationid,
+    UserID:regional.userid,Changes:{VendorName:'Unauthorized'}});
+  assert.equal(deniedEdit.statusCode,403);
+  const deniedDelete=await service.deleteAMC({AMCID:record.amcid,UserID:regional.userid});
+  assert.equal(deniedDelete.statusCode,403);
+  const edit=await service.updateAMC({AMCID:record.amcid,OrganizationID:record.organizationid,
+    UserID:creator.userid,Changes:{VendorName:'Creator edited before approval'}});
+  assert.equal(edit.success,true,edit.message);
+  const gm=(await query(`SELECT um.userid FROM user_master um JOIN user_org_mapping member USING(userid)
+    WHERE member.organizationid=$1 AND member.isactive AND NOT member.isdeleted AND UPPER(TRIM(um.usertype))='GM'
+      AND um.isactive AND NOT um.isdeleted AND NOT um.islocked AND um.userid<>$2 LIMIT 1`,[record.organizationid,creator.userid])).rows[0];
+  assert.ok(gm);
   const ractor=await workflow.getActor(client,record.organizationid,regional.userid,record.amcid);
   assert.equal(ractor.organizationaccess,false);assert.equal(ractor.regionaleligible,true);
   const detail=await service.getAMCById({AMCID:record.amcid,EquipmentID:record.equipmentid,UserID:regional.userid});
@@ -103,6 +117,18 @@ test('AMC migration preserves legacy data; Builder snapshots, actions and equipm
   const first=await service.processAMCApproval({AMCID:record.amcid,UserID:regional.userid,Action:'APPROVE',ApprovalStepID:steps[0].stepid,Revision:0});
   assert.equal(first.success,true,first.message);await drain();
   assert.deepEqual(Array.from(sent.at(-1).data.userIds),[String(creator.userid)]);
+  const active=await service.getAMCById({AMCID:record.amcid,EquipmentID:record.equipmentid,UserID:creator.userid});
+  assert.equal(active.data.CanApprove,true);assert.equal(active.data.CanEdit,false);assert.equal(active.data.CanDelete,false);
+  assert.deepEqual(Array.from(active.data.AllowedActions),['APPROVE','REJECT','RETURN']);
+  const wrongGM=await service.getAMCById({AMCID:record.amcid,EquipmentID:record.equipmentid,UserID:gm.userid});
+  assert.equal(wrongGM.statusCode,404);
+  const gmAction=await service.processAMCApproval({AMCID:record.amcid,UserID:gm.userid,Action:'APPROVE',ApprovalStepID:steps[2].stepid});
+  assert.equal(gmAction.statusCode,403);
+  const lockedEdit=await service.updateAMC({AMCID:record.amcid,OrganizationID:record.organizationid,
+    UserID:creator.userid,Changes:{VendorName:'Not permitted after approval'}});
+  assert.equal(lockedEdit.statusCode,403);
+  const lockedDelete=await service.deleteAMC({AMCID:record.amcid,UserID:creator.userid});
+  assert.equal(lockedDelete.statusCode,403);
   assert.deepEqual((await query('SELECT to_jsonb(e) AS row FROM engineering_equipment_entry_master e WHERE equipmentid=$1',[record.equipmentid])).rows[0],eqBefore);
   const stale=await service.processAMCApproval({AMCID:record.amcid,UserID:creator.userid,Action:'APPROVE',ApprovalStepID:steps[2].stepid,Revision:9});
   assert.equal(stale.statusCode,409);
@@ -121,6 +147,10 @@ test('AMC migration preserves legacy data; Builder snapshots, actions and equipm
    const repeat=await service.processAMCApproval({AMCID:row.amcid,UserID:regional.userid,Action:'APPROVE',ApprovalStepID:ss[0].stepid});
    assert.equal(repeat.statusCode,403);
   }
+  const deletable=await create();
+  const deleted=await service.deleteAMC({AMCID:deletable.amcid,UserID:creator.userid});
+  assert.equal(deleted.success,true,deleted.message);
+  assert.equal((await query('SELECT isdeleted FROM engineering_amc_master WHERE amcid=$1',[deletable.amcid])).rows[0].isdeleted,true);
   // Optional-only flow is finalized and equipment synchronization remains atomic.
   const optional=await builder.saveApprovalFlow({OrganizationID:amc.organizationid,ApprovalMasterID:flow.approvalmasterid,
    FlowName:'AMC optional test',ModuleName:'AMC',Details:details.map(d=>({...d,IsMandatory:false})),UserID:creator.userid});

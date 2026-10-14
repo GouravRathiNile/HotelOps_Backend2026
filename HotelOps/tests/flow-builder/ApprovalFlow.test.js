@@ -84,11 +84,41 @@ test("Unknown or another organization's master does not fall back to create", as
     assert.ok(!s.calls.some(c => c.sql.includes("INSERT")));
     assert.equal(s.calls.at(-1).sql, "ROLLBACK");
 });
-test("Duplicate module is rejected within the organization", async () => {
+test("Duplicate module and flow name is rejected within the organization", async () => {
     const s = service({ duplicate: true });
     assert.equal((await s.api.saveApprovalFlow(input)).statusCode, 409);
-    assert.deepEqual(plain(s.calls.find(c => c.sql.includes("LIMIT 1")).params), [2, "Gatepass", null]);
+    assert.deepEqual(plain(s.calls.find(c => c.sql.includes("LIMIT 1")).params), [2, "Gatepass", null, "Test"]);
     assert.equal(s.calls.at(-1).sql, "ROLLBACK");
+});
+
+test("Different flow names in the same module can be saved without module-specific rules", async () => {
+    const s = service();
+    for (const FlowName of ["Gatepass RGP Flow", "Gatepass NRGP Flow"]) {
+        assert.equal((await s.api.saveApprovalFlow({ ...input, FlowName })).success, true);
+    }
+    const checks = s.calls.filter(c => c.sql.includes("LIMIT 1"));
+    assert.deepEqual(plain(checks.map(c => c.params)), [
+        [2, "Gatepass", null, "Gatepass RGP Flow"],
+        [2, "Gatepass", null, "Gatepass NRGP Flow"]
+    ]);
+    for (const check of checks) {
+        assert.match(check.sql, /UPPER\(TRIM\(modulename\)\) = UPPER\(TRIM\(\$2\)\)/);
+        assert.match(check.sql, /UPPER\(TRIM\(flowname\)\) = UPPER\(TRIM\(\$4\)\)/);
+        assert.match(check.sql, /isdelete = FALSE/);
+    }
+    const lock = s.calls.find(c => c.sql.includes("pg_advisory_xact_lock"));
+    assert.deepEqual(plain(lock.params), [2, "Gatepass"]);
+    assert.ok(s.calls.indexOf(lock) < s.calls.indexOf(checks[0]));
+});
+
+test("Update duplicate check excludes the same master and rejects a conflicting name", async () => {
+    const s = service({ duplicate: true });
+    const result = await s.api.saveApprovalFlow({ ...input, ApprovalMasterID: 7 });
+    assert.equal(result.statusCode, 409);
+    const check = s.calls.find(c => c.sql.includes("LIMIT 1"));
+    assert.deepEqual(plain(check.params), [2, "Gatepass", 7, "Test"]);
+    assert.match(check.sql, /approvalmasterid <> \$3/);
+    assert.ok(!s.calls.some(c => c.sql.includes("UPDATE public.approval_master SET")));
 });
 test("Detail failure rolls back master changes and releases client", async () => {
     const s = service({ fail: "INSERT INTO public.approval_master_details" });

@@ -29,6 +29,7 @@ const base = `WITH actor AS (
       e.make,e.area,e.commissioningdate,e.warrantystartdate,e.warrantyenddate,e.warrantystatus,
       e.scheduleofservicing,e.scheduleday,e.responsibleperson,e.amcstatus,e.amcyearlyexpense,
       aa.amcapprovalid,aa.finalstatus,aa.finalstatusdatetime,aa.approvalmasterid,
+      ${workflow.hasApprovalSQL()} AS hasapproval,
       om.shortname AS organizationshortname,om.organizationname,
       ed.departmentname,person.fullname AS responsiblepersonname,
       a.usertype AS actorrole,a.departmentid AS actordepartmentid,ad.departmentname AS actordepartmentname,
@@ -78,14 +79,12 @@ const buildQuery = (data={},list=false) => {
     const add=(sql,value)=>{values.push(value);conditions.push(sql.replace('?',`$${values.length}`));};
     conditions.push(`(r.organizationaccess OR EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s
       WHERE (s->>'ismandatory')::boolean AND ${assignmentSQL()}))`);
-    // Keep legacy non-approver organization viewers, creator and SuperAdmin access.
-    // Approvers see their current step or recorded stage, never a future pending assignment.
+    // Only the creator, SuperAdmin or a reached configured assignment can view.
+    // Account role/business-stage labels never substitute for a selected user.
     const assigned=`EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s WHERE (s->>'ismandatory')::boolean AND ${assignmentSQL()})`;
     const reached=`EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s WHERE (s->>'ismandatory')::boolean
       AND ${assignmentSQL()} AND (s->>'stepid'=r.currentstep->>'stepid' OR UPPER(s->>'status')<>'PENDING'))`;
-    const viewer=`(r.createdby=$1 OR r.adminaccess OR (r.organizationaccess AND NOT ${assigned}
-      AND UPPER(TRIM(r.actorrole)) NOT IN ('GM','CEO','FC','RD')
-      AND NOT (UPPER(TRIM(r.actorrole))='HOD' AND UPPER(TRIM(r.actordepartmentname))='FINANCE')))`;
+    const viewer=`(r.createdby=$1 OR r.adminaccess)`;
     conditions.push(`(${viewer} OR ${reached})`);
     if (data.OrganizationID!=null) {
         positiveID(data.OrganizationID,'OrganizationID');
@@ -134,6 +133,11 @@ const mapRow = (row,userID,mapAMC) => {
       || String(current?.stepid??'').startsWith('legacy:') ? null : current?.stepid||null;
     result.WorkflowSource=row.approvalmasterid==null?'LEGACY':'BUILDER';
     result.CanApprove=steps.some(step=>workflow.allowedActions(row,steps,step,actor).includes('APPROVE'));
+    result.CanAction=workflow.canModify(row,actor);
+    result.CanEdit=result.CanAction;
+    result.CanDelete=result.CanAction;
+    result.AllowedActions=current?workflow.allowedActions(row,steps,current,actor):[];
+    result.Revision=current?.revision??null;
     result.DepartmentName=row.departmentname??null;
     result.DepartmentID=row.departmentid==null?null:Number(row.departmentid);
     result.ResponsiblePersonName=row.responsiblepersonname??null;

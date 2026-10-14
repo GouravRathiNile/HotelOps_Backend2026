@@ -14500,6 +14500,7 @@ const updateAMC = async (data) => {
       : [];
 
     await client.query("BEGIN");
+    await AMCWorkflow.authorizeModify(client, AMCID, UserID, OrganizationID);
 
     // ============================================================
     // Lock Existing AMC
@@ -14861,6 +14862,7 @@ const updateAMC = async (data) => {
       error.message,
     );
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse =
       retryableDatabaseResponse(error);
 
@@ -14898,6 +14900,7 @@ const deleteAMC = async (data) => {
     }
 
     await client.query("BEGIN");
+    await AMCWorkflow.authorizeModify(client, AMCID, UserID);
 
     // ============================================================
     // Get AMC + OrganizationID
@@ -15000,6 +15003,7 @@ const deleteAMC = async (data) => {
       error.message,
     );
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse =
       retryableDatabaseResponse(error);
 
