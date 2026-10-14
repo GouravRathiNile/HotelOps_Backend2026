@@ -15038,8 +15038,11 @@ const getNRGPList = async (data) => {
     // Pagination
     // ============================================================
 
-    const page = Number(data.page) || 1;
-    const pageSize = Math.min(Number(data.PageSize) || 10, 100);
+    const page = Math.max(1, Number(data.page) || 1);
+    const pageSize = Math.min(
+      100,
+      Math.max(1, Number(data.PageSize) || 10)
+    );
     const offset = (page - 1) * pageSize;
 
     const values = [];
@@ -15048,10 +15051,6 @@ const getNRGPList = async (data) => {
     // ============================================================
     // Organization
     // ============================================================
-
-    if (!data.OrganizationID) {
-      return fail("OrganizationID is required.", 400);
-    }
 
     const organizationID = Number(data.OrganizationID);
 
@@ -15079,23 +15078,19 @@ const getNRGPList = async (data) => {
       .trim()
       .toUpperCase();
 
-    const userApprovalRole = getNRGPUserApprovalRole(
-      data.UserType,
-      data.DepartmentName
-    );
-
-    const userDepartmentID = Number(data.UserDepartmentID);
-
     const hasValidUserID =
       Number.isInteger(loggedInUserID) &&
       loggedInUserID > 0;
+
+    // UserDepartmentID must come from authenticated user.
+    const userDepartmentID = Number(data.UserDepartmentID);
 
     const hasValidUserDepartmentID =
       Number.isInteger(userDepartmentID) &&
       userDepartmentID > 0;
 
     // ============================================================
-    // Security / CEO Visibility
+    // Security / CEO - Unchanged Full Visibility
     // ============================================================
 
     const canViewAll =
@@ -15105,67 +15100,121 @@ const getNRGPList = async (data) => {
       rawUserType === "CEO";
 
     // ============================================================
-    // Dynamic Approval Matching
+    // Resolve Approval Roles
     // ============================================================
 
-    const approvalMatch = (
+    const normalizeRole = (role) => {
+      const value = String(role || "")
+        .trim()
+        .toUpperCase();
+
+      if (
+        value === "FC" ||
+        value === "DOF" ||
+        value === "FINANCE CONTROLLER" ||
+        value === "DIRECTOR OF FINANCE"
+      ) {
+        return "FC";
+      }
+
+      return value;
+    };
+
+    const userApprovalRoles = new Set();
+
+    const primaryRole = normalizeRole(
+      getNRGPUserApprovalRole(
+        data.UserType,
+        data.DepartmentName
+      )
+    );
+
+    if (primaryRole) {
+      userApprovalRoles.add(primaryRole);
+    }
+
+    const normalizedUserRole = normalizeRole(rawUserType);
+
+    if (normalizedUserRole) {
+      userApprovalRoles.add(normalizedUserRole);
+    }
+
+    // Finance HOD is eligible for FC / DOF stages.
+    if (
+      departmentName === "FINANCE" &&
+      (
+        rawUserType === "HOD" ||
+        normalizedUserRole === "FC"
+      )
+    ) {
+      userApprovalRoles.add("FC");
+    }
+
+    // Finance HOD can also match an explicitly configured HOD
+    // stage for their own department.
+    if (rawUserType === "HOD") {
+      userApprovalRoles.add("HOD");
+    }
+
+    const approvalRoles = [...userApprovalRoles];
+
+    // ============================================================
+    // Approval Matching SQL
+    // ============================================================
+
+    const approvalEligibility = (
       alias,
       userIndex,
-      roleIndex
+      rolesIndex,
+      departmentIndex
     ) => `
       (
         (
           UPPER(
             TRIM(COALESCE(${alias}.ApproverType, 'ROLE'))
           ) IN ('USER', 'REGIONAL')
+
           AND ${alias}.ApproverUserID = $${userIndex}
         )
+
         OR
+
         (
           UPPER(
             TRIM(COALESCE(${alias}.ApproverType, 'ROLE'))
           ) = 'ROLE'
+
           AND (
             CASE
               WHEN UPPER(
                 TRIM(COALESCE(${alias}.ApprovalRole, ''))
-              ) IN ('FC', 'DOF')
-                THEN 'FC'
+              ) IN (
+                'FC',
+                'DOF',
+                'FINANCE CONTROLLER',
+                'DIRECTOR OF FINANCE'
+              )
+              THEN 'FC'
+
               ELSE UPPER(
                 TRIM(COALESCE(${alias}.ApprovalRole, ''))
               )
             END
-          ) = $${roleIndex}
+          ) = ANY($${rolesIndex}::TEXT[])
+
+          AND (
+            UPPER(
+              TRIM(COALESCE(${alias}.ApprovalRole, ''))
+            ) <> 'HOD'
+
+            OR m.DepartmentID = $${departmentIndex}
+          )
         )
       )
     `;
 
     // ============================================================
-    // HOD Department Matching
-    // ============================================================
-
-    const approvalEligibility = (
-      alias,
-      userIndex,
-      roleIndex,
-      departmentIndex
-    ) => `
-      (
-        ${approvalMatch(alias, userIndex, roleIndex)}
-        AND (
-          UPPER(
-            TRIM(COALESCE(${alias}.ApproverType, 'ROLE'))
-          ) <> 'ROLE'
-          OR UPPER(
-            TRIM(COALESCE(${alias}.ApprovalRole, ''))
-          ) <> 'HOD'
-          OR m.DepartmentID = $${departmentIndex}
-        )
-      )
-    `;
-
-    // ============================================================
-    // NRGP Number
+    // NRGP Number Filter
     // ============================================================
 
     if (data.NRGPNumber) {
@@ -15248,45 +15297,56 @@ const getNRGPList = async (data) => {
     // ============================================================
 
     const hasApprovalIdentity =
-      hasValidUserID || Boolean(userApprovalRole);
+      hasValidUserID || approvalRoles.length > 0;
 
     const isApprover =
       !canViewAll && hasApprovalIdentity;
+
+    const addApprovalParams = () => {
+      values.push(hasValidUserID ? loggedInUserID : -1);
+      const userIndex = values.length;
+
+      values.push(approvalRoles);
+      const rolesIndex = values.length;
+
+      values.push(
+        hasValidUserDepartmentID
+          ? userDepartmentID
+          : -1
+      );
+      const departmentIndex = values.length;
+
+      return {
+        userIndex,
+        rolesIndex,
+        departmentIndex
+      };
+    };
 
     if (!canViewAll) {
       if (!hasApprovalIdentity) {
         conditions.push("FALSE");
       } else {
-        values.push(
-          hasValidUserID ? loggedInUserID : -1
-        );
-        const userIndex = values.length;
+        const {
+          userIndex,
+          rolesIndex,
+          departmentIndex
+        } = addApprovalParams();
 
-        values.push(userApprovalRole || "");
-        const roleIndex = values.length;
-
-        values.push(
-          hasValidUserDepartmentID
-            ? userDepartmentID
-            : -1
-        );
-        const departmentIndex = values.length;
-
-        // IMPORTANT:
-        // Assigned approver ko record visible rahega.
-        // Previous approval condition yahan nahi lagegi.
-        // Sequential approval CanApprove mein check hoga.
-
+        // Visibility is based on assigned approval stages.
+        // Previous stage completion is NOT required for viewing.
         conditions.push(`
           EXISTS (
             SELECT 1
             FROM Gatepass_NRGP_Approval ua
+
             WHERE ua.NRGPID = m.NRGPID
               AND ua.IsDeleted = FALSE
+
               AND ${approvalEligibility(
                 "ua",
                 userIndex,
-                roleIndex,
+                rolesIndex,
                 departmentIndex
               )}
           )
@@ -15306,13 +15366,16 @@ const getNRGPList = async (data) => {
       const reportStatuses = {
         "ALL NRGP OPEN": ["PENDING"],
         "ALL NRGP CLOSED": ["APPROVED"],
-        "ALL NRGP CANCELLED": ["CANCELLED", "REJECTED"],
+        "ALL NRGP CANCELLED": ["CANCELLED", "REJECTED"]
       };
 
-      const masterStatuses = reportStatuses[normalizedStatus];
+      const masterStatuses =
+        reportStatuses[normalizedStatus];
 
-      if (["ALL", "ALL NRGP"].includes(normalizedStatus)) {
-        // No additional status filter.
+      if (
+        ["ALL", "ALL NRGP"].includes(normalizedStatus)
+      ) {
+        // No additional filter.
       } else if (masterStatuses) {
         values.push(masterStatuses);
 
@@ -15328,36 +15391,31 @@ const getNRGPList = async (data) => {
           = $${values.length}
         `);
       } else {
+        // For approvers, match their own approval stage status.
         values.push(normalizedStatus);
         const statusIndex = values.length;
 
-        values.push(
-          hasValidUserID ? loggedInUserID : -1
-        );
-        const userIndex = values.length;
-
-        values.push(userApprovalRole || "");
-        const roleIndex = values.length;
-
-        values.push(
-          hasValidUserDepartmentID
-            ? userDepartmentID
-            : -1
-        );
-        const departmentIndex = values.length;
+        const {
+          userIndex,
+          rolesIndex,
+          departmentIndex
+        } = addApprovalParams();
 
         conditions.push(`
           EXISTS (
             SELECT 1
             FROM Gatepass_NRGP_Approval sa
+
             WHERE sa.NRGPID = m.NRGPID
               AND sa.IsDeleted = FALSE
+
               AND ${approvalEligibility(
                 "sa",
                 userIndex,
-                roleIndex,
+                rolesIndex,
                 departmentIndex
               )}
+
               AND UPPER(
                 TRIM(COALESCE(sa.Status, 'PENDING'))
               ) = $${statusIndex}
@@ -15370,11 +15428,13 @@ const getNRGPList = async (data) => {
     // Count
     // ============================================================
 
-    const whereClause = `WHERE ${conditions.join(" AND ")}`;
+    const whereClause =
+      `WHERE ${conditions.join(" AND ")}`;
 
     const countResult = await pool.query(
       `
         SELECT COUNT(*) AS TotalCount
+
         FROM Gatepass_NRGP_Entry_Master m
 
         LEFT JOIN department_master d
@@ -15439,7 +15499,7 @@ const getNRGPList = async (data) => {
 
     const approvalsByNRGP = new Map();
 
-    if (result.rows.length) {
+    if (result.rows.length > 0) {
       const approvalResult = await pool.query(
         `
           SELECT
@@ -15512,7 +15572,7 @@ const getNRGPList = async (data) => {
       );
 
       const previousStagesApproved =
-        currentApproval &&
+        Boolean(currentApproval) &&
         rawApprovals.every(
           (approval) =>
             Number(approval.approvalorder) >=
@@ -15523,24 +15583,32 @@ const getNRGPList = async (data) => {
       const approverMatches = (approval) => {
         if (!approval) return false;
 
-        const type = String(approval.approvertype || "ROLE")
+        const type = String(
+          approval.approvertype || "ROLE"
+        )
           .trim()
           .toUpperCase();
 
-        if (type === "USER" || type === "REGIONAL") {
+        if (
+          type === "USER" ||
+          type === "REGIONAL"
+        ) {
           return (
             hasValidUserID &&
-            Number(approval.approveruserid) === loggedInUserID
+            Number(approval.approveruserid) ===
+              loggedInUserID
           );
         }
 
-        if (type !== "ROLE") return false;
+        if (type !== "ROLE") {
+          return false;
+        }
 
-        const role = normalizeNRGPApprovalRole(
+        const role = normalizeRole(
           approval.approvalrole
         );
 
-        if (role !== userApprovalRole) {
+        if (!approvalRoles.includes(role)) {
           return false;
         }
 
@@ -15567,13 +15635,14 @@ const getNRGPList = async (data) => {
       );
 
       const CanAction =
+        hasValidUserID &&
         Number(row.createdby) === loggedInUserID;
 
       return {
         ...mapNRGPMaster(row),
         CanApprove,
         CanAction,
-        Approvals: mapNRGPApprovalFlow(rawApprovals),
+        Approvals: mapNRGPApprovalFlow(rawApprovals)
       };
     });
 
@@ -15588,7 +15657,7 @@ const getNRGPList = async (data) => {
       Page: page,
       PageSize: pageSize,
       TotalPages: Math.ceil(totalCount / pageSize),
-      data: records,
+      data: records
     };
 
   } catch (error) {
