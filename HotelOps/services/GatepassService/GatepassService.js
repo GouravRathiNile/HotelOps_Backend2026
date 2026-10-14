@@ -2021,10 +2021,7 @@ const getRGPTotalList = async (data) => {
     // ============================================================
     // 13. Fetch Saved Approval Flow
     //
-    // Supports:
-    // ROLE / USER / REGIONAL
-    //
-    // Existing legacy approvals are also supported.
+    // Supports ROLE / USER / REGIONAL
     // ============================================================
 
     const approvalsByRGP = new Map();
@@ -2058,12 +2055,17 @@ const getRGPTotalList = async (data) => {
 
             actionUser.FullName AS ActionByName,
 
+            amd.approvaltype AS ApprovalType,
+
             a.Remarks
 
           FROM Gatepass_RGP_Approval a
 
           LEFT JOIN user_master actionUser
             ON actionUser.UserID = a.ActionBy
+
+          LEFT JOIN approval_master_details amd
+            ON amd.approvalid = a.ApprovalMasterDetailID
 
           WHERE a.RGPID = ANY($1::BIGINT[])
             AND a.IsDeleted = FALSE
@@ -2097,7 +2099,6 @@ const getRGPTotalList = async (data) => {
               ? null
               : Number(approval.rgpapprovalconfigid),
 
-          // New Approval Flow Builder Detail ID
           ApprovalMasterDetailID:
             approval.approvalmasterdetailid == null
               ? null
@@ -2112,13 +2113,14 @@ const getRGPTotalList = async (data) => {
           ApprovalOrder:
             Number(approval.approvalorder),
 
-          // ROLE / USER / REGIONAL
           ApproverType:
             String(
               approval.approvertype || "ROLE"
             ).trim().toUpperCase(),
 
-          // Selected User ID
+          ApprovalType:
+            approval.approvaltype || null,
+
           ApproverUserID:
             approval.approveruserid == null
               ? null
@@ -2153,7 +2155,63 @@ const getRGPTotalList = async (data) => {
     }
 
     // ============================================================
-    // 15. Map Final RGP List
+    // 15. Current Unified RGP Approval Flow
+    //
+    // Only for displaying current flow stages.
+    // Does not modify saved approvals.
+    // ============================================================
+
+    let currentFlowStages = [];
+
+    if (result.rows.length > 0) {
+      const currentFlowResult = await pool.query(
+        `
+          SELECT
+            amd.approvalid,
+            amd.level,
+            amd.approvertype,
+            amd.role,
+            amd.approvaltype,
+            amd.ismandatory,
+
+            selectedUser.FullName AS ApproverUserName
+
+          FROM approval_master am
+
+          INNER JOIN approval_master_details amd
+            ON amd.approvalmasterid = am.approvalmasterid
+
+          LEFT JOIN user_master selectedUser
+            ON selectedUser.UserID =
+              CASE
+                WHEN UPPER(TRIM(amd.approvertype))
+                  IN ('USER', 'REGIONAL')
+                  AND TRIM(amd.role) ~ '^[0-9]+$'
+                THEN TRIM(amd.role)::BIGINT
+                ELSE NULL
+              END
+
+          WHERE am.organizationid = $1
+            AND UPPER(TRIM(am.modulename)) =
+                'GATEPASS MANAGEMENT'
+            AND UPPER(am.flowname) ~
+                '(^|[^A-Z])RGP([^A-Z]|$)'
+            AND am.isactive = TRUE
+            AND am.isdelete = FALSE
+            AND amd.isdelete = FALSE
+
+          ORDER BY
+            amd.level ASC,
+            amd.approvalid ASC;
+        `,
+        [organizationID]
+      );
+
+      currentFlowStages = currentFlowResult.rows;
+    }
+
+    // ============================================================
+    // 16. Map Final RGP List
     // ============================================================
 
     const mappedData = result.rows.map((row) => {
@@ -2161,15 +2219,15 @@ const getRGPTotalList = async (data) => {
         approvalsByRGP.get(String(row.rgpid)) || [];
 
       // ==========================================================
-      // 16. Approval Flow Display
+      // 17. Preserve Existing Approval Flow Stop Logic
       //
-      // REJECTED / CANCELLED ke baad:
-      // Next approval stages blank.
+      // After REJECTED / CANCELLED, subsequent saved stages
+      // remain blank.
       // ==========================================================
 
       let approvalFlowStopped = false;
 
-      const mappedApprovals = approvals.map((approval) => {
+      const savedApprovals = approvals.map((approval) => {
         if (approvalFlowStopped) {
           return {
             ...approval,
@@ -2196,7 +2254,130 @@ const getRGPTotalList = async (data) => {
       });
 
       // ==========================================================
-      // 17. Final Response
+      // 18. Current Flow Display
+      //
+      // Match historical stages by ApprovalType.
+      // New stages = NOT APPLICABLE.
+      // ==========================================================
+
+      const normalizeApprovalType = (value) =>
+        String(value || "").trim().toUpperCase();
+
+      const usedSavedIndexes = new Set();
+
+      const mappedApprovals = currentFlowStages.map((stage) => {
+        const currentApprovalType = normalizeApprovalType(
+          stage.approvaltype
+        );
+
+        const matchedIndex = approvals.findIndex(
+          (approval, index) => {
+            if (usedSavedIndexes.has(index)) {
+              return false;
+            }
+
+            const historicalType = normalizeApprovalType(
+              approval.ApprovalType || approval.ApprovalRole
+            );
+
+            return historicalType === currentApprovalType;
+          }
+        );
+
+        const approverType = String(
+          stage.approvertype || "ROLE"
+        ).trim().toUpperCase();
+
+        const selectedUserID =
+          ["USER", "REGIONAL"].includes(approverType) &&
+          Number.isSafeInteger(Number(stage.role)) &&
+          Number(stage.role) > 0
+            ? Number(stage.role)
+            : null;
+
+        if (matchedIndex !== -1) {
+          usedSavedIndexes.add(matchedIndex);
+
+          const savedApproval = savedApprovals[matchedIndex];
+
+          return {
+            ...savedApproval,
+
+            ApprovalType:
+              stage.approvaltype || null,
+
+            ApprovalRole:
+              stage.role,
+
+            ApproverType:
+              approverType,
+
+            ApproverUserID:
+              selectedUserID,
+
+            ApproverUserName:
+              stage.approverusername || null,
+
+            ApprovalLevel:
+              Number(stage.level),
+
+            ApprovalOrder:
+              Number(stage.level)
+          };
+        }
+
+        // New stage: Not applicable to old RGP
+        return {
+          RGPApprovalID: null,
+
+          RGPApprovalConfigID: null,
+
+          ApprovalMasterDetailID:
+            Number(stage.approvalid),
+
+          ApprovalLevel:
+            Number(stage.level),
+
+          ApprovalOrder:
+            Number(stage.level),
+
+          ApprovalRole:
+            stage.role,
+
+          ApproverType:
+            approverType,
+
+          ApprovalType:
+            stage.approvaltype || null,
+
+          ApproverUserID:
+            selectedUserID,
+
+          ApproverUserName:
+            stage.approverusername || null,
+
+          IsMandatory:
+            stage.ismandatory !== false,
+
+          Status:
+            "NOT APPLICABLE",
+
+          StatusDateTime:
+            null,
+
+          ActionBy:
+            null,
+
+          ActionByName:
+            null,
+
+          Remarks:
+            null
+        };
+      });
+
+      // ==========================================================
+      // 19. Final Response
       // ==========================================================
 
       return {
@@ -2237,11 +2418,9 @@ const getRGPTotalList = async (data) => {
         TakenBy:
           row.takenby,
 
-        // RGP Lifecycle Status
         Status:
           row.status,
 
-        // Approval Flow
         Approvals:
           mappedApprovals,
 
@@ -2334,7 +2513,7 @@ const getRGPTotalList = async (data) => {
     });
 
     // ============================================================
-    // 18. Response
+    // 20. Response
     // ============================================================
 
     return ok(
@@ -14891,7 +15070,7 @@ const getNRGPList = async (data) => {
     conditions.push(`m.OrganizationID = $${values.length}`);
 
     // ============================================================
-    // Logged-in user
+    // Logged-in User
     // ============================================================
 
     const loggedInUserID = Number(data.UserID);
@@ -14909,12 +15088,18 @@ const getNRGPList = async (data) => {
       data.DepartmentName
     );
 
+    // ============================================================
+    // Security / CEO Visibility
+    // ============================================================
+
     const canViewAll =
       rawUserType === "SECURITY" ||
+      rawUserType === "SECURITY OFFICER" ||
+      departmentName === "SECURITY" ||
       rawUserType === "CEO";
 
     // ============================================================
-    // Dynamic approval authorization
+    // Dynamic Approval Authorization
     // ============================================================
 
     const approvalMatch = (alias, userIndex, roleIndex) => `
@@ -14936,24 +15121,11 @@ const getNRGPList = async (data) => {
               ELSE UPPER(TRIM(COALESCE(${alias}.ApprovalRole, '')))
             END
           ) = $${roleIndex}
-          AND (
-            UPPER(TRIM(COALESCE(${alias}.ApprovalRole, ''))) <> 'HOD'
-            OR UPPER(TRIM(COALESCE(${
-              alias
-            }.ApprovalRole, ''))) = 'HOD'
-          )
-          AND (
-            UPPER(TRIM(COALESCE(${alias}.ApprovalRole, ''))) <> 'HOD'
-            OR UPPER(TRIM(COALESCE(${
-              alias
-            }.ApprovalRole, ''))) = 'HOD'
-          )
         )
       )
     `;
 
-    // HOD is department-specific; other configured roles
-    // continue to use existing role matching.
+    // HOD approval is restricted to own department.
     const approvalEligibility = (
       alias,
       userIndex,
@@ -14991,7 +15163,7 @@ const getNRGPList = async (data) => {
     }
 
     // ============================================================
-    // Department
+    // Department Filter
     // ============================================================
 
     if (data.DepartmentID) {
@@ -15009,7 +15181,7 @@ const getNRGPList = async (data) => {
     }
 
     // ============================================================
-    // Date filters
+    // Date Filters
     // ============================================================
 
     if (data.FromDate) {
@@ -15049,7 +15221,7 @@ const getNRGPList = async (data) => {
     }
 
     // ============================================================
-    // Approval-based visibility
+    // Approval-Based Visibility
     // ============================================================
 
     const hasValidUserID =
@@ -15062,6 +15234,10 @@ const getNRGPList = async (data) => {
     const isApprover =
       !canViewAll && hasApprovalIdentity;
 
+    // Logged-in HOD department, NOT list filter DepartmentID.
+    // Must come from trusted authenticated user context.
+    const userDepartmentID = Number(data.UserDepartmentID);
+
     if (!canViewAll) {
       if (!hasApprovalIdentity) {
         conditions.push("FALSE");
@@ -15073,8 +15249,6 @@ const getNRGPList = async (data) => {
 
         values.push(userApprovalRole || "");
         const roleIndex = values.length;
-
-        const userDepartmentID = Number(data.DepartmentID);
 
         values.push(
           Number.isInteger(userDepartmentID) &&
@@ -15112,7 +15286,7 @@ const getNRGPList = async (data) => {
     }
 
     // ============================================================
-    // Status filter
+    // Status Filter
     // ============================================================
 
     if (data.Status && String(data.Status).trim()) {
@@ -15156,8 +15330,6 @@ const getNRGPList = async (data) => {
         values.push(userApprovalRole || "");
         const roleIndex = values.length;
 
-        const userDepartmentID = Number(data.DepartmentID);
-
         values.push(
           Number.isInteger(userDepartmentID) &&
           userDepartmentID > 0
@@ -15194,11 +15366,11 @@ const getNRGPList = async (data) => {
 
     const countResult = await pool.query(
       `
-      SELECT COUNT(*) AS TotalCount
-      FROM Gatepass_NRGP_Entry_Master m
-      LEFT JOIN department_master d
-        ON d.DepartmentID = m.DepartmentID
-      ${whereClause}
+        SELECT COUNT(*) AS TotalCount
+        FROM Gatepass_NRGP_Entry_Master m
+        LEFT JOIN department_master d
+          ON d.DepartmentID = m.DepartmentID
+        ${whereClause}
       `,
       values
     );
@@ -15218,36 +15390,41 @@ const getNRGPList = async (data) => {
 
     const result = await pool.query(
       `
-      SELECT
-        m.NRGPID,
-        m.NRGPNumber,
-        m.OrganizationID,
-        m.VendorName,
-        m.ContactNumber,
-        m.Company,
-        m.SendTo,
-        m.DepartmentID,
-        d.DepartmentName,
-        m.Address,
-        m.TakenBy,
-        m.Status,
-        m.CreatedBy,
-        m.CreatedDate,
-        m.ModifiedBy,
-        m.ModifiedDate
-      FROM Gatepass_NRGP_Entry_Master m
-      LEFT JOIN department_master d
-        ON d.DepartmentID = m.DepartmentID
-      ${whereClause}
-      ORDER BY m.NRGPID DESC
-      LIMIT $${limitIndex}
-      OFFSET $${offsetIndex}
+        SELECT
+          m.NRGPID,
+          m.NRGPNumber,
+          m.OrganizationID,
+          m.VendorName,
+          m.ContactNumber,
+          m.Company,
+          m.SendTo,
+          m.DepartmentID,
+          d.DepartmentName,
+          m.Address,
+          m.TakenBy,
+          m.Status,
+          m.CreatedBy,
+          m.CreatedDate,
+          m.ModifiedBy,
+          m.ModifiedDate
+
+        FROM Gatepass_NRGP_Entry_Master m
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID = m.DepartmentID
+
+        ${whereClause}
+
+        ORDER BY m.NRGPID DESC
+
+        LIMIT $${limitIndex}
+        OFFSET $${offsetIndex}
       `,
       queryValues
     );
 
     // ============================================================
-    // Get approvals for current page
+    // Get Approvals for Current Page
     // ============================================================
 
     const approvalsByNRGP = new Map();
@@ -15255,29 +15432,32 @@ const getNRGPList = async (data) => {
     if (result.rows.length) {
       const approvalResult = await pool.query(
         `
-        SELECT
-          NRGPApprovalID,
-          NRGPID,
-          NRGPApprovalConfigID,
-          ApprovalMasterDetailID,
-          ApprovalLevel,
-          ApprovalRole,
-          ApprovalOrder,
-          ApproverType,
-          ApproverUserID,
-          IsMandatory,
-          Status,
-          StatusDateTime,
-          ActionBy,
-          Remarks
-        FROM Gatepass_NRGP_Approval
-        WHERE NRGPID = ANY($1::BIGINT[])
-          AND IsDeleted = FALSE
-        ORDER BY
-          NRGPID ASC,
-          ApprovalOrder ASC,
-          ApprovalLevel ASC,
-          NRGPApprovalID ASC
+          SELECT
+            NRGPApprovalID,
+            NRGPID,
+            NRGPApprovalConfigID,
+            ApprovalMasterDetailID,
+            ApprovalLevel,
+            ApprovalRole,
+            ApprovalOrder,
+            ApproverType,
+            ApproverUserID,
+            IsMandatory,
+            Status,
+            StatusDateTime,
+            ActionBy,
+            Remarks
+
+          FROM Gatepass_NRGP_Approval
+
+          WHERE NRGPID = ANY($1::BIGINT[])
+            AND IsDeleted = FALSE
+
+          ORDER BY
+            NRGPID ASC,
+            ApprovalOrder ASC,
+            ApprovalLevel ASC,
+            NRGPApprovalID ASC
         `,
         [result.rows.map((row) => row.nrgpid)]
       );
@@ -15349,9 +15529,9 @@ const getNRGPList = async (data) => {
 
         if (role === "HOD") {
           return (
-            Number(data.DepartmentID) > 0 &&
-            Number(data.DepartmentID) ===
-              Number(row.departmentid)
+            Number.isInteger(userDepartmentID) &&
+            userDepartmentID > 0 &&
+            userDepartmentID === Number(row.departmentid)
           );
         }
 
@@ -15394,6 +15574,7 @@ const getNRGPList = async (data) => {
       TotalPages: Math.ceil(totalCount / pageSize),
       data: records,
     };
+
   } catch (error) {
     return databaseFailure(error, "Fetch NRGP list");
   }
