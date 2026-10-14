@@ -32,7 +32,7 @@ exports.getApprovalFlowList = async (req, res) => {
 // Get module-wise approval configurations
 exports.getModuleApprovalConfigurations = async (req, res) => {
     try {
-        const { OrganizationID, ModuleName } = req.query;
+        const { OrganizationID, ModuleName, FlowName } = req.query;
 
         return await dispatch(
             res,
@@ -47,6 +47,11 @@ exports.getModuleApprovalConfigurations = async (req, res) => {
                     ModuleName !== undefined &&
                         ModuleName.trim() !== ""
                         ? ModuleName.trim()
+                        : null,
+                FlowName:
+                    FlowName !== undefined && FlowName !== null &&
+                        String(FlowName).trim() !== ""
+                        ? String(FlowName).trim()
                         : null
             }
         );

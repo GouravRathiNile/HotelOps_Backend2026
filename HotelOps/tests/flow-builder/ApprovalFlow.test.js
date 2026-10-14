@@ -219,3 +219,27 @@ test("Postman collection documents only supported endpoints and complete respons
     }
 });
 
+
+test("Module configurations filter by trimmed, case-insensitive exact FlowName", async () => {
+    const s = service();
+    const result = await s.api.getModuleApprovalConfigurations({ OrganizationID: 20, ModuleName: "Gatepass Managment", FlowName: " Gatepass NRGP Flow " });
+    assert.equal(result.success, true);
+    assert.deepEqual(plain(s.calls[0].params), ["20", "Gatepass Managment", "Gatepass NRGP Flow"]);
+    assert.match(s.calls[0].sql, /LOWER\(TRIM\(am.flowname\)\) = LOWER\(\$3::VARCHAR\)/);
+    for (const FlowName of [undefined, null, "", "   "]) {
+        const optional = service();
+        await optional.api.getModuleApprovalConfigurations({ OrganizationID: 20, FlowName });
+        assert.equal(optional.calls[0].params[2], null);
+    }
+});
+
+test("Module configuration controller forwards the optional FlowName through RabbitMQ", async () => {
+    let request;
+    const controller = load("controllers/FlowBuilderController/ApprovalFlowController.js", {
+        "../../producer/producer": { sendMessage: async (...args) => { request = args.at(-1); return { success: true }; } }
+    });
+    const res = { status() { return this; }, json() { return this; } };
+    await controller.getModuleApprovalConfigurations({ query: { OrganizationID: "20", ModuleName: "Gatepass Managment", FlowName: " Gatepass NRGP Flow " } }, res);
+    assert.equal(request.action, "GET_MODULE_APPROVAL_CONFIGURATIONS");
+    assert.equal(request.data.FlowName, "Gatepass NRGP Flow");
+});

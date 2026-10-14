@@ -177,7 +177,7 @@ const getApprovalFlowList = async (data = {}) => {
 // Get Module-wise Approval Configurations
 const getModuleApprovalConfigurations = async (data = {}) => {
     try {
-        let { OrganizationID, ModuleName } = data;
+        let { OrganizationID, ModuleName, FlowName } = data;
 
         // Validate OrganizationID if provided
         if (
@@ -207,6 +207,8 @@ const getModuleApprovalConfigurations = async (data = {}) => {
         } else {
             ModuleName = null;
         }
+
+        FlowName = FlowName == null ? null : String(FlowName).trim() || null;
 
         const result = await pool.query(
             `
@@ -238,6 +240,10 @@ const getModuleApprovalConfigurations = async (data = {}) => {
                     $2::VARCHAR IS NULL
                     OR LOWER(TRIM(am.modulename)) = LOWER($2::VARCHAR)
                 )
+                AND (
+                    $3::VARCHAR IS NULL
+                    OR LOWER(TRIM(am.flowname)) = LOWER($3::VARCHAR)
+                )
             GROUP BY
                 am.approvalmasterid,
                 am.organizationid,
@@ -248,7 +254,7 @@ const getModuleApprovalConfigurations = async (data = {}) => {
                 am.modulename ASC,
                 am.approvalmasterid DESC
             `,
-            [OrganizationID, ModuleName]
+            [OrganizationID, ModuleName, FlowName]
         );
 
         return {
