@@ -4149,43 +4149,36 @@ exports.createNRGP = async (req, res) => {
 // ============================================================NRGP List
 exports.getNRGPList = async (req, res) => {
   try {
-    const result =
-      await GatepassService.getNRGPList({
-        ...req.query,
+    const result = await GatepassService.getNRGPList({
+      ...req.query,
 
-        UserID:
-          req.user.UserID,
+      UserID: req.user.UserID,
+      UserType: req.user.UserType,
+      DepartmentName: req.user.DepartmentName,
 
-        UserType:
-          req.user.UserType,
+      // Logged-in user ka department
+      UserDepartmentID: req.user.DepartmentID,
 
-        DepartmentName:
-          req.user.DepartmentName,
-
-        LoginType:
-          req.user.LoginType,
-
-        AllOrganizationAccess:
-          req.user.AllOrganizationAccess,
-      });
+      LoginType: req.user.LoginType,
+      AllOrganizationAccess: req.user.AllOrganizationAccess,
+    });
 
     return res
       .status(
         result.statusCode ||
-        (result.success ? 200 : 400),
+        (result.success ? 200 : 400)
       )
       .json(result);
 
   } catch (error) {
     console.error(
       "Get NRGP List Controller Error:",
-      error.message,
+      error.message
     );
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to fetch NRGP list at this time.",
+      message: "Unable to fetch NRGP list at this time.",
     });
   }
 };
