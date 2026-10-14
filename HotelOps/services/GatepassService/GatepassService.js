@@ -15162,6 +15162,20 @@ const getNRGPList = async (data) => {
     // Approval Matching SQL
     // ============================================================
 
+    const effectiveApprovalRole = (alias) => `
+      CASE
+        WHEN UPPER(TRIM(COALESCE(${alias}.ApprovalRole, ''))) = 'HOD'
+          AND EXISTS (
+            SELECT 1 FROM approval_master_details financeStage
+            WHERE financeStage.ApprovalID = ${alias}.ApprovalMasterDetailID
+              AND UPPER(TRIM(COALESCE(financeStage.ApprovalType, '')))
+                  IN ('FC', 'DOF', 'FINANCE CONTROLLER', 'DIRECTOR OF FINANCE')
+          )
+        THEN 'FC'
+        ELSE ${alias}.ApprovalRole
+      END
+    `;
+
     const approvalEligibility = (
       alias,
       userIndex,
@@ -15187,7 +15201,7 @@ const getNRGPList = async (data) => {
           AND (
             CASE
               WHEN UPPER(
-                TRIM(COALESCE(${alias}.ApprovalRole, ''))
+                TRIM(COALESCE((${effectiveApprovalRole(alias)}), ''))
               ) IN (
                 'FC',
                 'DOF',
@@ -15197,14 +15211,14 @@ const getNRGPList = async (data) => {
               THEN 'FC'
 
               ELSE UPPER(
-                TRIM(COALESCE(${alias}.ApprovalRole, ''))
+                TRIM(COALESCE((${effectiveApprovalRole(alias)}), ''))
               )
             END
           ) = ANY($${rolesIndex}::TEXT[])
 
           AND (
             UPPER(
-              TRIM(COALESCE(${alias}.ApprovalRole, ''))
+              TRIM(COALESCE((${effectiveApprovalRole(alias)}), ''))
             ) <> 'HOD'
 
             OR m.DepartmentID = $${departmentIndex}
@@ -15604,9 +15618,11 @@ const getNRGPList = async (data) => {
           return false;
         }
 
-        const role = normalizeRole(
-          approval.approvalrole
-        );
+        const configuredRole = normalizeRole(approval.approvalrole);
+        const stageType = normalizeRole(approval.approvaltype);
+        const role = configuredRole === "HOD" && stageType === "FC"
+          ? "FC"
+          : configuredRole;
 
         if (!approvalRoles.includes(role)) {
           return false;
