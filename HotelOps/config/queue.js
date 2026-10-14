@@ -87,4 +87,8 @@ module.exports = {
     REQUEST: "approval_flow_request_queue",
     RESPONSE: "approval_flow_response_queue",
   },
+  DASHBOARD: {
+    REQUEST: "dashboard_request_queue",
+    RESPONSE: "dashboard_response_queue",
+  },
 };
