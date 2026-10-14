@@ -1032,10 +1032,12 @@ const getRGPList = async (data) => {
     }
 
     const page = Math.max(Number(data.page) || 1, 1);
+
     const pageSize = Math.min(
       Math.max(Number(data.PageSize) || 10, 1),
       100
     );
+
     const offset = (page - 1) * pageSize;
 
     // ==========================================================
@@ -1196,7 +1198,7 @@ const getRGPList = async (data) => {
               CASE
                 WHEN UPPER(TRIM(myApproval.ApprovalRole))
                   IN ('FC', 'DOF')
-                THEN 'FC'
+                  THEN 'FC'
                 ELSE UPPER(TRIM(myApproval.ApprovalRole))
               END
             ) = $${roleIndex}
@@ -1325,9 +1327,9 @@ const getRGPList = async (data) => {
 
     const countResult = await pool.query(
       `
-        SELECT COUNT(*)::BIGINT AS TotalCount
-        FROM Gatepass_RGP_Entry_Master m
-        WHERE ${whereClause};
+      SELECT COUNT(*)::BIGINT AS TotalCount
+      FROM Gatepass_RGP_Entry_Master m
+      WHERE ${whereClause};
       `,
       values
     );
@@ -1345,28 +1347,33 @@ const getRGPList = async (data) => {
 
     const result = await pool.query(
       `
-        SELECT
-          m.RGPID,
-          m.RGPNumber,
-          m.OrganizationID,
-          m.ExpectedReturnDate,
-          m.VendorName,
-          m.ContactNumber,
-          m.Company,
-          m.DepartmentID,
-          d.DepartmentName,
-          m.Address,
-          m.TakenBy,
-          m.Status,
-          m.CreatedBy,
-          m.CreatedDate
-        FROM Gatepass_RGP_Entry_Master m
-        LEFT JOIN department_master d
-          ON d.DepartmentID = m.DepartmentID
-        WHERE ${whereClause}
-        ORDER BY m.RGPID DESC
-        LIMIT $${limitIndex}
-        OFFSET $${offsetIndex};
+      SELECT
+        m.RGPID,
+        m.RGPNumber,
+        m.OrganizationID,
+        m.ExpectedReturnDate,
+        m.VendorName,
+        m.ContactNumber,
+        m.Company,
+        m.DepartmentID,
+        d.DepartmentName,
+        m.Address,
+        m.TakenBy,
+        m.Status,
+        m.CreatedBy,
+        m.CreatedDate
+
+      FROM Gatepass_RGP_Entry_Master m
+
+      LEFT JOIN department_master d
+        ON d.DepartmentID = m.DepartmentID
+
+      WHERE ${whereClause}
+
+      ORDER BY m.RGPID DESC
+
+      LIMIT $${limitIndex}
+      OFFSET $${offsetIndex};
       `,
       [...values, pageSize, offset]
     );
@@ -1382,30 +1389,33 @@ const getRGPList = async (data) => {
 
       const approvalResult = await pool.query(
         `
-          SELECT
-            RGPApprovalID,
-            RGPID,
-            OrganizationID,
-            RGPApprovalConfigID,
-            ApprovalMasterDetailID,
-            ApprovalLevel,
-            ApprovalRole,
-            ApprovalOrder,
-            ApproverType,
-            ApproverUserID,
-            IsMandatory,
-            Status,
-            StatusDateTime,
-            ActionBy,
-            Remarks
-          FROM Gatepass_RGP_Approval
-          WHERE RGPID = ANY($1::BIGINT[])
-            AND IsDeleted = FALSE
-          ORDER BY
-            RGPID ASC,
-            ApprovalOrder ASC,
-            ApprovalLevel ASC,
-            RGPApprovalID ASC;
+        SELECT
+          RGPApprovalID,
+          RGPID,
+          OrganizationID,
+          RGPApprovalConfigID,
+          ApprovalMasterDetailID,
+          ApprovalLevel,
+          ApprovalRole,
+          ApprovalOrder,
+          ApproverType,
+          ApproverUserID,
+          IsMandatory,
+          Status,
+          StatusDateTime,
+          ActionBy,
+          Remarks
+
+        FROM Gatepass_RGP_Approval
+
+        WHERE RGPID = ANY($1::BIGINT[])
+          AND IsDeleted = FALSE
+
+        ORDER BY
+          RGPID ASC,
+          ApprovalOrder ASC,
+          ApprovalLevel ASC,
+          RGPApprovalID ASC;
         `,
         [rgpIDs]
       );
@@ -1422,7 +1432,53 @@ const getRGPList = async (data) => {
     }
 
     // ==========================================================
-    // 10. Map List
+    // 10. Current Unified RGP Approval Flow
+    //
+    // Used ONLY to display NOT APPLICABLE for stages that
+    // were added after an older RGP was created.
+    //
+    // Does NOT change saved approval records.
+    // ==========================================================
+
+    let currentFlowStages = [];
+
+    if (result.rows.length > 0) {
+      const currentFlowResult = await pool.query(
+        `
+        SELECT
+          amd.approvalid,
+          amd.level,
+          amd.approvertype,
+          amd.role,
+          amd.approvaltype,
+          amd.ismandatory
+
+        FROM approval_master am
+
+        INNER JOIN approval_master_details amd
+          ON amd.approvalmasterid = am.approvalmasterid
+
+        WHERE am.organizationid = $1
+          AND UPPER(TRIM(am.modulename)) =
+              'GATEPASS MANAGEMENT'
+          AND UPPER(am.flowname) ~
+              '(^|[^A-Z])RGP([^A-Z]|$)'
+          AND am.isactive = TRUE
+          AND am.isdelete = FALSE
+          AND amd.isdelete = FALSE
+
+        ORDER BY
+          amd.level ASC,
+          amd.approvalid ASC;
+        `,
+        [organizationID]
+      );
+
+      currentFlowStages = currentFlowResult.rows;
+    }
+
+    // ==========================================================
+    // 11. Map List
     // ==========================================================
 
     const mappedData = result.rows.map((row) => {
@@ -1451,7 +1507,7 @@ const getRGPList = async (data) => {
           )
       );
 
-      // Preserve your rule:
+      // Preserve existing rule:
       // User cannot approve the same RGP twice.
       const alreadyApproved = approvals.some(
         (approval) =>
@@ -1482,7 +1538,10 @@ const getRGPList = async (data) => {
       if (isSecurity || isCEO) {
         if (masterStatus === "CANCELLED" || hasCancelled) {
           approvalStatus = "CANCELLED";
-        } else if (masterStatus === "REJECTED" || hasRejected) {
+        } else if (
+          masterStatus === "REJECTED" ||
+          hasRejected
+        ) {
           approvalStatus = "REJECTED";
         } else if (allApproved) {
           approvalStatus = "APPROVED";
@@ -1526,18 +1585,109 @@ const getRGPList = async (data) => {
         String(row.createdby) === String(data.UserID)
       );
 
+      // ========================================================
+      // 12. Display Approvals
+      //
+      // Existing stages retain their saved status.
+      // Newly added flow stages show NOT APPLICABLE
+      // for old RGP records.
+      // ========================================================
+
+      const savedApprovals = mapRGPApprovalFlow(approvals);
+
+      const existingStageIDs = new Set(
+        approvals
+          .filter(
+            (approval) =>
+              approval.approvalmasterdetailid != null
+          )
+          .map((approval) =>
+            Number(approval.approvalmasterdetailid)
+          )
+      );
+
+      const notApplicableStages = currentFlowStages
+        .filter(
+          (stage) =>
+            !existingStageIDs.has(Number(stage.approvalid))
+        )
+        .map((stage) => {
+          const approverType = normalizeType(
+            stage.approvertype
+          );
+
+          const selectedUserID =
+            approverType === "USER" ||
+            approverType === "REGIONAL"
+              ? Number(stage.role)
+              : null;
+
+          return {
+            RGPApprovalConfigID: null,
+
+            ApprovalMasterDetailID:
+              Number(stage.approvalid),
+
+            ApprovalLevel:
+              Number(stage.level),
+
+            ApprovalOrder:
+              Number(stage.level),
+
+            ApprovalRole:
+              stage.role,
+
+            ApproverType:
+              approverType,
+
+            ApprovalType:
+              stage.approvaltype || null,
+
+            ApproverUserID:
+              Number.isSafeInteger(selectedUserID) &&
+              selectedUserID > 0
+                ? selectedUserID
+                : null,
+
+            IsMandatory:
+              stage.ismandatory !== false,
+
+            Status: "NOT APPLICABLE",
+
+            ActionBy: null,
+
+            ActionByName: null,
+
+            Remarks: null,
+          };
+        });
+
+      const displayApprovals = [
+        ...savedApprovals,
+        ...notApplicableStages,
+      ];
+
+      // ========================================================
+      // 13. Response Mapping
+      // ========================================================
+
       return {
         ...mapRGP(row),
-        Approvals: mapRGPApprovalFlow(approvals),
+
+        Approvals: displayApprovals,
+
         ApprovalStatus: approvalStatus,
+
         canappprove: canApprove,
+
         cancheckout: canCheckout,
+
         canaction: canAction
       };
     });
 
     // ==========================================================
-    // 11. Response
+    // 14. Response
     // ==========================================================
 
     return ok(
@@ -1550,6 +1700,7 @@ const getRGPList = async (data) => {
         TotalPages: Math.ceil(totalCount / pageSize)
       }
     );
+
   } catch (error) {
     return databaseFailure(error, "Fetch RGP list");
   }
