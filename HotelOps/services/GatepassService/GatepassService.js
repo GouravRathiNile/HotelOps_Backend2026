@@ -17142,7 +17142,12 @@ const processNRGPApproval = async (data) => {
         ApproverUserID,
         IsMandatory,
         Status,
-        ActionBy
+        ActionBy,
+        (
+          SELECT detail.ApprovalType
+          FROM approval_master_details detail
+          WHERE detail.ApprovalID = Gatepass_NRGP_Approval.ApprovalMasterDetailID
+        ) AS ApprovalType
       FROM Gatepass_NRGP_Approval
       WHERE NRGPID = $1
         AND IsDeleted = FALSE
@@ -17236,9 +17241,11 @@ const processNRGPApproval = async (data) => {
       .trim()
       .toUpperCase();
 
-    const approvalRole = normalizeNRGPApprovalRole(
-      currentApproval.approvalrole
-    );
+    const configuredRole = normalizeNRGPApprovalRole(currentApproval.approvalrole);
+    const stageType = normalizeNRGPApprovalRole(currentApproval.approvaltype);
+    const approvalRole = configuredRole === "HOD" && stageType === "FC"
+      ? "FC"
+      : configuredRole;
 
     const approverUserID = Number(
       currentApproval.approveruserid
