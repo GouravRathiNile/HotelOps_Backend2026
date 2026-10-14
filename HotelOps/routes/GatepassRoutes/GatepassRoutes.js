@@ -95,9 +95,11 @@ router.get("/NRGPVendorNames",authenticateToken,getNRGPVendorNames,);
 router.put("/UpdateNRGP",authenticateToken,updateNRGP,);
 router.delete("/DeleteNRGP",authenticateToken,deleteNRGP,);
 router.put("/ApproveNRGP",authenticateToken,processNRGPApproval,);
+// ==============================================================================================================This is not in current use
 router.get("/NRGPApprovalConfigList",authenticateToken,getNRGPApprovalConfig,);
 router.post("/CreateApprovalConfigNRGP",authenticateToken,saveNRGPApprovalConfig,);
 router.delete("/DeleteNRGPApprovalConfig",authenticateToken,deleteNRGPApprovalConfig,);
+// ==============================================================================================================
 // =============================================================Reports
 router.get("/NRGPListReports",authenticateToken,getNRGPListReport,);
 router.get("/NRGPDepartmentWiseReports",authenticateToken,getNRGPDepartmentWiseReport,);

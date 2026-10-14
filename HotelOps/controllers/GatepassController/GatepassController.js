@@ -4550,6 +4550,7 @@ exports.processNRGPApproval = async (req, res) => {
     });
   }
 };
+// ==============================================================================================================This is not in current use
 // ============================================================ Get NRGP Approval Config List
 exports.getNRGPApprovalConfig = async (req, res) => {
   try {
@@ -4727,6 +4728,7 @@ exports.deleteNRGPApprovalConfig = async (req, res) => {
     });
   }
 };
+// ==============================================================================================================
 // ========================================================================Reports
 // ============================================================ NRGP List Report
 exports.getNRGPListReport = async (req, res) => {

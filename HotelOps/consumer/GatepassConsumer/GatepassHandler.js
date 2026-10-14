@@ -31,13 +31,14 @@ const GatepassHandler = async (message) => {
       // ========================================================RGP_ITEM_RETURN
       case "PROCESS_RGP_ITEM_RETURN":
         return await GatepassService.processRGPItemReturn(message.data);
+        // ==============================================================================================================This is not in current use
       // ========================================================Create Config
       case "SAVE_RGP_APPROVAL_CONFIG":
         return await GatepassService.saveRGPApprovalConfig(message.data);
       // ========================================================Delete Config
       case "DELETE_RGP_APPROVAL_CONFIG":
         return await GatepassService.deleteRGPApprovalConfig(message.data);
-
+      // ==============================================================================================================
       // ================================================================================NRGP
       // ========================================================Create
       case "CREATE_NRGP":
