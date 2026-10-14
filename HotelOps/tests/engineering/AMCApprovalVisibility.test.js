@@ -29,6 +29,7 @@ test("AMC detail approval flag respects new records, stages and existing access 
     } },
     attachAMCRelatedData: async () => [{ Approvals: flow }],
   };
+  Object.assign(context, { AMCWorkflowRead: { list: async () => null, detail: async () => null }, mapAMC: row => row });
   vm.createContext(context);
   const roleEnd = source.indexOf("const getAMCApprovalFlow =", start);
   const detailEnd = source.indexOf("const updateAMC =", end);
@@ -87,6 +88,7 @@ async function getRecords({ userType = "HOD", department = "Finance", organizati
         amcapprovalid: i + 1, finalstatus: "Pending", ...row })) };
     } },
   };
+  Object.assign(context, { AMCWorkflowRead: { list: async () => null, detail: async () => null }, mapAMC: row => row });
   vm.createContext(context);
   vm.runInContext(source.slice(defaultsStart, defaultsEnd) + source.slice(start, end) + "\nthis.run = getAllAMC;", context);
   const result = await context.run({ OrganizationID: organization, UserID: 3,
@@ -122,6 +124,7 @@ test("AMC database failure passes the original error and operation to the handle
       return { success: false, statusCode: 500 };
     },
   };
+  Object.assign(context, { AMCWorkflowRead: { list: async () => null, detail: async () => null }, mapAMC: row => row });
   vm.createContext(context);
   vm.runInContext(source.slice(defaultsStart, defaultsEnd) + source.slice(start, end) + "\nthis.run = getAllAMC;", context);
   const result = await context.run({ OrganizationID: 20, UserID: 3, UserType: "GM" });
@@ -141,6 +144,7 @@ test("configured order/subset and JWT role determine visibility", async () => {
 
 test("central RD uses org 10 as global view and requires mapping for a specific organization", async () => {
   const context = { console, fail: (message, statusCode) => ({ success: false, message, statusCode }) };
+  Object.assign(context, { AMCWorkflowRead: { list: async () => null, detail: async () => null }, mapAMC: row => row });
   vm.createContext(context);
   const accessEnd = source.indexOf("// ===============Get AMC Approval Flow Helper", start);
   vm.runInContext(source.slice(start, accessEnd) + "\nthis.resolve = resolveAMCAccess;", context);
@@ -161,6 +165,7 @@ test("central RD uses org 10 as global view and requires mapping for a specific 
 
 test("RD pending and approved filters use the RD status column", async () => {
   const context = { console, fail: (message, statusCode) => ({ success: false, message, statusCode }) };
+  Object.assign(context, { AMCWorkflowRead: { list: async () => null, detail: async () => null }, mapAMC: row => row });
   vm.createContext(context);
   const accessEnd = source.indexOf("// ===============Get AMC Approval Flow Helper", start);
   vm.runInContext(source.slice(start, accessEnd) + "\nthis.resolve = resolveAMCAccess;", context);

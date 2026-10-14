@@ -2255,6 +2255,14 @@ exports.processAMCApproval = async (
   res,
 ) => {
   try {
+    const ApprovalStepID = req.body.ApprovalStepID;
+    const Revision = req.body.Revision;
+    if (ApprovalStepID != null && (!/^[1-9]\d*$/.test(String(ApprovalStepID)) || !Number.isSafeInteger(Number(ApprovalStepID)))) {
+      throw new AppError("ApprovalStepID must be a positive integer", 400);
+    }
+    if (Revision != null && (!/^\d+$/.test(String(Revision)) || !Number.isSafeInteger(Number(Revision)))) {
+      throw new AppError("Revision must be a non-negative integer", 400);
+    }
     return sendQueueResponse(
       req,
       res,
@@ -2268,6 +2276,8 @@ exports.processAMCApproval = async (
 
         Remarks:
           req.body.Remarks,
+        ApprovalStepID,
+        Revision,
 
         // Trusted JWT values
         UserType:

@@ -191,28 +191,39 @@ const sendOpexEmails = async ({ emails, organizationID, organizationName,
 };
 
 // Presentation is separate from recipient selection so text changes cannot alter workflow.
-const opexNotificationContent = ({ kind, item, qty, department, description,
-  organizationShortName, actorName, approverRole }) => {
-  const title = kind === "CREATE"
-    ? `OPEX - ${String(item || "").trim()} (${String(qty ?? "").trim()}) - ${String(department || "").trim()} - ${organizationShortName}`
-    : `OPEX - ${String(item || "").trim()} - ${String(department || "").trim()} - ${organizationShortName}`;
-  if (kind === "CREATE") return { title, message: String(description || "").trim() };
-  if (kind === "AUTO_APPROVED") return {title,message:"Your OPEX is fully approved because no mandatory approval steps are configured."};
-  const actionLabel = { APPROVE: "Approved", REJECT: "Rejected", RETURN: "Returned", HOLD: "Hold" }[kind];
-  return { title, message: `${actionLabel} by ${actorName || approverRole}` };
+const opexNotificationContent = ({ kind, item, qty, department,
+  organizationShortName, actorName, approverRole, title, message, isFinalApproval = false }) => {
+  const displayValue = value => String(value ?? "").trim() || "-";
+  const quantity = displayValue(qty).replace(/^(\d+)\.(\d*?)0+$/, (_, whole, fraction) =>
+    fraction ? `${whole}.${fraction}` : whole);
+  const actor = String(actorName ?? "").trim() || String(approverRole ?? "").trim() || "System";
+  const messages = {
+    CREATE: "A new Opex request has been created and is awaiting your review.",
+    APPROVE: isFinalApproval
+      ? `Your Opex request has been fully approved by ${actor}.`
+      : `The Opex request has been approved by ${actor} and is awaiting your review.`,
+    AUTO_APPROVED: `Your Opex request has been fully approved by ${actor}.`,
+    REJECT: `The Opex request has been rejected by ${actor}.`,
+    RETURN: `The Opex request has been returned by ${actor} for revision.`,
+    HOLD: `The Opex request has been put on hold by ${actor}.`,
+  };
+  return {
+    title: `Opex - ${displayValue(item)} (${quantity}) - ${displayValue(department)} - ${displayValue(organizationShortName)}`,
+    message: messages[kind] ?? message,
+  };
 };
 
 // OPEX owns recipient/content rules; the shared service persists and pushes the final command.
 const notifyOpex = async ({ organizationID, opexID, department, roles, directUserIds,
   excludeUserID, actorUserID, kind, item, qty, rate, total, description,
-  actionQuantity, remark, actionDate, approverRole, action }) => {
+  actionQuantity, remark, actionDate, approverRole, action, isFinalApproval = false }) => {
   const context = await resolveOpexNotificationRecipients({
     organizationID, opexID, department,
     roles, directUserIds, excludeUserID, actorUserID
   });
   if (!context.userIds.length) return;
   const content = opexNotificationContent({
-    kind, item, qty, department, description,
+    kind, item, qty, department, description, isFinalApproval,
     approverRole, organizationShortName: context.organizationShortName, actorName: context.actorName
   });
   const { sendMessage } = require("../../producer/producer");
@@ -1547,7 +1558,7 @@ const processOpexApproval = async (data) => {
       notifyCommittedOpex({organizationID:Opex.organizationid,opexID:Opex.opexid,
         department:Opex.department,roles:[],directUserIds:recipients,actorUserID:data.UserID,
         excludeUserID:dynamic.change.action === "APPROVE" ? null : data.UserID,
-        kind:dynamic.change.action,item:Opex.item,qty:Opex.qty,rate:Opex.rate,total:Opex.total,
+        kind:dynamic.change.action,isFinalApproval:dynamic.finalStatus === "Approved",item:Opex.item,qty:Opex.qty,rate:Opex.rate,total:Opex.total,
         description:Opex.description,actionQuantity:dynamic.change.quantity,remark:dynamic.change.remarks,
         actionDate:new Date().toISOString(),approverRole:dynamic.step.approvaltype,action:dynamic.change.status.toUpperCase()});
       return {success:true,message:dynamic.finalStatus === "Approved" ? "OPEX finally approved successfully." : "OPEX action recorded successfully."};
@@ -1808,12 +1819,12 @@ CEORemarks,
 
     // Build one notification from the locked OPEX row and effective configured stage.
     const notifyApprovalCommitted = ({ kind, notificationAction, roles = [],
-      includeCreator = false, excludeActor = false, actionDate: committedActionDate }) => notifyCommittedOpex({
+      includeCreator = false, excludeActor = false, actionDate: committedActionDate, isFinalApproval = false }) => notifyCommittedOpex({
         organizationID: Opex.organizationid, opexID: Opex.opexid,
         department: Opex.department, roles,
         directUserIds: includeCreator ? [Opex.createdby] : [],
         excludeUserID: excludeActor ? data.UserID : null, actorUserID: data.UserID,
-        kind, item: Opex.item, qty: Opex.qty, rate: Opex.rate, total: Opex.total,
+        kind, isFinalApproval, item: Opex.item, qty: Opex.qty, rate: Opex.rate, total: Opex.total,
         description: Opex.description, actionQuantity: approvedQuantity, remark: remarks,
         actionDate: committedActionDate,
         approverRole, action: notificationAction,
@@ -2208,7 +2219,7 @@ CEORemarks,
       transactionStarted = false;
 
       notifyApprovalCommitted({
-        kind: "APPROVE", notificationAction: "APPROVED",
+        kind: "APPROVE", isFinalApproval: true, notificationAction: "APPROVED",
         excludeActor: true, actionDate: committedActionDate
       });
 
