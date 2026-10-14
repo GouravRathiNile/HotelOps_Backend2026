@@ -1068,6 +1068,9 @@ const getRGPList = async (data) => {
     const normalizeType = (value) =>
       String(value || "ROLE").trim().toUpperCase();
 
+    const normalizeApprovalType = (value) =>
+      String(value || "").trim().toUpperCase();
+
     const isAssignedApprover = (approval, departmentID) => {
       if (!approval) return false;
 
@@ -1390,32 +1393,36 @@ const getRGPList = async (data) => {
       const approvalResult = await pool.query(
         `
         SELECT
-          RGPApprovalID,
-          RGPID,
-          OrganizationID,
-          RGPApprovalConfigID,
-          ApprovalMasterDetailID,
-          ApprovalLevel,
-          ApprovalRole,
-          ApprovalOrder,
-          ApproverType,
-          ApproverUserID,
-          IsMandatory,
-          Status,
-          StatusDateTime,
-          ActionBy,
-          Remarks
+          a.RGPApprovalID,
+          a.RGPID,
+          a.OrganizationID,
+          a.RGPApprovalConfigID,
+          a.ApprovalMasterDetailID,
+          a.ApprovalLevel,
+          a.ApprovalRole,
+          a.ApprovalOrder,
+          a.ApproverType,
+          a.ApproverUserID,
+          a.IsMandatory,
+          a.Status,
+          a.StatusDateTime,
+          a.ActionBy,
+          a.Remarks,
 
-        FROM Gatepass_RGP_Approval
+          amd.approvaltype AS ApprovalType
 
-        WHERE RGPID = ANY($1::BIGINT[])
-          AND IsDeleted = FALSE
+        FROM Gatepass_RGP_Approval a
+
+        LEFT JOIN approval_master_details amd
+          ON amd.approvalid = a.ApprovalMasterDetailID
+
+        WHERE a.RGPID = ANY($1::BIGINT[])
+          AND a.IsDeleted = FALSE
 
         ORDER BY
-          RGPID ASC,
-          ApprovalOrder ASC,
-          ApprovalLevel ASC,
-          RGPApprovalID ASC;
+          a.RGPID ASC,
+          a.ApprovalOrder ASC,
+          a.RGPApprovalID ASC;
         `,
         [rgpIDs]
       );
@@ -1434,10 +1441,8 @@ const getRGPList = async (data) => {
     // ==========================================================
     // 10. Current Unified RGP Approval Flow
     //
-    // Used ONLY to display NOT APPLICABLE for stages that
-    // were added after an older RGP was created.
-    //
-    // Does NOT change saved approval records.
+    // Display only.
+    // No changes to historical approval permissions.
     // ==========================================================
 
     let currentFlowStages = [];
@@ -1451,12 +1456,23 @@ const getRGPList = async (data) => {
           amd.approvertype,
           amd.role,
           amd.approvaltype,
-          amd.ismandatory
+          amd.ismandatory,
+          selectedUser.FullName AS ApproverUserName
 
         FROM approval_master am
 
         INNER JOIN approval_master_details amd
           ON amd.approvalmasterid = am.approvalmasterid
+
+        LEFT JOIN user_master selectedUser
+          ON selectedUser.UserID =
+            CASE
+              WHEN UPPER(TRIM(amd.approvertype))
+                IN ('USER', 'REGIONAL')
+                AND TRIM(amd.role) ~ '^[0-9]+$'
+              THEN TRIM(amd.role)::BIGINT
+              ELSE NULL
+            END
 
         WHERE am.organizationid = $1
           AND UPPER(TRIM(am.modulename)) =
@@ -1507,8 +1523,7 @@ const getRGPList = async (data) => {
           )
       );
 
-      // Preserve existing rule:
-      // User cannot approve the same RGP twice.
+      // User cannot approve the same RGP twice
       const alreadyApproved = approvals.some(
         (approval) =>
           normalizeStatus(approval.status) === "APPROVED" &&
@@ -1588,84 +1603,115 @@ const getRGPList = async (data) => {
       // ========================================================
       // 12. Display Approvals
       //
-      // Existing stages retain their saved status.
-      // Newly added flow stages show NOT APPLICABLE
-      // for old RGP records.
+      // Only current flow stages will appear.
+      //
+      // Match historical stages by ApprovalType.
+      // New stages = NOT APPLICABLE.
       // ========================================================
 
       const savedApprovals = mapRGPApprovalFlow(approvals);
 
-      const existingStageIDs = new Set(
-        approvals
-          .filter(
-            (approval) =>
-              approval.approvalmasterdetailid != null
-          )
-          .map((approval) =>
-            Number(approval.approvalmasterdetailid)
-          )
-      );
+      const usedSavedIndexes = new Set();
 
-      const notApplicableStages = currentFlowStages
-        .filter(
-          (stage) =>
-            !existingStageIDs.has(Number(stage.approvalid))
-        )
-        .map((stage) => {
-          const approverType = normalizeType(
-            stage.approvertype
-          );
+      const displayApprovals = currentFlowStages.map((stage) => {
+        const currentApprovalType = normalizeApprovalType(
+          stage.approvaltype
+        );
 
-          const selectedUserID =
-            approverType === "USER" ||
-            approverType === "REGIONAL"
-              ? Number(stage.role)
-              : null;
+        const matchedIndex = approvals.findIndex(
+          (approval, index) => {
+            if (usedSavedIndexes.has(index)) {
+              return false;
+            }
+
+            const historicalType = normalizeApprovalType(
+              approval.approvaltype || approval.approvalrole
+            );
+
+            return historicalType === currentApprovalType;
+          }
+        );
+
+        const approverType = normalizeType(
+          stage.approvertype
+        );
+
+        const selectedUserID =
+          ["USER", "REGIONAL"].includes(approverType) &&
+          Number.isSafeInteger(Number(stage.role)) &&
+          Number(stage.role) > 0
+            ? Number(stage.role)
+            : null;
+
+        if (matchedIndex !== -1) {
+          usedSavedIndexes.add(matchedIndex);
+
+          const savedApproval = savedApprovals[matchedIndex];
 
           return {
-            RGPApprovalConfigID: null,
+            ...savedApproval,
 
-            ApprovalMasterDetailID:
-              Number(stage.approvalid),
+            ApprovalType: stage.approvaltype,
 
-            ApprovalLevel:
-              Number(stage.level),
+            ApprovalRole: stage.role,
 
-            ApprovalOrder:
-              Number(stage.level),
+            ApproverType: approverType,
 
-            ApprovalRole:
-              stage.role,
+            ApproverUserID: selectedUserID,
 
-            ApproverType:
-              approverType,
+            ApproverUserName:
+              stage.approverusername || null,
 
-            ApprovalType:
-              stage.approvaltype || null,
+            ApprovalLevel: Number(stage.level),
 
-            ApproverUserID:
-              Number.isSafeInteger(selectedUserID) &&
-              selectedUserID > 0
-                ? selectedUserID
-                : null,
+            ApprovalOrder: Number(stage.level),
 
-            IsMandatory:
-              stage.ismandatory !== false,
-
-            Status: "NOT APPLICABLE",
-
-            ActionBy: null,
-
-            ActionByName: null,
-
-            Remarks: null,
+            Status: savedApproval.Status,
           };
-        });
+        }
 
-      const displayApprovals = [
-        ...savedApprovals,
-        ...notApplicableStages,
-      ];
+        // New stage did not exist when old RGP was created
+        return {
+          RGPApprovalID: null,
+
+          RGPApprovalConfigID: null,
+
+          ApprovalMasterDetailID:
+            Number(stage.approvalid),
+
+          ApprovalLevel:
+            Number(stage.level),
+
+          ApprovalOrder:
+            Number(stage.level),
+
+          ApprovalRole:
+            stage.role,
+
+          ApproverType:
+            approverType,
+
+          ApprovalType:
+            stage.approvaltype || null,
+
+          ApproverUserID:
+            selectedUserID,
+
+          ApproverUserName:
+            stage.approverusername || null,
+
+          IsMandatory:
+            stage.ismandatory !== false,
+
+          Status: "NOT APPLICABLE",
+
+          ActionBy: null,
+
+          ActionByName: null,
+
+          Remarks: null,
+        };
+      });
 
       // ========================================================
       // 13. Response Mapping
