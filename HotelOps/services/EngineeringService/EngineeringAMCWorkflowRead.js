@@ -174,6 +174,7 @@ const list = async (data,mapAMC) => {
       ORDER BY r.createddate DESC,r.amcid DESC LIMIT $${q.values.length+1} OFFSET $${q.values.length+2}`,[...q.values,size,(page-1)*size]);
     const count=await pool.query(`${q.cte} SELECT COUNT(*) AS count FROM records r ${q.where}`,q.values);
     const rows=result.rows.map(row=>mapRow(row,data.UserID,mapAMC));
+    for (const row of rows) row.Approvals=row.Approvals.map(({ApprovalType,Status,Remarks})=>({ApprovalType,Status,Remarks}));
     await attachDocuments(rows);
     for (const row of rows) for (const field of ['VendorName','VendorEmailAddress','VendorMobileNumber',
       'VendorSecondMobileNumber','VendorLandlineNumber','VendorAddress','VendorCity','VendorState',

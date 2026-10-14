@@ -13585,6 +13585,11 @@ const getAllAMC = async (data) => {
     // ============================================================
 
     for (const record of records) {
+      record.Approvals = record.Approvals.map((approval) => ({
+        ApprovalType: approval.ApprovalType || approval.ApprovalRole,
+        Status: approval.Status,
+        Remarks: approval.Remarks,
+      }));
       for (const field of [
         "VendorName",
         "VendorEmailAddress",
