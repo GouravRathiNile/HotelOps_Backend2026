@@ -11,12 +11,14 @@ const notificationUserIds = (values) => [...new Set((Array.isArray(values) ? val
 
 // RD is resolved centrally from Organization 10. Every other role and direct
 // creator remains scoped to the AMC's own organization.
-const resolveAMCApprovalNotificationRecipients = async ({ organizationID,
+const resolveAMCApprovalNotificationRecipients = async ({ organizationID, amcID,
   roles = [], directUserIds = [], excludeUserID = null, actorUserID = null,
   queryable = pool } = {}) => {
   const normalizedRoles = [...new Set(roles.map((role) =>
     String(role || "").trim().toUpperCase()).filter((role) => APPROVAL_ROLES.has(role)))];
   const normalizedUserIds = notificationUserIds(directUserIds);
+  const externalScope = amcID == null ? "FALSE"
+    : require("./EngineeringAMCWorkflow").externalAccessSQL("um", "om", "$7");
   const result = await queryable.query(`
     SELECT DISTINCT um.UserID,
       COALESCE(NULLIF(TRIM(om.ShortName), ''), om.OrganizationName) AS OrganizationShortName,
@@ -29,10 +31,10 @@ const resolveAMCApprovalNotificationRecipients = async ({ organizationID,
       AND um.IsActive = TRUE AND um.IsDeleted = FALSE AND um.IsLocked = FALSE
       AND ($4::text IS NULL OR um.UserID::text <> $4::text)
       AND (
-        (um.UserID::text = ANY($3::text[]) AND EXISTS (
+        (um.UserID::text = ANY($3::text[]) AND (EXISTS (
           SELECT 1 FROM user_org_mapping direct_uom
           WHERE direct_uom.UserID = um.UserID AND direct_uom.OrganizationID = $1
-            AND direct_uom.IsActive = TRUE AND direct_uom.IsDeleted = FALSE))
+            AND direct_uom.IsActive = TRUE AND direct_uom.IsDeleted = FALSE) OR ${externalScope}))
         OR ('FC' = ANY($2::text[])
           AND UPPER(TRIM(um.UserType)) = 'HOD'
           AND UPPER(TRIM(COALESCE(dm.DepartmentName, ''))) = 'FINANCE'
@@ -75,7 +77,8 @@ const resolveAMCApprovalNotificationRecipients = async ({ organizationID,
               AND ceo_uom.IsActive = TRUE AND ceo_uom.IsDeleted = FALSE))
       );`, [organizationID, normalizedRoles, normalizedUserIds,
     excludeUserID == null ? null : String(excludeUserID),
-    actorUserID == null ? null : String(actorUserID), AMC_RD_ORGANIZATION_ID]);
+    actorUserID == null ? null : String(actorUserID), AMC_RD_ORGANIZATION_ID,
+    ...(amcID == null ? [] : [amcID])]);
   return {
     userIds: notificationUserIds(result.rows.map((row) => row.userid)),
     organizationShortName: String(result.rows[0]?.organizationshortname || "").trim(),
@@ -102,7 +105,7 @@ const notifyAMCApproval = async ({ organizationID, amcID, equipmentName,
   roles = [], directUserIds = [], excludeUserID = null, actorUserID = null,
   kind, approverRole, action,
   queryable = pool, publishNotification } = {}) => {
-  const context = await resolveAMCApprovalNotificationRecipients({ organizationID,
+  const context = await resolveAMCApprovalNotificationRecipients({ organizationID, amcID,
     roles, directUserIds, excludeUserID, actorUserID, queryable });
   if (!context.userIds.length) return { skipped: true, reason: "no-eligible-recipient" };
   const content = amcApprovalNotificationContent({ kind, equipmentName,
@@ -130,5 +133,5 @@ const notifyCommittedAMCApproval = (event) => {
     .catch((error) => console.error("AMC approval notification failed:", error.message));
 };
 
-module.exports = { notificationUserIds, resolveAMCApprovalNotificationRecipients,
+module.exports = { AMC_RD_ORGANIZATION_ID, notificationUserIds, resolveAMCApprovalNotificationRecipients,
   amcApprovalNotificationContent, notifyAMCApproval, notifyCommittedAMCApproval };

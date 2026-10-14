@@ -180,8 +180,8 @@ test("AMC create and actions dispatch only after commit and use configured stage
   const approval = source.match(/const processAMCApproval = async \(data\)[\s\S]*?\/\/ =+Create AMC Approval Config/)?.[0] || "";
   assert.ok(create.indexOf('await client.query("COMMIT")') <
     create.indexOf("notifyCommittedAMCApproval"));
-  assert.match(create, /ORDER BY\s+ApprovalOrder ASC,\s+ApprovalLevel ASC/);
-  assert.match(create, /firstApprovalRole = configuredFlow\[0\]\?\.ApprovalRole/);
+  assert.match(create, /AMCWorkflow\.snapshot/);
+  assert.match(create, /firstStep = AMCWorkflow\.currentStep\(workflowSteps\)/);
   assert.ok(approval.lastIndexOf('await client.query("COMMIT")') <
     approval.lastIndexOf("notifyCommittedAMCApproval"));
   assert.match(approval, /nextApprovalRole = approvalFlow\[currentIndex \+ 1\]\?\.ApprovalRole/);

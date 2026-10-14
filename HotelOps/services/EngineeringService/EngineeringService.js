@@ -6,6 +6,8 @@ const { formatDate } = require("../../utils/dateFormatter");
 const { numberToWords } = require("../../utils/numberToWords");
 const generateUrl = require("../../AzurConfigration/Engineering/AzureGetData");
 const { notifyCommittedAMCApproval } = require("./EngineeringAMCApprovalNotificationService");
+const AMCWorkflow = require("./EngineeringAMCWorkflow");
+const AMCWorkflowRead = require("./EngineeringAMCWorkflowRead");
 // ===============================================Pdf Helper
 const { generatePdf, loadLogo } = require("../../utils/pdfHelper");
 const PdfPrinter = require("pdfmake");
@@ -11751,6 +11753,7 @@ const createAMC = async (data) => {
       SELECT
         EquipmentID,
         OrganizationID,
+        DepartmentID,
         Description
       FROM Engineering_Equipment_Entry_Master
       WHERE EquipmentID = $1
@@ -11929,59 +11932,8 @@ const createAMC = async (data) => {
       );
     }
 
-    // ============================================================
-    // 5. Validate AMC Approval Configuration
-    //
-    // If organization-specific config exists:
-    // only FC, GM, RD, CEO are allowed.
-    //
-    // If no config exists:
-    // service will later use default:
-    // FC -> GM -> RD -> CEO
-    // ============================================================
-
-    const approvalConfigResult = await client.query(
-      `
-      SELECT
-        ApprovalLevel,
-        ApprovalRole,
-        ApprovalOrder,
-        IsMandatory
-      FROM Engineering_AMC_Approval_Config
-      WHERE OrganizationID = $1
-        AND IsDeleted = FALSE
-      ORDER BY
-        ApprovalOrder ASC,
-        ApprovalLevel ASC,
-        AMCApprovalConfigID ASC;
-      `,
-      [data.OrganizationID],
-    );
-
-    const validApprovalRoles = new Set([
-      "FC",
-      "GM",
-      "RD",
-      "CEO",
-    ]);
-
-    for (const row of approvalConfigResult.rows) {
-      const role = String(
-        row.approvalrole || "",
-      )
-        .trim()
-        .toUpperCase();
-
-      if (!validApprovalRoles.has(role)) {
-        await client.query("ROLLBACK");
-        transactionStarted = false;
-
-        return fail(
-          "AMC approval configuration contains an invalid approval role.",
-          400,
-        );
-      }
-    }
+    // New contracts always snapshot the selected AMC Builder flow.
+    await AMCWorkflow.getActor(client, data.OrganizationID, data.UserID);
 
     // ============================================================
     // 6. Create AMC Approval Row
@@ -12032,26 +11984,22 @@ const createAMC = async (data) => {
     // 7. Commit
     // ============================================================
 
+    const workflowRecord = { amcid: AMCID, organizationid: data.OrganizationID,
+      createdby: data.UserID, departmentid: equipmentResult.rows[0].departmentid };
+    const workflowSteps = await AMCWorkflow.snapshot(client, workflowRecord);
+    const firstStep = AMCWorkflow.currentStep(workflowSteps);
+    const recipients = await AMCWorkflow.recipientIds(client, workflowRecord, firstStep);
+
     await client.query("COMMIT");
     transactionStarted = false;
 
-    const configuredFlow = approvalConfigResult.rows.length
-      ? approvalConfigResult.rows.map((row) => ({
-        ApprovalRole: String(row.approvalrole || "").trim().toUpperCase(),
-      }))
-      : DEFAULT_AMC_APPROVALS;
-    const firstApprovalRole = configuredFlow[0]?.ApprovalRole;
-
-    // CREATE notifies only the effective first approval stage. The creator is
-    // included naturally only when they themselves satisfy that role query.
     notifyCommittedAMCApproval({
-      organizationID: data.OrganizationID,
-      amcID: AMCID,
+      organizationID: data.OrganizationID, amcID: AMCID,
       equipmentName: equipmentResult.rows[0].description,
-      roles: firstApprovalRole ? [firstApprovalRole] : [],
-      kind: "CREATE",
-      firstRole: firstApprovalRole,
-      action: "CREATED",
+      directUserIds: recipients, roles: [],
+      kind: firstStep ? "CREATE" : "FINAL_APPROVE",
+      actorUserID: firstStep ? null : data.UserID,
+      action: firstStep ? "CREATED" : "APPROVED",
     });
 
     return {
@@ -12081,6 +12029,8 @@ const createAMC = async (data) => {
     if (retryResponse) {
       return retryResponse;
     }
+
+    if (error.statusCode) return fail(error.message, error.statusCode);
 
     if (error.code === "23503") {
       return fail(
@@ -12622,6 +12572,8 @@ const attachAMCRelatedData = async (
 // ===================Get All AMC Function
 const getAllAMC = async (data) => {
   try {
+    const snapshotResult = await AMCWorkflowRead.list(data, mapAMC);
+    if (snapshotResult) return ok("AMC records fetched successfully.", snapshotResult);
     // ============================================================
     // Organization
     // ============================================================
@@ -13692,6 +13644,7 @@ const getAllAMC = async (data) => {
       error.message,
     );
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse =
       retryableDatabaseResponse(
         error,
@@ -13710,6 +13663,8 @@ const getAllAMC = async (data) => {
 // ============================================================Get AMC by ID
 const getAMCById = async (data) => {
   try {
+    const snapshotResult = await AMCWorkflowRead.detail(data, mapAMC);
+    if (snapshotResult) return ok("AMC record fetched successfully.", snapshotResult);
     // ============================================================
     // Validate AMC ID
     // ============================================================
@@ -14485,6 +14440,7 @@ const getAMCById = async (data) => {
       error.message,
     );
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     const retryResponse =
       retryableDatabaseResponse(
         error,
@@ -14494,9 +14450,7 @@ const getAMCById = async (data) => {
       return retryResponse;
     }
 
-    return databaseFailure(
-      "Unable to fetch AMC record at this time.",
-    );
+    return databaseFailure(error, "Fetch AMC record");
   }
 };
 // ============================================================Update AMC
@@ -15133,6 +15087,7 @@ const processAMCApproval = async (data) => {
         am.OrganizationID,
         am.EquipmentID,
         am.CreatedBy,
+        e.DepartmentID,
         e.Description AS EquipmentName
       FROM Engineering_AMC_Master am
       INNER JOIN Engineering_Equipment_Entry_Master e
@@ -15158,6 +15113,17 @@ const processAMCApproval = async (data) => {
     const OrganizationID = Number(
       AMC.organizationid,
     );
+
+    const dynamicAction = await AMCWorkflow.applyAction(client, AMC, data);
+    if (dynamicAction) {
+      await client.query("COMMIT");
+      notifyCommittedAMCApproval({ organizationID: OrganizationID, amcID: AMCID,
+        equipmentName: AMC.equipmentname, directUserIds: dynamicAction.recipients, roles: [],
+        excludeUserID: ["REJECT", "RETURN"].includes(dynamicAction.action) ? UserID : null,
+        actorUserID: UserID, kind: dynamicAction.kind,
+        approverRole: dynamicAction.step.approvaltype, action: dynamicAction.status.toUpperCase() });
+      return ok(`AMC ${dynamicAction.status.toLowerCase()} successfully.`);
+    }
 
     // ============================================================
     // Resolve logged-in user's AMC approval role
@@ -15678,6 +15644,7 @@ const processAMCApproval = async (data) => {
       return retryResponse;
     }
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     return databaseFailure(error, "Process AMC approval");
   } finally {
     client.release();
@@ -16316,6 +16283,8 @@ const generateAMCDetailPdf = async (data) => {
     ) {
       return fail("Valid AMCID is required.", 400);
     }
+
+    const snapshotDetail = await AMCWorkflowRead.detail({ ...data, AMCID: amcID }, mapAMC);
 
     // =========================================================
     // Fetch AMC + Equipment + Approval Details
@@ -16984,8 +16953,10 @@ const generateAMCDetailPdf = async (data) => {
     // Approval Table
     // =========================================================
 
-    const approvalFlow = await getAMCApprovalFlow(organizationID);
-    const approvals = approvalFlow.map(({ ApprovalRole }) => ({
+    const approvalFlow = snapshotDetail ? null : await getAMCApprovalFlow(organizationID);
+    const approvals = snapshotDetail ? snapshotDetail.Approvals.map(step => ({
+      Role: step.ApprovalType, Status: step.Status, ApprovedBy: step.ApprovedByName, Remarks: step.Remarks,
+    })) : approvalFlow.map(({ ApprovalRole }) => ({
       Role: ApprovalRole,
       Status: detail[ApprovalRole + "Status"],
       ApprovedBy: detail[ApprovalRole + "ApprovedByName"],
@@ -17854,6 +17825,7 @@ const generateAMCDetailPdf = async (data) => {
       error,
     );
 
+    if (error.statusCode) return fail(error.message, error.statusCode);
     return databaseFailure(
       error,
       "Unable to generate AMC detail PDF.",

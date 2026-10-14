@@ -33,6 +33,7 @@ async function run({ action = 'APPROVE', final = true, rowCount = 1,
   };
   const context = {
     pool: { connect: async () => client },
+    AMCWorkflow: { applyAction: async () => null },
     resolveAMCAccess: async () => ({ approvalRole: 'FC' }),
     getAMCApprovalFlow: async () => (final ? ['FC'] : ['FC', 'GM']).map(ApprovalRole => ({ ApprovalRole })),
     notifyCommittedAMCApproval: () => calls.push({ sql: 'NOTIFY' }),
