@@ -51,12 +51,15 @@ const GatepassHandler = async (message) => {
       // ========================================================NRGP_APPROVAL
       case "PROCESS_NRGP_APPROVAL":
         return await GatepassService.processNRGPApproval(message.data);
+        // ==============================================================================================================This is not in current use
       // ========================================================Create Config
       case "SAVE_NRGP_APPROVAL_CONFIG":
         return await GatepassService.saveNRGPApprovalConfig(message.data);
       // ========================================================Delete Config
       case "DELETE_NRGP_APPROVAL_CONFIG":
         return await GatepassService.deleteNRGPApprovalConfig(message.data);
+      // ==============================================================================================================
+
       // ========================================================
       // Invalid Action
       // ========================================================
