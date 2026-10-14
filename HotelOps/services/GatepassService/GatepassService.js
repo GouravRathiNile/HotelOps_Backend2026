@@ -62,13 +62,6 @@ const databaseFailure = (
 
 // ===========================================================================================RGP
 // ============================================================Helpers
-// ======================== Default RGP Approval Levels
-const DEFAULT_RGP_APPROVALS = Object.freeze([
-  { LevelNo: 1, ApprovalRole: "HOD" },
-  { LevelNo: 2, ApprovalRole: "FC" },
-  { LevelNo: 3, ApprovalRole: "GM" },
-]);
-// ======================== Normalize RGP Approval Role
 // ======================= Approval Role Condition Helper
 const resolveRGPApprovalRole = ({
   UserType,
@@ -257,25 +250,38 @@ const mapRGPDocument = (row) => ({
 });
 // ==========================Map RGP Approval
 const mapRGPApproval = (row) => ({
-  // Internal use only.
-  // Final API response se remove kar denge.
   RGPApprovalID:
     Number(row.rgpapprovalid),
 
   RGPApprovalConfigID:
     row.rgpapprovalconfigid == null
       ? null
-      : Number(
-          row.rgpapprovalconfigid,
-        ),
+      : Number(row.rgpapprovalconfigid),
+
+  ApprovalMasterDetailID:
+    row.approvalmasterdetailid == null
+      ? null
+      : Number(row.approvalmasterdetailid),
 
   ApprovalLevel:
-    Number(
-      row.approvallevel,
-    ),
+    Number(row.approvallevel),
 
   ApprovalRole:
     row.approvalrole,
+
+  ApprovalOrder:
+    Number(row.approvalorder),
+
+  ApproverType:
+    row.approvertype || "ROLE",
+
+  ApproverUserID:
+    row.approveruserid == null
+      ? null
+      : Number(row.approveruserid),
+
+  IsMandatory:
+    row.ismandatory,
 
   Status:
     row.status,
@@ -283,7 +289,6 @@ const mapRGPApproval = (row) => ({
   Remarks:
     row.remarks,
 });
-
 // ==========================Map RGP Approval Flow
 const mapRGPApprovalFlow = (approvalRows) => {
   let flowStopped = false;
@@ -410,36 +415,43 @@ const attachRGPRelatedData = async (
   // Approvals
   // ==========================================================
 
-  const approvalResult =
-    await pool.query(
-      `
-      SELECT
-        RGPApprovalID,
-        RGPID,
-        OrganizationID,
+ 
+const approvalResult = await pool.query(
+  `
+    SELECT
+      RGPApprovalID,
+      RGPID,
+      OrganizationID,
 
-        RGPApprovalConfigID,
-        ApprovalLevel,
-        ApprovalRole,
-        ApprovalOrder,
+      RGPApprovalConfigID,
+      ApprovalMasterDetailID,
 
-        Status,
-        StatusDateTime,
-        ActionBy,
-        Remarks
+      ApprovalLevel,
+      ApprovalRole,
+      ApprovalOrder,
 
-      FROM Gatepass_RGP_Approval
+      ApproverType,
+      ApproverUserID,
+      IsMandatory,
 
-      WHERE RGPID =
-        ANY($1::BIGINT[])
+      Status,
+      StatusDateTime,
+      ActionBy,
+      Remarks
 
-        AND IsDeleted = FALSE
+    FROM Gatepass_RGP_Approval
 
-      ORDER BY
-        ApprovalOrder ASC;
-      `,
-      [rgpIDs],
-    );
+    WHERE RGPID = ANY($1::BIGINT[])
+      AND IsDeleted = FALSE
+
+    ORDER BY
+      RGPID ASC,
+      ApprovalOrder ASC,
+      ApprovalLevel ASC,
+      RGPApprovalID ASC;
+  `,
+  [rgpIDs],
+);
 
   return rows.map((row) => {
     const rgp =
@@ -473,6 +485,7 @@ rgp.Approvals =
 // ============================================================ CREATE RGP
 const createRGP = async (data) => {
   const client = await pool.connect();
+
   let committed = false;
   let notificationEvent;
 
@@ -480,19 +493,15 @@ const createRGP = async (data) => {
     await client.query("BEGIN");
 
     // ==========================================================
-    // Check Organization
+    // 1. Check Organization
     // ==========================================================
 
     const organizationResult = await client.query(
       `
-      SELECT
-        OrganizationID
-
-      FROM Organization_Master
-
-      WHERE OrganizationID = $1
-
-      LIMIT 1;
+        SELECT OrganizationID
+        FROM Organization_Master
+        WHERE OrganizationID = $1
+        LIMIT 1;
       `,
       [data.OrganizationID],
     );
@@ -507,133 +516,286 @@ const createRGP = async (data) => {
     }
 
     // ==========================================================
-    // Get Organization Approval Configuration
+    // 2. Get Mandatory RGP Approval Flow
     // ==========================================================
 
-    const approvalConfigResult = await client.query(
+    const approvalFlowResult = await client.query(
       `
-      SELECT
-        RGPApprovalConfigID,
-        OrganizationID,
-        ApprovalLevel,
-        ApprovalRole,
-        ApprovalOrder,
-        IsMandatory
+        SELECT
+          approvalmasterid,
+          flowname,
+          modulename,
+          organizationid
 
-      FROM Gatepass_RGP_Approval_Config
+        FROM approval_master
 
-      WHERE OrganizationID = $1
-        AND IsDeleted = FALSE
+        WHERE organizationid = $1
+          AND UPPER(TRIM(modulename)) = 'GATEPASS MANAGEMENT'
+          AND isactive = TRUE
+          AND isdelete = FALSE
 
-      ORDER BY
-        ApprovalOrder ASC;
+          -- Match RGP, but NOT NRGP
+          AND UPPER(flowname) ~ '(^|[^A-Z])RGP([^A-Z]|$)'
+
+        ORDER BY approvalmasterid ASC
+
+        LIMIT 2;
       `,
       [data.OrganizationID],
     );
 
+    // No fallback approval system
+
+    if (!approvalFlowResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "RGP approval flow is not configured for this organization. Please configure an active approval flow before creating RGP.",
+        400,
+      );
+    }
+
+    // Prevent ambiguous configuration
+
+    if (approvalFlowResult.rows.length > 1) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        "Multiple active RGP approval flows found for this organization. Please keep only one active RGP approval flow.",
+        400,
+      );
+    }
+
+    const approvalMasterID =
+      Number(approvalFlowResult.rows[0].approvalmasterid);
+
     // ==========================================================
-    // Resolve Approval Levels
-    //
-    // Config available -> Organization Config
-    // Config not available -> Default HOD -> FC -> GM
+    // 3. Get Approval Flow Details
     // ==========================================================
 
-    let approvalLevels = [];
+    const approvalDetailsResult = await client.query(
+      `
+        SELECT
+          approvalid,
+          approvalmasterid,
+          level,
+          approvertype,
+          role,
+          approvaltype,
+          ismandatory
 
-    if (approvalConfigResult.rows.length) {
-      approvalLevels =
-        approvalConfigResult.rows.map(
-          (row) => ({
-            RGPApprovalConfigID:
-              Number(
-                row.rgpapprovalconfigid,
-              ),
+        FROM approval_master_details
 
-            LevelNo:
-              Number(
-                row.approvallevel,
-              ),
+        WHERE approvalmasterid = $1
+          AND isdelete = FALSE
 
-            ApprovalRole:
-              row.approvalrole,
+        ORDER BY
+          level ASC,
+          approvalid ASC;
+      `,
+      [approvalMasterID],
+    );
 
-            ApprovalOrder:
-              Number(
-                row.approvalorder,
-              ),
+    if (!approvalDetailsResult.rows.length) {
+      await client.query("ROLLBACK");
 
-            IsMandatory:
-              row.ismandatory,
-          }),
-        );
-    } else {
-      approvalLevels =
-        DEFAULT_RGP_APPROVALS.map(
-          (approval, index) => ({
-            RGPApprovalConfigID:
-              null,
-
-            LevelNo:
-              approval.LevelNo,
-
-            ApprovalRole:
-              approval.ApprovalRole,
-
-            ApprovalOrder:
-              index + 1,
-
-            IsMandatory:
-              true,
-          }),
-        );
+      return fail(
+        "RGP approval flow has no approval steps. Please configure approval steps before creating RGP.",
+        400,
+      );
     }
 
     // ==========================================================
-    // Insert Master
+    // 4. Validate and Prepare Approval Steps
+    // ==========================================================
+
+    const approvalLevels = [];
+    const usedLevels = new Set();
+
+    for (const row of approvalDetailsResult.rows) {
+      const level = Number(row.level);
+
+      const approverType = String(
+        row.approvertype || "",
+      ).trim().toUpperCase();
+
+      const configuredRole = String(
+        row.role || "",
+      ).trim();
+
+      const approvalType = String(
+        row.approvaltype || "",
+      ).trim();
+
+      if (!Number.isInteger(level) || level <= 0) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          "Invalid approval level found in RGP approval flow.",
+          400,
+        );
+      }
+
+      if (usedLevels.has(level)) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          `Duplicate approval level ${level} found in RGP approval flow.`,
+          400,
+        );
+      }
+
+      usedLevels.add(level);
+
+      if (
+        !["ROLE", "USER", "REGIONAL"].includes(approverType)
+      ) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          `Invalid approver type at approval level ${level}.`,
+          400,
+        );
+      }
+
+      if (!configuredRole || !approvalType) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          `Role and Approval Type are required at approval level ${level}.`,
+          400,
+        );
+      }
+
+      let approverUserID = null;
+
+      // USER / REGIONAL store selected UserID in role
+      if (
+        approverType === "USER" ||
+        approverType === "REGIONAL"
+      ) {
+        approverUserID = Number(configuredRole);
+
+        if (
+          !Number.isSafeInteger(approverUserID) ||
+          approverUserID <= 0
+        ) {
+          await client.query("ROLLBACK");
+
+          return fail(
+            `Valid selected UserID is required at approval level ${level}.`,
+            400,
+          );
+        }
+      }
+
+      // ROLE: configured role itself is the authorization role.
+      // USER/REGIONAL: approvalType is the acting capacity.
+      const approvalRole =
+        approverType === "ROLE"
+          ? configuredRole
+          : approvalType;
+
+      if (approvalRole.length > 50) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          `Approval role exceeds 50 characters at level ${level}.`,
+          400,
+        );
+      }
+
+      approvalLevels.push({
+        ApprovalMasterDetailID: Number(row.approvalid),
+        LevelNo: level,
+        ApprovalOrder: level,
+        ApprovalRole: approvalRole,
+        ApproverType: approverType,
+        ApproverUserID: approverUserID,
+        IsMandatory: row.ismandatory,
+      });
+    }
+
+    // ==========================================================
+    // 5. Validate Selected USER / REGIONAL Approvers
+    // ==========================================================
+
+    const selectedUserIDs = [
+      ...new Set(
+        approvalLevels
+          .filter(
+            (approval) =>
+              approval.ApproverType === "USER" ||
+              approval.ApproverType === "REGIONAL",
+          )
+          .map((approval) => approval.ApproverUserID),
+      ),
+    ];
+
+    if (selectedUserIDs.length > 0) {
+      const usersResult = await client.query(
+        `
+          SELECT UserID
+          FROM user_master
+          WHERE UserID = ANY($1::BIGINT[])
+            AND IsActive = TRUE
+            AND IsDeleted = FALSE;
+        `,
+        [selectedUserIDs],
+      );
+
+      const validUserIDs = new Set(
+        usersResult.rows.map((row) => String(row.userid)),
+      );
+
+      for (const approval of approvalLevels) {
+        if (
+          approval.ApproverUserID !== null &&
+          !validUserIDs.has(String(approval.ApproverUserID))
+        ) {
+          await client.query("ROLLBACK");
+
+          return fail(
+            `Selected approver at level ${approval.LevelNo} does not exist or is inactive.`,
+            400,
+          );
+        }
+      }
+    }
+
+    // ==========================================================
+    // 6. Insert RGP Master
     // ==========================================================
 
     const masterResult = await client.query(
       `
-      INSERT INTO Gatepass_RGP_Entry_Master
-      (
-        OrganizationID,
-        ExpectedReturnDate,
-        VendorName,
-        ContactNumber,
-        Company,
-        DepartmentID,
-        Address,
-        TakenBy,
-
-        Status,
-
-        IsDeleted,
-
-        CreatedBy,
-        CreatedDate
-      )
-      VALUES
-      (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7,
-        $8,
-
-        'PENDING',
-
-        FALSE,
-
-        $9,
-        CURRENT_TIMESTAMP
-      )
-
-      RETURNING
-        RGPID,
-        RGPNumber, OrganizationID, DepartmentID, CreatedBy;
+        INSERT INTO Gatepass_RGP_Entry_Master
+        (
+          OrganizationID,
+          ExpectedReturnDate,
+          VendorName,
+          ContactNumber,
+          Company,
+          DepartmentID,
+          Address,
+          TakenBy,
+          Status,
+          IsDeleted,
+          CreatedBy,
+          CreatedDate
+        )
+        VALUES
+        (
+          $1, $2, $3, $4, $5, $6,
+          $7, $8, 'PENDING', FALSE,
+          $9, CURRENT_TIMESTAMP
+        )
+        RETURNING
+          RGPID,
+          RGPNumber,
+          OrganizationID,
+          DepartmentID,
+          CreatedBy;
       `,
       [
         data.OrganizationID,
@@ -644,82 +806,48 @@ const createRGP = async (data) => {
         data.DepartmentID,
         data.Address,
         data.TakenBy,
-
         data.UserID,
       ],
     );
 
-    const rgpID =
-      Number(
-        masterResult.rows[0]
-          .rgpid,
-      );
-
-    const rgpNumber =
-      Number(
-        masterResult.rows[0]
-          .rgpnumber,
-      );
+    const rgpID = Number(masterResult.rows[0].rgpid);
 
     // ==========================================================
-    // Insert Items
+    // 7. Insert RGP Items
     // ==========================================================
 
-    for (
-      const item of
-      data.Items || []
-    ) {
+    for (const item of data.Items || []) {
       await client.query(
         `
-        INSERT INTO Gatepass_RGP_Entry_Item_Details
-        (
-          RGPID,
-          OrganizationID,
-
-          ItemName,
-          Specification,
-          Quantity,
-          Unit,
-          Rate,
-          MakeModel,
-          SerialNumber,
-
-          ReturnedQuantity,
-          RemainingQuantity,
-          IsReturned,
-
-          IsDeleted,
-
-          CreatedBy,
-          CreatedDate
-        )
-        VALUES
-        (
-          $1,
-          $2,
-
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8,
-          $9,
-
-          0,
-          $5,
-          FALSE,
-
-          FALSE,
-
-          $10,
-          CURRENT_TIMESTAMP
-        );
+          INSERT INTO Gatepass_RGP_Entry_Item_Details
+          (
+            RGPID,
+            OrganizationID,
+            ItemName,
+            Specification,
+            Quantity,
+            Unit,
+            Rate,
+            MakeModel,
+            SerialNumber,
+            ReturnedQuantity,
+            RemainingQuantity,
+            IsReturned,
+            IsDeleted,
+            CreatedBy,
+            CreatedDate
+          )
+          VALUES
+          (
+            $1, $2, $3, $4, $5,
+            $6, $7, $8, $9,
+            0, $5, FALSE, FALSE,
+            $10, CURRENT_TIMESTAMP
+          );
         `,
         [
           rgpID,
           data.OrganizationID,
-
           item.ItemName,
           item.Specification,
           item.Quantity,
@@ -727,1538 +855,901 @@ const createRGP = async (data) => {
           item.Rate,
           item.MakeModel,
           item.SerialNumber,
-
           data.UserID,
         ],
       );
     }
 
     // ==========================================================
-    // Insert Documents
+    // 8. Insert RGP Documents
     // ==========================================================
 
-    for (
-      const document of
-      data.Documents || []
-    ) {
+    for (const document of data.Documents || []) {
       await client.query(
         `
-        INSERT INTO Gatepass_RGP_Entry_Master_Document
-        (
-          RGPID,
-
-          FileName,
-          FilePath,
-          FileType,
-          FileSize,
-
-          IsDeleted,
-
-          CreatedBy,
-          CreatedDate
-        )
-        VALUES
-        (
-          $1,
-
-          $2,
-          $3,
-          $4,
-          $5,
-
-          FALSE,
-
-          $6,
-          CURRENT_TIMESTAMP
-        );
+          INSERT INTO Gatepass_RGP_Entry_Master_Document
+          (
+            RGPID,
+            FileName,
+            FilePath,
+            FileType,
+            FileSize,
+            IsDeleted,
+            CreatedBy,
+            CreatedDate
+          )
+          VALUES
+          (
+            $1, $2, $3, $4, $5,
+            FALSE, $6, CURRENT_TIMESTAMP
+          );
         `,
         [
           rgpID,
-
           document.FileName,
           document.FilePath,
           document.FileType,
           document.FileSize,
-
           data.UserID,
         ],
       );
     }
 
     // ==========================================================
-    // Create Approval Rows
+    // 9. Insert Approval Rows from New Flow Builder
     // ==========================================================
 
     const createdApprovals = [];
-    for (
-      const approval of
-      approvalLevels
-    ) {
+
+    for (const approval of approvalLevels) {
       const approvalResult = await client.query(
         `
-        INSERT INTO Gatepass_RGP_Approval
-        (
-          RGPID,
-          OrganizationID,
+          INSERT INTO Gatepass_RGP_Approval
+          (
+            RGPID,
+            OrganizationID,
 
-          RGPApprovalConfigID,
-          ApprovalLevel,
-          ApprovalRole,
-          ApprovalOrder,
+            RGPApprovalConfigID,
+            ApprovalMasterDetailID,
 
-          Status,
+            ApprovalLevel,
+            ApprovalRole,
+            ApprovalOrder,
 
-          IsDeleted,
+            ApproverType,
+            ApproverUserID,
+            IsMandatory,
 
-          CreatedBy,
-          CreatedDate
-        )
-        VALUES
-        (
-          $1,
-          $2,
+            Status,
+            IsDeleted,
+            CreatedBy,
+            CreatedDate
+          )
+          VALUES
+          (
+            $1,
+            $2,
 
-          $3,
-          $4,
-          $5,
-          $6,
+            NULL,
+            $3,
 
-          'Pending',
+            $4,
+            $5,
+            $6,
 
-          FALSE,
+            $7,
+            $8,
+            $9,
 
-          $7,
-          CURRENT_TIMESTAMP
-        )
-        RETURNING RGPApprovalID, ApprovalRole, ApprovalOrder, ApprovalLevel, Status;
+            'Pending',
+            FALSE,
+            $10,
+            CURRENT_TIMESTAMP
+          )
+          RETURNING
+            RGPApprovalID,
+            ApprovalMasterDetailID,
+            ApprovalLevel,
+            ApprovalRole,
+            ApprovalOrder,
+            ApproverType,
+            ApproverUserID,
+            IsMandatory,
+            Status;
         `,
         [
           rgpID,
           data.OrganizationID,
 
-          approval.RGPApprovalConfigID,
+          approval.ApprovalMasterDetailID,
+
           approval.LevelNo,
           approval.ApprovalRole,
           approval.ApprovalOrder,
 
+          approval.ApproverType,
+          approval.ApproverUserID,
+          approval.IsMandatory,
+
           data.UserID,
         ],
       );
+
       createdApprovals.push(approvalResult.rows[0]);
     }
 
     // ==========================================================
-    // Commit
+    // 10. Commit and Notification
     // ==========================================================
 
-    notificationEvent = { master: masterResult.rows[0], approvals: createdApprovals, action: "CREATE" };
+    notificationEvent = {
+      master: masterResult.rows[0],
+      approvals: createdApprovals,
+      action: "CREATE",
+    };
+
     await client.query("COMMIT");
     committed = true;
 
-    return ok(
-      "RGP created successfully."
-    );
-  } catch (error) {
-    await client.query(
-      "ROLLBACK",
-    );
+    return ok("RGP created successfully.");
 
-    return databaseFailure(
-      error,
-      "Create RGP",
-    );
+  } catch (error) {
+    if (!committed) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "Create RGP rollback error:",
+          rollbackError.message,
+        );
+      }
+    }
+
+    return databaseFailure(error, "Create RGP");
+
   } finally {
     client.release();
-    // Keep delivery outside transaction error handling and release the connection first.
-    if (committed) notifyCommittedRGPEvent(notificationEvent);
+
+    if (committed) {
+      notifyCommittedRGPEvent(notificationEvent);
+    }
   }
 };
 // ============================================================Get RGP List
 const getRGPList = async (data) => {
   try {
     // ==========================================================
-    // Pagination
+    // 1. Pagination & Validation
     // ==========================================================
 
-    const page =
-      Math.max(
-        Number(data.page) || 1,
-        1,
+    const organizationID = Number(data.OrganizationID);
+
+    if (
+      !Number.isSafeInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail("Valid OrganizationID is required.", 400);
+    }
+
+    const page = Math.max(Number(data.page) || 1, 1);
+    const pageSize = Math.min(
+      Math.max(Number(data.PageSize) || 10, 1),
+      100
+    );
+    const offset = (page - 1) * pageSize;
+
+    // ==========================================================
+    // 2. Logged-in User
+    // ==========================================================
+
+    const userID = Number(data.UserID);
+    const userDepartmentID = Number(data.UserDepartmentID);
+
+    const approvalRole = normalizeRGPApprovalRole(
+      resolveRGPApprovalRole(data)
+    );
+
+    const departmentName = String(
+      data.DepartmentName || ""
+    ).trim().toUpperCase();
+
+    const isSecurity = departmentName === "SECURITY";
+    const isCEO = approvalRole === "CEO";
+
+    // ==========================================================
+    // 3. Helpers
+    // ==========================================================
+
+    const normalizeStatus = (value) =>
+      String(value || "PENDING").trim().toUpperCase();
+
+    const normalizeType = (value) =>
+      String(value || "ROLE").trim().toUpperCase();
+
+    const isAssignedApprover = (approval, departmentID) => {
+      if (!approval) return false;
+
+      const type = normalizeType(approval.approvertype);
+
+      // USER / REGIONAL: selected user only
+      if (type === "USER" || type === "REGIONAL") {
+        return (
+          Number.isSafeInteger(userID) &&
+          userID > 0 &&
+          approval.approveruserid != null &&
+          Number(approval.approveruserid) === userID
+        );
+      }
+
+      // ROLE approval
+      if (type !== "ROLE" || !approvalRole) {
+        return false;
+      }
+
+      const role = normalizeRGPApprovalRole(
+        approval.approvalrole
       );
 
-    const pageSize =
-      Math.min(
-        Math.max(
-          Number(data.PageSize) || 10,
-          1,
-        ),
-        100,
-      );
+      if (role !== approvalRole) {
+        return false;
+      }
 
-    const offset =
-      (page - 1) * pageSize;
+      // HOD can approve own department only
+      if (role === "HOD") {
+        return (
+          Number.isSafeInteger(userDepartmentID) &&
+          userDepartmentID > 0 &&
+          userDepartmentID === Number(departmentID)
+        );
+      }
 
-    const values = [];
+      return true;
+    };
+
+    // ==========================================================
+    // 4. Base Conditions
+    // ==========================================================
+
+    const values = [organizationID];
 
     const conditions = [
       "m.IsDeleted = FALSE",
+      "m.OrganizationID = $1"
     ];
 
-    // ==========================================================
-    // Organization
-    // ==========================================================
-
-    values.push(
-      data.OrganizationID,
-    );
-
-    conditions.push(
-      `m.OrganizationID = $${values.length}`,
-    );
-
-    // ==========================================================
-    // RGP Number
-    // ==========================================================
-
     if (data.RGPNumber) {
-      values.push(
-        data.RGPNumber,
-      );
-
-      conditions.push(
-        `m.RGPNumber = $${values.length}`,
-      );
+      values.push(data.RGPNumber);
+      conditions.push(`m.RGPNumber = $${values.length}`);
     }
-
-    // ==========================================================
-    // Department Filter
-    // ==========================================================
 
     if (data.DepartmentID) {
-      values.push(
-        data.DepartmentID,
-      );
-
-      conditions.push(
-        `m.DepartmentID = $${values.length}`,
-      );
+      values.push(data.DepartmentID);
+      conditions.push(`m.DepartmentID = $${values.length}`);
     }
-
-    // ==========================================================
-    // From Date
-    // ==========================================================
 
     if (data.FromDate) {
-      values.push(
-        data.FromDate,
-      );
-
+      values.push(data.FromDate);
       conditions.push(
-        `m.CreatedDate::DATE >= $${values.length}::DATE`,
+        `m.CreatedDate::DATE >= $${values.length}::DATE`
       );
     }
-
-    // ==========================================================
-    // To Date
-    // ==========================================================
 
     if (data.ToDate) {
-      values.push(
-        data.ToDate,
-      );
-
+      values.push(data.ToDate);
       conditions.push(
-        `m.CreatedDate::DATE <= $${values.length}::DATE`,
+        `m.CreatedDate::DATE <= $${values.length}::DATE`
       );
     }
 
-    // ==========================================================
-    // Search
-    // ==========================================================
-
     if (data.Search) {
-      values.push(
-        `%${data.Search}%`,
-      );
-
-      const searchIndex =
-        values.length;
+      values.push(`%${String(data.Search).trim()}%`);
+      const searchIndex = values.length;
 
       conditions.push(`
         (
-          m.RGPNumber::TEXT
-            ILIKE $${searchIndex}
-
-          OR m.VendorName
-            ILIKE $${searchIndex}
-
-          OR COALESCE(
-            m.ContactNumber,
-            ''
-          ) ILIKE $${searchIndex}
-
-          OR COALESCE(
-            m.Company,
-            ''
-          ) ILIKE $${searchIndex}
-
-          OR COALESCE(
-            m.TakenBy,
-            ''
-          ) ILIKE $${searchIndex}
+          m.RGPNumber::TEXT ILIKE $${searchIndex}
+          OR m.VendorName ILIKE $${searchIndex}
+          OR COALESCE(m.ContactNumber, '') ILIKE $${searchIndex}
+          OR COALESCE(m.Company, '') ILIKE $${searchIndex}
+          OR COALESCE(m.TakenBy, '') ILIKE $${searchIndex}
         )
       `);
     }
 
     // ==========================================================
-    // Logged-In User Role
+    // 5. Approval Assignment SQL
     // ==========================================================
 
-    const approvalRole =
-      normalizeRGPApprovalRole(
-        resolveRGPApprovalRole(
-          data,
-        ),
-      );
+    let assignmentSQL = null;
 
-    const departmentName =
-      String(
-        data.DepartmentName || "",
-      )
-        .trim()
-        .toUpperCase();
-
-    const isSecurity =
-      departmentName ===
-      "SECURITY";
-
-    const isCEO =
-      approvalRole ===
-      "CEO";
-
-    // ==========================================================
-    // Role Wise Visibility
-    //
-    // SECURITY / CEO
-    //   -> All records
-    //
-    // HOD
-    //   -> Own department
-    //
-    // FC / DOF
-    //   -> Both treated as same role
-    //
-    // GM / Other
-    //   -> Own approval stage
-    //
-    // Previous stages must be APPROVED.
-    // ==========================================================
-
-    if (
-      !isSecurity &&
-      !isCEO
-    ) {
-      if (!approvalRole) {
-        conditions.push(
-          "1 = 0",
-        );
-      } else {
-        // ======================================================
-        // HOD Department Restriction
-        // ======================================================
-
-        if (
-          approvalRole === "HOD"
-        ) {
-          const userDepartmentID =
-            Number(
-              data.UserDepartmentID,
-            );
-
-          if (
-            !Number.isInteger(
-              userDepartmentID,
-            ) ||
-            userDepartmentID <= 0
-          ) {
-            return fail(
-              "User DepartmentID is required for HOD.",
-              400,
-            );
-          }
-
-          values.push(
-            userDepartmentID,
-          );
-
-          conditions.push(
-            `m.DepartmentID = $${values.length}`,
-          );
-        }
-
-        // ======================================================
-        // Current Approval Role
-        // ======================================================
-
-        values.push(
-          approvalRole,
-        );
-
-        const roleIndex =
-          values.length;
-
-        // ======================================================
-        // Sequential Visibility
-        // ======================================================
-
-        conditions.push(`
-          EXISTS (
-            SELECT 1
-
-            FROM Gatepass_RGP_Approval myApproval
-
-            WHERE myApproval.RGPID =
-                    m.RGPID
-
-              AND myApproval.IsDeleted =
-                    FALSE
-
-              AND (
-                CASE
-                  WHEN UPPER(
-                    TRIM(
-                      myApproval.ApprovalRole
-                    )
-                  ) IN ('FC', 'DOF')
-                    THEN 'FC'
-
-                  ELSE UPPER(
-                    TRIM(
-                      myApproval.ApprovalRole
-                    )
-                  )
-                END
-              )
-              =
-              (
-                CASE
-                  WHEN UPPER(
-                    TRIM(
-                      $${roleIndex}
-                    )
-                  ) IN ('FC', 'DOF')
-                    THEN 'FC'
-
-                  ELSE UPPER(
-                    TRIM(
-                      $${roleIndex}
-                    )
-                  )
-                END
-              )
-
-              AND NOT EXISTS (
-                SELECT 1
-
-                FROM Gatepass_RGP_Approval previousApproval
-
-                WHERE previousApproval.RGPID =
-                        myApproval.RGPID
-
-                  AND previousApproval.IsDeleted =
-                        FALSE
-
-                  AND previousApproval.ApprovalOrder <
-                        myApproval.ApprovalOrder
-
-                  AND UPPER(
-                    TRIM(
-                      COALESCE(
-                        previousApproval.Status,
-                        'PENDING'
-                      )
-                    )
-                  ) <> 'APPROVED'
-              )
-          )
-        `);
+    if (!isSecurity && !isCEO) {
+      if (!Number.isSafeInteger(userID) || userID <= 0) {
+        return fail("Valid logged-in UserID is required.", 400);
       }
+
+      values.push(userID);
+      const userIndex = values.length;
+
+      values.push(approvalRole || "");
+      const roleIndex = values.length;
+
+      values.push(
+        Number.isSafeInteger(userDepartmentID)
+          ? userDepartmentID
+          : 0
+      );
+      const departmentIndex = values.length;
+
+      assignmentSQL = `
+        (
+          (
+            UPPER(TRIM(COALESCE(myApproval.ApproverType, 'ROLE')))
+              IN ('USER', 'REGIONAL')
+            AND myApproval.ApproverUserID = $${userIndex}
+          )
+          OR
+          (
+            UPPER(TRIM(COALESCE(myApproval.ApproverType, 'ROLE')))
+              = 'ROLE'
+            AND
+            (
+              CASE
+                WHEN UPPER(TRIM(myApproval.ApprovalRole))
+                  IN ('FC', 'DOF')
+                THEN 'FC'
+                ELSE UPPER(TRIM(myApproval.ApprovalRole))
+              END
+            ) = $${roleIndex}
+            AND
+            (
+              UPPER(TRIM(myApproval.ApprovalRole)) <> 'HOD'
+              OR m.DepartmentID = $${departmentIndex}
+            )
+          )
+        )
+      `;
+
+      // Only stages whose previous approvals are complete
+      conditions.push(`
+        EXISTS (
+          SELECT 1
+          FROM Gatepass_RGP_Approval myApproval
+          WHERE myApproval.RGPID = m.RGPID
+            AND myApproval.IsDeleted = FALSE
+            AND ${assignmentSQL}
+            AND NOT EXISTS (
+              SELECT 1
+              FROM Gatepass_RGP_Approval previousApproval
+              WHERE previousApproval.RGPID = myApproval.RGPID
+                AND previousApproval.IsDeleted = FALSE
+                AND previousApproval.ApprovalOrder <
+                    myApproval.ApprovalOrder
+                AND UPPER(TRIM(COALESCE(
+                  previousApproval.Status, 'PENDING'
+                ))) <> 'APPROVED'
+            )
+        )
+      `);
     }
 
     // ==========================================================
-    // Status Filter
-    //
-    // SECURITY / CEO
-    //   -> Overall approval status
-    //
-    // HOD / FC / DOF / GM
-    //   -> Own approval status
+    // 6. Status Filter
     // ==========================================================
 
     if (data.Status) {
-      const filterStatus =
-        String(
-          data.Status,
-        )
-          .trim()
-          .toUpperCase();
+      const filterStatus = normalizeStatus(data.Status);
 
-      // ========================================================
-      // SECURITY / CEO
-      // ========================================================
-
-      if (
-        isSecurity ||
-        isCEO
-      ) {
-        // ======================================================
-        // APPROVED
-        // ======================================================
-
-        if (
-          filterStatus ===
-          "APPROVED"
-        ) {
+      if (isSecurity || isCEO) {
+        if (filterStatus === "APPROVED") {
           conditions.push(`
             EXISTS (
               SELECT 1
-
               FROM Gatepass_RGP_Approval a
-
-              WHERE a.RGPID =
-                      m.RGPID
-
-                AND a.IsDeleted =
-                    FALSE
+              WHERE a.RGPID = m.RGPID
+                AND a.IsDeleted = FALSE
             )
-
             AND NOT EXISTS (
               SELECT 1
-
               FROM Gatepass_RGP_Approval a
-
-              WHERE a.RGPID =
-                      m.RGPID
-
-                AND a.IsDeleted =
-                    FALSE
-
-                AND UPPER(
-                  TRIM(
-                    COALESCE(
-                      a.Status,
-                      'PENDING'
-                    )
-                  )
-                ) <> 'APPROVED'
+              WHERE a.RGPID = m.RGPID
+                AND a.IsDeleted = FALSE
+                AND UPPER(TRIM(COALESCE(
+                  a.Status, 'PENDING'
+                ))) <> 'APPROVED'
             )
+            AND UPPER(TRIM(m.Status)) = 'APPROVED'
           `);
-        }
-
-        // ======================================================
-        // REJECTED
-        // ======================================================
-
-        else if (
-          filterStatus ===
-          "REJECTED"
-        ) {
+        } else if (filterStatus === "REJECTED") {
           conditions.push(`
-            EXISTS (
-              SELECT 1
-
-              FROM Gatepass_RGP_Approval a
-
-              WHERE a.RGPID =
-                      m.RGPID
-
-                AND a.IsDeleted =
-                    FALSE
-
-                AND UPPER(
-                  TRIM(
-                    COALESCE(
-                      a.Status,
-                      'PENDING'
-                    )
-                  )
-                ) = 'REJECTED'
-            )
+            UPPER(TRIM(m.Status)) = 'REJECTED'
           `);
-        }
-
-        // ======================================================
-        // CANCELLED
-        // ======================================================
-
-        else if (
-          filterStatus ===
-          "CANCELLED"
-        ) {
+        } else if (filterStatus === "CANCELLED") {
           conditions.push(`
-            EXISTS (
-              SELECT 1
-
-              FROM Gatepass_RGP_Approval a
-
-              WHERE a.RGPID =
-                      m.RGPID
-
-                AND a.IsDeleted =
-                    FALSE
-
-                AND UPPER(
-                  TRIM(
-                    COALESCE(
-                      a.Status,
-                      'PENDING'
-                    )
-                  )
-                ) = 'CANCELLED'
-            )
+            UPPER(TRIM(m.Status)) = 'CANCELLED'
           `);
-        }
-
-        // ======================================================
-        // PENDING
-        // ======================================================
-
-        else if (
-          filterStatus ===
-          "PENDING"
-        ) {
+        } else if (filterStatus === "PENDING") {
           conditions.push(`
-            EXISTS (
-              SELECT 1
-
-              FROM Gatepass_RGP_Approval a
-
-              WHERE a.RGPID =
-                      m.RGPID
-
-                AND a.IsDeleted =
-                    FALSE
-
-                AND UPPER(
-                  TRIM(
-                    COALESCE(
-                      a.Status,
-                      'PENDING'
-                    )
-                  )
-                ) = 'PENDING'
-            )
-
-            AND NOT EXISTS (
-              SELECT 1
-
-              FROM Gatepass_RGP_Approval a
-
-              WHERE a.RGPID =
-                      m.RGPID
-
-                AND a.IsDeleted =
-                    FALSE
-
-                AND UPPER(
-                  TRIM(
-                    COALESCE(
-                      a.Status,
-                      'PENDING'
-                    )
-                  )
-                ) IN (
-                  'REJECTED',
-                  'CANCELLED'
-                )
-            )
+            UPPER(TRIM(m.Status)) = 'PENDING'
           `);
-        }
-
-        // ======================================================
-        // Other RGP Lifecycle Status
-        // ======================================================
-
-        else {
-          values.push(
-            filterStatus,
-          );
-
+        } else {
+          values.push(filterStatus);
           conditions.push(
-            `UPPER(m.Status) = $${values.length}`,
+            `UPPER(TRIM(m.Status)) = $${values.length}`
           );
         }
-      }
-
-      // ========================================================
-      // HOD / FC / DOF / GM / Other Approver
-      // ========================================================
-
-      else if (
-        approvalRole
-      ) {
+      } else {
         if (
-          [
-            "PENDING",
-            "APPROVED",
-            "REJECTED",
-            "CANCELLED",
-          ].includes(
-            filterStatus,
-          )
+          ["PENDING", "APPROVED", "REJECTED", "CANCELLED"]
+            .includes(filterStatus)
         ) {
-          values.push(
-            approvalRole,
-          );
-
-          const filterRoleIndex =
-            values.length;
-
-          values.push(
-            filterStatus,
-          );
-
-          const filterStatusIndex =
-            values.length;
+          values.push(filterStatus);
+          const statusIndex = values.length;
 
           conditions.push(`
             EXISTS (
               SELECT 1
-
-              FROM Gatepass_RGP_Approval filterApproval
-
-              WHERE filterApproval.RGPID =
-                      m.RGPID
-
-                AND filterApproval.IsDeleted =
-                    FALSE
-
-                AND (
-                  CASE
-                    WHEN UPPER(
-                      TRIM(
-                        filterApproval.ApprovalRole
-                      )
-                    ) IN ('FC', 'DOF')
-                      THEN 'FC'
-
-                    ELSE UPPER(
-                      TRIM(
-                        filterApproval.ApprovalRole
-                      )
-                    )
-                  END
+              FROM Gatepass_RGP_Approval myApproval
+              WHERE myApproval.RGPID = m.RGPID
+                AND myApproval.IsDeleted = FALSE
+                AND ${assignmentSQL}
+                AND UPPER(TRIM(COALESCE(
+                  myApproval.Status, 'PENDING'
+                ))) = $${statusIndex}
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM Gatepass_RGP_Approval previousApproval
+                  WHERE previousApproval.RGPID = myApproval.RGPID
+                    AND previousApproval.IsDeleted = FALSE
+                    AND previousApproval.ApprovalOrder <
+                        myApproval.ApprovalOrder
+                    AND UPPER(TRIM(COALESCE(
+                      previousApproval.Status, 'PENDING'
+                    ))) <> 'APPROVED'
                 )
-                =
-                (
-                  CASE
-                    WHEN UPPER(
-                      TRIM(
-                        $${filterRoleIndex}
-                      )
-                    ) IN ('FC', 'DOF')
-                      THEN 'FC'
-
-                    ELSE UPPER(
-                      TRIM(
-                        $${filterRoleIndex}
-                      )
-                    )
-                  END
-                )
-
-                AND UPPER(
-                  TRIM(
-                    COALESCE(
-                      filterApproval.Status,
-                      'PENDING'
-                    )
-                  )
-                ) = $${filterStatusIndex}
             )
           `);
-        }
-
-        // ======================================================
-        // Other Lifecycle Status
-        // ======================================================
-
-        else {
-          values.push(
-            filterStatus,
-          );
-
+        } else {
+          values.push(filterStatus);
           conditions.push(
-            `UPPER(m.Status) = $${values.length}`,
+            `UPPER(TRIM(m.Status)) = $${values.length}`
           );
         }
       }
     }
 
     // ==========================================================
-    // Where Clause
+    // 7. Count
     // ==========================================================
 
-    const whereClause =
-      conditions.join(
-        " AND ",
-      );
+    const whereClause = conditions.join(" AND ");
 
-    // ==========================================================
-    // Count
-    // ==========================================================
-
-    const countResult =
-      await pool.query(
-        `
-        SELECT
-          COUNT(*)::BIGINT AS TotalCount
-
+    const countResult = await pool.query(
+      `
+        SELECT COUNT(*)::BIGINT AS TotalCount
         FROM Gatepass_RGP_Entry_Master m
-
         WHERE ${whereClause};
-        `,
-        values,
-      );
+      `,
+      values
+    );
 
-    const totalCount =
-      Number(
-        countResult.rows[0]
-          .totalcount,
-      );
+    const totalCount = Number(
+      countResult.rows[0].totalcount
+    );
 
     // ==========================================================
-    // Pagination
+    // 8. List
     // ==========================================================
 
-    const listValues = [
-      ...values,
-      pageSize,
-      offset,
-    ];
+    const limitIndex = values.length + 1;
+    const offsetIndex = values.length + 2;
 
-    const limitIndex =
-      values.length + 1;
-
-    const offsetIndex =
-      values.length + 2;
-
-    // ==========================================================
-    // List Query
-    // ==========================================================
-
-    const result =
-      await pool.query(
-        `
+    const result = await pool.query(
+      `
         SELECT
           m.RGPID,
           m.RGPNumber,
           m.OrganizationID,
-
           m.ExpectedReturnDate,
-
           m.VendorName,
           m.ContactNumber,
           m.Company,
-
           m.DepartmentID,
           d.DepartmentName,
-
           m.Address,
           m.TakenBy,
-
           m.Status,
-
-          m.CheckoutDateTime,
-          m.CheckoutBy,
-          m.CheckoutRemarks,
-
-          m.CancelledBy,
-          m.CancelledDateTime,
-          m.CancellationRemarks,
-
-          m.ReturnedBy,
-          m.ReturnedDateTime,
-          m.ReturnRemarks,
-
           m.CreatedBy,
-          m.CreatedDate,
-          m.ModifiedBy,
-          m.ModifiedDate
-
+          m.CreatedDate
         FROM Gatepass_RGP_Entry_Master m
-
         LEFT JOIN department_master d
-          ON d.DepartmentID =
-            m.DepartmentID
-
+          ON d.DepartmentID = m.DepartmentID
         WHERE ${whereClause}
-
-        ORDER BY
-          m.RGPID DESC
-
+        ORDER BY m.RGPID DESC
         LIMIT $${limitIndex}
         OFFSET $${offsetIndex};
-        `,
-        listValues,
-      );
+      `,
+      [...values, pageSize, offset]
+    );
 
     // ==========================================================
-    // Get Approvals
+    // 9. Saved Approval Records
     // ==========================================================
 
-    const approvalsByRGP =
-      new Map();
+    const approvalsByRGP = new Map();
 
-    if (
-      result.rows.length > 0
-    ) {
-      const rgpIDs =
-        result.rows.map(
-          (row) =>
-            row.rgpid,
-        );
+    if (result.rows.length > 0) {
+      const rgpIDs = result.rows.map((row) => row.rgpid);
 
-      const approvalResult =
-        await pool.query(
-          `
+      const approvalResult = await pool.query(
+        `
           SELECT
             RGPApprovalID,
             RGPID,
             OrganizationID,
             RGPApprovalConfigID,
+            ApprovalMasterDetailID,
             ApprovalLevel,
             ApprovalRole,
             ApprovalOrder,
+            ApproverType,
+            ApproverUserID,
+            IsMandatory,
             Status,
             StatusDateTime,
             ActionBy,
             Remarks
-
           FROM Gatepass_RGP_Approval
-
-          WHERE RGPID =
-            ANY($1::BIGINT[])
-
-            AND IsDeleted =
-              FALSE
-
+          WHERE RGPID = ANY($1::BIGINT[])
+            AND IsDeleted = FALSE
           ORDER BY
             RGPID ASC,
             ApprovalOrder ASC,
             ApprovalLevel ASC,
             RGPApprovalID ASC;
-          `,
-          [rgpIDs],
-        );
+        `,
+        [rgpIDs]
+      );
 
-      for (
-        const approval
-        of approvalResult.rows
-      ) {
-        const rgpID =
-          String(
-            approval.rgpid,
-          );
+      for (const approval of approvalResult.rows) {
+        const rgpID = String(approval.rgpid);
 
-        if (
-          !approvalsByRGP.has(
-            rgpID,
-          )
-        ) {
-          approvalsByRGP.set(
-            rgpID,
-            [],
-          );
+        if (!approvalsByRGP.has(rgpID)) {
+          approvalsByRGP.set(rgpID, []);
         }
 
-        approvalsByRGP
-          .get(rgpID)
-          .push(approval);
+        approvalsByRGP.get(rgpID).push(approval);
       }
     }
 
     // ==========================================================
-    // Status Helper
+    // 10. Map List
     // ==========================================================
 
-    const normalizeStatus = (
-      status,
-    ) =>
-      String(
-        status || "Pending",
-      )
-        .trim()
-        .toUpperCase();
+    const mappedData = result.rows.map((row) => {
+      const approvals =
+        approvalsByRGP.get(String(row.rgpid)) || [];
 
-    // ==========================================================
-    // Map Result
-    // ==========================================================
+      const masterStatus = normalizeStatus(row.status);
 
-    const mappedData =
-      result.rows.map(
-        (row) => {
-          const approvals =
-            approvalsByRGP.get(
-              String(
-                row.rgpid,
-              ),
-            ) || [];
-
-          const masterStatus =
-            normalizeStatus(
-              row.status,
-            );
-
-          // ====================================================
-          // Current Sequential Stage
-          // ====================================================
-
-          const currentStage =
-            approvals.find(
-              (approval) =>
-                normalizeStatus(
-                  approval.status,
-                ) !==
-                "APPROVED",
-            );
-
-          // ====================================================
-          // Current User Already Approved
-          // ====================================================
-
-          const alreadyApproved =
-            approvals.some(
-              (approval) =>
-                normalizeStatus(
-                  approval.status,
-                ) ===
-                  "APPROVED" &&
-
-                data.UserID !=
-                  null &&
-
-                approval.actionby !=
-                  null &&
-
-                String(
-                  approval.actionby,
-                ) ===
-                  String(
-                    data.UserID,
-                  ),
-            );
-
-          // ====================================================
-          // Approval Status
-          // ====================================================
-
-          let approvalStatus =
-            "PENDING";
-
-          // ====================================================
-          // SECURITY / CEO
-          // Overall Approval Status
-          // ====================================================
-
-          if (
-            isSecurity ||
-            isCEO
-          ) {
-            const hasCancelled =
-              approvals.some(
-                (approval) =>
-                  normalizeStatus(
-                    approval.status,
-                  ) ===
-                  "CANCELLED",
-              );
-
-            const hasRejected =
-              approvals.some(
-                (approval) =>
-                  normalizeStatus(
-                    approval.status,
-                  ) ===
-                  "REJECTED",
-              );
-
-            const allApproved =
-              approvals.length > 0 &&
-              approvals.every(
-                (approval) =>
-                  normalizeStatus(
-                    approval.status,
-                  ) ===
-                  "APPROVED",
-              );
-
-            if (hasCancelled) {
-              approvalStatus =
-                "CANCELLED";
-            } else if (
-              hasRejected
-            ) {
-              approvalStatus =
-                "REJECTED";
-            } else if (
-              allApproved
-            ) {
-              approvalStatus =
-                "APPROVED";
-            } else {
-              approvalStatus =
-                "PENDING";
-            }
-          }
-
-          // ====================================================
-          // HOD / FC / DOF / GM / Other
-          // Own Approval Status
-          // ====================================================
-
-          else if (
-            approvalRole
-          ) {
-            const myApproval =
-              approvals.find(
-                (approval) =>
-                  normalizeRGPApprovalRole(
-                    approval.approvalrole,
-                  ) ===
-                  approvalRole,
-              );
-
-            if (myApproval) {
-              approvalStatus =
-                normalizeStatus(
-                  myApproval.status,
-                );
-            } else {
-              approvalStatus =
-                "PENDING";
-            }
-          }
-
-          // ====================================================
-          // Can Approve
-          // ====================================================
-
-          const canApprove =
-            Boolean(
-              masterStatus ===
-                "PENDING" &&
-
-              approvalRole &&
-
-              currentStage &&
-
-              normalizeStatus(
-                currentStage.status,
-              ) ===
-                "PENDING" &&
-
-              normalizeRGPApprovalRole(
-                currentStage.approvalrole,
-              ) ===
-                approvalRole &&
-
-              !alreadyApproved &&
-
-              (
-                approvalRole !==
-                  "HOD" ||
-
-                (
-                  Number(
-                    data.UserDepartmentID,
-                  ) > 0 &&
-
-                  Number(
-                    data.UserDepartmentID,
-                  ) ===
-                    Number(
-                      row.departmentid,
-                    )
-                )
-              )
-            );
-
-          // ====================================================
-          // Can Checkout
-          // Security Only + All Approvals Approved
-          // ====================================================
-
-          const canCheckout =
-            Boolean(
-              isSecurity &&
-
-              masterStatus ===
-                "APPROVED" &&
-
-              approvals.length >
-                0 &&
-
-              approvals.every(
-                (approval) =>
-                  normalizeStatus(
-                    approval.status,
-                  ) ===
-                  "APPROVED",
-              )
-            );
-
-          // ====================================================
-          // Can Action
-          //
-          // TRUE only when:
-          // RGP CreatedBy === Logged-In UserID
-          // and approvals are not all approved.
-          // ====================================================
-
-          const canAction =
-            Boolean(
-              !(
-                approvals.length > 0 &&
-                approvals.every(
-                  (approval) =>
-                    normalizeStatus(
-                      approval.status,
-                    ) ===
-                    "APPROVED",
-                )
-              ) &&
-
-              row.createdby !=
-                null &&
-
-              data.UserID !=
-                null &&
-
-              String(
-                row.createdby,
-              ) ===
-                String(
-                  data.UserID,
-                )
-            );
-
-          // ====================================================
-          // Response
-          // ====================================================
-
-          return {
-            ...mapRGP(row),
-
-             Approvals:
-    mapRGPApprovalFlow(
-      approvals,
-    ),
-
-            ApprovalStatus:
-              approvalStatus,
-
-            canappprove:
-              canApprove,
-
-            cancheckout:
-              canCheckout,
-
-            canaction:
-              canAction,
-          };
-        },
+      const currentStage = approvals.find(
+        (approval) =>
+          normalizeStatus(approval.status) !== "APPROVED"
       );
 
+      const myApprovals = approvals.filter(
+        (approval) =>
+          isAssignedApprover(approval, row.departmentid)
+      );
+
+      const visibleMyApprovals = myApprovals.filter(
+        (approval) =>
+          !approvals.some(
+            (previous) =>
+              Number(previous.approvalorder) <
+                Number(approval.approvalorder) &&
+              normalizeStatus(previous.status) !== "APPROVED"
+          )
+      );
+
+      // Preserve your rule:
+      // User cannot approve the same RGP twice.
+      const alreadyApproved = approvals.some(
+        (approval) =>
+          normalizeStatus(approval.status) === "APPROVED" &&
+          approval.actionby != null &&
+          String(approval.actionby) === String(data.UserID)
+      );
+
+      const hasRejected = approvals.some(
+        (approval) =>
+          normalizeStatus(approval.status) === "REJECTED"
+      );
+
+      const hasCancelled = approvals.some(
+        (approval) =>
+          normalizeStatus(approval.status) === "CANCELLED"
+      );
+
+      const allApproved =
+        approvals.length > 0 &&
+        approvals.every(
+          (approval) =>
+            normalizeStatus(approval.status) === "APPROVED"
+        );
+
+      let approvalStatus = "PENDING";
+
+      if (isSecurity || isCEO) {
+        if (masterStatus === "CANCELLED" || hasCancelled) {
+          approvalStatus = "CANCELLED";
+        } else if (masterStatus === "REJECTED" || hasRejected) {
+          approvalStatus = "REJECTED";
+        } else if (allApproved) {
+          approvalStatus = "APPROVED";
+        }
+      } else {
+        const myCurrentApproval = visibleMyApprovals.find(
+          (approval) =>
+            normalizeStatus(approval.status) === "PENDING"
+        );
+
+        const myLastApproval =
+          visibleMyApprovals[visibleMyApprovals.length - 1];
+
+        const myApproval =
+          myCurrentApproval || myLastApproval;
+
+        approvalStatus = myApproval
+          ? normalizeStatus(myApproval.status)
+          : "PENDING";
+      }
+
+      const canApprove = Boolean(
+        masterStatus === "PENDING" &&
+        !hasRejected &&
+        !hasCancelled &&
+        currentStage &&
+        normalizeStatus(currentStage.status) === "PENDING" &&
+        isAssignedApprover(currentStage, row.departmentid) &&
+        !alreadyApproved
+      );
+
+      const canCheckout = Boolean(
+        isSecurity &&
+        masterStatus === "APPROVED" &&
+        allApproved
+      );
+
+      const canAction = Boolean(
+        !allApproved &&
+        row.createdby != null &&
+        String(row.createdby) === String(data.UserID)
+      );
+
+      return {
+        ...mapRGP(row),
+        Approvals: mapRGPApprovalFlow(approvals),
+        ApprovalStatus: approvalStatus,
+        canappprove: canApprove,
+        cancheckout: canCheckout,
+        canaction: canAction
+      };
+    });
+
     // ==========================================================
-    // Response
+    // 11. Response
     // ==========================================================
 
     return ok(
       "RGP list fetched successfully.",
       mappedData,
       {
-        TotalCount:
-          totalCount,
-
+        TotalCount: totalCount,
         page,
-
-        PageSize:
-          pageSize,
-
-        TotalPages:
-          Math.ceil(
-            totalCount /
-              pageSize,
-          ),
-      },
+        PageSize: pageSize,
+        TotalPages: Math.ceil(totalCount / pageSize)
+      }
     );
   } catch (error) {
-    return databaseFailure(
-      error,
-      "Fetch RGP list",
-    );
+    return databaseFailure(error, "Fetch RGP list");
   }
 };
 // ============================================================Get RGP Total List
 const getRGPTotalList = async (data) => {
   try {
     // ============================================================
-    // Pagination
+    // 1. Pagination
     // ============================================================
 
-    const page =
-      Math.max(
-        Number(data.page) || 1,
-        1,
-      );
+    const page = Math.max(Number(data.page) || 1, 1);
 
-    const pageSize =
-      Math.min(
-        Math.max(
-          Number(data.PageSize) || 10,
-          1,
-        ),
-        100,
-      );
+    const pageSize = Math.min(
+      Math.max(Number(data.PageSize) || 10, 1),
+      100
+    );
 
-    const offset =
-      (page - 1) * pageSize;
+    const offset = (page - 1) * pageSize;
 
     // ============================================================
-    // Conditions
+    // 2. Organization Validation
     // ============================================================
 
-    const values = [];
+    const organizationID = Number(data.OrganizationID);
+
+    if (
+      !Number.isSafeInteger(organizationID) ||
+      organizationID <= 0
+    ) {
+      return fail("Valid OrganizationID is required.", 400);
+    }
+
+    // ============================================================
+    // 3. Base Conditions
+    // ============================================================
+
+    const values = [organizationID];
 
     const conditions = [
       "m.IsDeleted = FALSE",
+      "m.OrganizationID = $1"
     ];
 
     // ============================================================
-    // Organization
-    // ============================================================
-
-    const organizationID =
-      Number(data.OrganizationID);
-
-    if (
-      !Number.isInteger(
-        organizationID,
-      ) ||
-      organizationID <= 0
-    ) {
-      return fail(
-        "Valid OrganizationID is required.",
-        400,
-      );
-    }
-
-    values.push(
-      organizationID,
-    );
-
-    conditions.push(
-      `m.OrganizationID = $${values.length}`,
-    );
-
-    // ============================================================
-    // RGP Number
+    // 4. RGP Number
     // ============================================================
 
     if (data.RGPNumber) {
-      values.push(
-        data.RGPNumber,
-      );
+      values.push(data.RGPNumber);
 
       conditions.push(
-        `m.RGPNumber = $${values.length}`,
+        `m.RGPNumber = $${values.length}`
       );
     }
 
     // ============================================================
-    // Department
+    // 5. Department
     // ============================================================
 
     if (data.DepartmentID) {
-      values.push(
-        data.DepartmentID,
-      );
+      values.push(data.DepartmentID);
 
       conditions.push(
-        `m.DepartmentID = $${values.length}`,
+        `m.DepartmentID = $${values.length}`
       );
     }
 
-    // Month and Year accept single values, comma-separated values, or arrays.
-    for (const [field, max] of [["Month", 12], ["Year", 9999]]) {
+    // ============================================================
+    // 6. Month / Year Filters
+    // ============================================================
+
+    for (const [field, max] of [
+      ["Month", 12],
+      ["Year", 9999]
+    ]) {
       const input = data[field];
+
       if (
         input === undefined ||
         input === null ||
         (typeof input === "string" && input.trim() === "")
-      ) continue;
+      ) {
+        continue;
+      }
 
-      const entries = (Array.isArray(input) ? input : [input])
+      const entries = (
+        Array.isArray(input) ? input : [input]
+      )
         .flatMap((value) => String(value).split(","))
         .map((value) => value.trim());
 
       if (
         entries.length === 0 ||
-        entries.some((value) =>
-          !/^\d+$/.test(value) ||
-          Number(value) < 1 ||
-          Number(value) > max
+        entries.some(
+          (value) =>
+            !/^\d+$/.test(value) ||
+            Number(value) < 1 ||
+            Number(value) > max
         )
       ) {
         return fail(
           `${field} must contain integers between 1 and ${max}.`,
-          400,
+          400
         );
       }
 
       values.push([...new Set(entries.map(Number))]);
+
       conditions.push(
-        `EXTRACT(${field.toUpperCase()} FROM m.CreatedDate)::INTEGER = ANY($${values.length}::INTEGER[])`,
+        `EXTRACT(${field.toUpperCase()} FROM m.CreatedDate)::INTEGER = ANY($${values.length}::INTEGER[])`
       );
     }
 
     // ============================================================
-    // Status
-    //
-    // Direct master lifecycle status:
-    // PENDING
-    // APPROVED
-    // CHECKED OUT
-    // RETURN PENDING
-    // RETURNED
-    // CANCELLED
-    // REJECTED
+    // 7. Status Filter
     // ============================================================
 
     if (data.Status) {
       values.push(
-        String(
-          data.Status,
-        )
-          .trim()
-          .toUpperCase(),
+        String(data.Status).trim().toUpperCase()
       );
 
       conditions.push(
-        `UPPER(TRIM(m.Status)) = $${values.length}`,
+        `UPPER(TRIM(m.Status)) = $${values.length}`
       );
     }
 
     // ============================================================
-    // Search
+    // 8. Search
     // ============================================================
 
     if (data.Search) {
       values.push(
-        `%${String(
-          data.Search,
-        ).trim()}%`,
+        `%${String(data.Search).trim()}%`
       );
 
-      const searchIndex =
-        values.length;
+      const searchIndex = values.length;
 
       conditions.push(`
         (
-          m.RGPNumber::TEXT
-            ILIKE $${searchIndex}
-
-          OR m.VendorName
-            ILIKE $${searchIndex}
-
-          OR COALESCE(
-            m.ContactNumber,
-            ''
-          ) ILIKE $${searchIndex}
-
-          OR COALESCE(
-            m.Company,
-            ''
-          ) ILIKE $${searchIndex}
-
-          OR COALESCE(
-            m.TakenBy,
-            ''
-          ) ILIKE $${searchIndex}
-
-          OR COALESCE(
-            m.Address,
-            ''
-          ) ILIKE $${searchIndex}
-
-          OR COALESCE(
-            d.DepartmentName,
-            ''
-          ) ILIKE $${searchIndex}
+          m.RGPNumber::TEXT ILIKE $${searchIndex}
+          OR m.VendorName ILIKE $${searchIndex}
+          OR COALESCE(m.ContactNumber, '') ILIKE $${searchIndex}
+          OR COALESCE(m.Company, '') ILIKE $${searchIndex}
+          OR COALESCE(m.TakenBy, '') ILIKE $${searchIndex}
+          OR COALESCE(m.Address, '') ILIKE $${searchIndex}
+          OR COALESCE(d.DepartmentName, '') ILIKE $${searchIndex}
         )
       `);
     }
 
     // ============================================================
-    // Where Clause
+    // 9. WHERE Clause
     // ============================================================
 
-    const whereClause =
-      conditions.join(
-        " AND ",
-      );
+    const whereClause = conditions.join(" AND ");
 
     // ============================================================
-    // Total Count
+    // 10. Total Count
     // ============================================================
 
-    const countResult =
-      await pool.query(
-        `
+    const countResult = await pool.query(
+      `
         SELECT
           COUNT(*)::BIGINT AS TotalCount
 
         FROM Gatepass_RGP_Entry_Master m
 
         LEFT JOIN department_master d
-          ON d.DepartmentID =
-            m.DepartmentID
+          ON d.DepartmentID = m.DepartmentID
 
         WHERE ${whereClause};
-        `,
-        values,
-      );
+      `,
+      values
+    );
 
-    const totalCount =
-      Number(
-        countResult.rows[0]
-          .totalcount,
-      );
+    const totalCount = Number(
+      countResult.rows[0].totalcount
+    );
 
     // ============================================================
-    // Pagination Values
+    // 11. Pagination Values
     // ============================================================
+
+    const limitIndex = values.length + 1;
+    const offsetIndex = values.length + 2;
 
     const listValues = [
       ...values,
       pageSize,
-      offset,
+      offset
     ];
 
-    const limitIndex =
-      values.length + 1;
-
-    const offsetIndex =
-      values.length + 2;
-
     // ============================================================
-    // Get RGP List
+    // 12. Get RGP Master List
     // ============================================================
 
-    const result =
-      await pool.query(
-        `
+    const result = await pool.query(
+      `
         SELECT
           m.RGPID,
           m.RGPNumber,
@@ -2275,592 +1766,27 @@ const getRGPTotalList = async (data) => {
 
           m.Address,
           m.TakenBy,
-
           m.Status,
 
-          -- ================================================
           -- Checkout
-          -- ================================================
-
-          m.CheckoutDateTime,
-          m.CheckoutBy,
-          checkoutUser.FullName
-            AS CheckoutByName,
-          m.CheckoutRemarks,
-
-          -- ================================================
-          -- Cancellation
-          -- ================================================
-
-          m.CancelledBy,
-          cancelledUser.FullName
-            AS CancelledByName,
-          m.CancelledDateTime,
-          m.CancellationRemarks,
-
-          -- ================================================
-          -- Return Completion
-          -- ================================================
-
-          m.ReturnedBy,
-          returnedUser.FullName
-            AS ReturnedByName,
-          m.ReturnedDateTime,
-          m.ReturnRemarks,
-
-          -- ================================================
-          -- Created By
-          -- ================================================
-
-          m.CreatedBy,
-          createdUser.FullName
-            AS CreatedByName,
-          m.CreatedDate,
-
-          m.ModifiedBy,
-          m.ModifiedDate
-
-        FROM Gatepass_RGP_Entry_Master m
-
-        LEFT JOIN department_master d
-          ON d.DepartmentID =
-            m.DepartmentID
-
-        LEFT JOIN user_master createdUser
-          ON createdUser.UserID =
-            m.CreatedBy
-
-        LEFT JOIN user_master checkoutUser
-          ON checkoutUser.UserID =
-            m.CheckoutBy
-
-        LEFT JOIN user_master cancelledUser
-          ON cancelledUser.UserID =
-            m.CancelledBy
-
-        LEFT JOIN user_master returnedUser
-          ON returnedUser.UserID =
-            m.ReturnedBy
-
-        WHERE ${whereClause}
-
-        ORDER BY
-          m.RGPID DESC
-
-        LIMIT $${limitIndex}
-        OFFSET $${offsetIndex};
-        `,
-        listValues,
-      );
-
-    // ============================================================
-    // Get Approvals
-    // ============================================================
-
-    const approvalsByRGP =
-      new Map();
-
-    if (
-      result.rows.length > 0
-    ) {
-      const rgpIDs =
-        result.rows.map(
-          (row) =>
-            Number(row.rgpid),
-        );
-
-      const approvalResult =
-        await pool.query(
-          `
-          SELECT
-            a.RGPApprovalID,
-            a.RGPID,
-            a.OrganizationID,
-            a.RGPApprovalConfigID,
-            a.ApprovalLevel,
-            a.ApprovalRole,
-            a.ApprovalOrder,
-            a.Status,
-            a.StatusDateTime,
-            a.ActionBy,
-
-            actionUser.FullName
-              AS ActionByName,
-
-            a.Remarks
-
-          FROM Gatepass_RGP_Approval a
-
-          LEFT JOIN user_master actionUser
-            ON actionUser.UserID =
-              a.ActionBy
-
-          WHERE a.RGPID =
-            ANY($1::BIGINT[])
-
-            AND a.IsDeleted =
-              FALSE
-
-          ORDER BY
-            a.RGPID ASC,
-            a.ApprovalOrder ASC,
-            a.ApprovalLevel ASC,
-            a.RGPApprovalID ASC;
-          `,
-          [rgpIDs],
-        );
-
-      for (
-        const approval
-        of approvalResult.rows
-      ) {
-        const rgpID =
-          String(
-            approval.rgpid,
-          );
-
-        if (
-          !approvalsByRGP.has(
-            rgpID,
-          )
-        ) {
-          approvalsByRGP.set(
-            rgpID,
-            [],
-          );
-        }
-
-        approvalsByRGP
-          .get(rgpID)
-          .push({
-            RGPApprovalID:
-              Number(
-                approval.rgpapprovalid,
-              ),
-
-            RGPApprovalConfigID:
-              approval.rgpapprovalconfigid !==
-                null &&
-              approval.rgpapprovalconfigid !==
-                undefined
-                ? Number(
-                    approval.rgpapprovalconfigid,
-                  )
-                : null,
-
-            ApprovalLevel:
-              Number(
-                approval.approvallevel,
-              ),
-
-            ApprovalRole:
-              approval.approvalrole,
-
-            ApprovalOrder:
-              Number(
-                approval.approvalorder,
-              ),
-
-            Status:
-              approval.status,
-
-            StatusDateTime:
-              approval.statusdatetime
-                ? formatDate(
-                    approval.statusdatetime,
-                    "DD MMM YYYY",
-                  )
-                : null,
-
-            ActionBy:
-              approval.actionby !==
-                null &&
-              approval.actionby !==
-                undefined
-                ? Number(
-                    approval.actionby,
-                  )
-                : null,
-
-            ActionByName:
-              approval.actionbyname ||
-              null,
-
-            Remarks:
-              approval.remarks ??
-              null,
-          });
-      }
-    }
-
-    // ============================================================
-    // Map List
-    // ============================================================
-
-    const mappedData =
-      result.rows.map(
-        (row) => {
-          const approvals =
-            approvalsByRGP.get(
-              String(
-                row.rgpid,
-              ),
-            ) || [];
-
-          // ========================================================
-          // Approval Flow
-          //
-          // If any approval is REJECTED / CANCELLED:
-          //
-          // Current REJECTED / CANCELLED approval:
-          //   -> Keep actual data
-          //
-          // All approvals after that:
-          //   -> Status blank
-          //   -> StatusDateTime null
-          //   -> ActionBy null
-          //   -> ActionByName null
-          //   -> Remarks blank
-          //
-          // ApprovalRole / Level / Order remain unchanged.
-          // ========================================================
-
-          let approvalFlowStopped =
-            false;
-
-          const mappedApprovals =
-            approvals.map(
-              (approval) => {
-                if (
-                  approvalFlowStopped
-                ) {
-                  return {
-                    ...approval,
-
-                    Status:
-                      "",
-
-                    StatusDateTime:
-                      null,
-
-                    ActionBy:
-                      null,
-
-                    ActionByName:
-                      null,
-
-                    Remarks:
-                      "",
-                  };
-                }
-
-                const approvalStatus =
-                  String(
-                    approval.Status ||
-                      "",
-                  )
-                    .trim()
-                    .toUpperCase();
-
-                if (
-                  approvalStatus ===
-                    "REJECTED" ||
-                  approvalStatus ===
-                    "CANCELLED"
-                ) {
-                  approvalFlowStopped =
-                    true;
-                }
-
-                return approval;
-              },
-            );
-
-          return {
-            RGPID:
-              Number(
-                row.rgpid,
-              ),
-
-            RGPNumber:
-              Number(
-                row.rgpnumber,
-              ),
-
-            OrganizationID:
-              Number(
-                row.organizationid,
-              ),
-
-            ExpectedReturnDate:
-              row.expectedreturndate
-                ? formatDate(
-                    row.expectedreturndate,
-                  )
-                : null,
-
-            VendorName:
-              row.vendorname,
-
-            ContactNumber:
-              row.contactnumber,
-
-            Company:
-              row.company,
-
-            DepartmentID:
-              Number(
-                row.departmentid,
-              ),
-
-            DepartmentName:
-              row.departmentname ||
-              null,
-
-            Address:
-              row.address,
-
-            TakenBy:
-              row.takenby,
-
-            // ==================================================
-            // Current RGP Lifecycle Status
-            // ==================================================
-
-            Status:
-              row.status,
-
-            // ==================================================
-            // Approvals
-            // ==================================================
-
-            Approvals:
-              mappedApprovals,
-
-            // ==================================================
-            // Checkout
-            // ==================================================
-
-            CheckoutDateTime:
-              row.checkoutdatetime
-                ? formatDate(
-                    row.checkoutdatetime,
-                    "DD MMM YYYY",
-                  )
-                : null,
-
-            CheckoutBy:
-              row.checkoutby !==
-                null &&
-              row.checkoutby !==
-                undefined
-                ? Number(
-                    row.checkoutby,
-                  )
-                : null,
-
-            CheckoutByName:
-              row.checkoutbyname ||
-              null,
-
-            CheckoutRemarks:
-              row.checkoutremarks ??
-              null,
-
-            // ==================================================
-            // Cancellation
-            // ==================================================
-
-            CancelledBy:
-              row.cancelledby !==
-                null &&
-              row.cancelledby !==
-                undefined
-                ? Number(
-                    row.cancelledby,
-                  )
-                : null,
-
-            CancelledByName:
-              row.cancelledbyname ||
-              null,
-
-            CancelledDateTime:
-              row.cancelleddatetime
-                ? formatDate(
-                    row.cancelleddatetime,
-                    "DD MMM YYYY",
-                  )
-                : null,
-
-            CancellationRemarks:
-              row.cancellationremarks ??
-              null,
-
-            // ==================================================
-            // Return Completion
-            // ==================================================
-
-            ReturnedBy:
-              row.returnedby !==
-                null &&
-              row.returnedby !==
-                undefined
-                ? Number(
-                    row.returnedby,
-                  )
-                : null,
-
-            ReturnedByName:
-              row.returnedbyname ||
-              null,
-
-            ReturnedDateTime:
-              row.returneddatetime
-                ? formatDate(
-                    row.returneddatetime,
-                    "DD MMM YYYY",
-                  )
-                : null,
-
-            ReturnRemarks:
-              row.returnremarks ??
-              null,
-
-            // ==================================================
-            // Created
-            // ==================================================
-
-            CreatedBy:
-              row.createdby !==
-                null &&
-              row.createdby !==
-                undefined
-                ? Number(
-                    row.createdby,
-                  )
-                : null,
-
-            CreatedByName:
-              row.createdbyname ||
-              null,
-
-            CreatedDate:
-              row.createddate
-                ? formatDate(
-                    row.createddate,
-                  )
-                : null,
-          };
-        },
-      );
-
-    // ============================================================
-    // Response
-    // ============================================================
-
-    return ok(
-      "RGP total list fetched successfully.",
-      mappedData,
-      {
-        TotalCount:
-          totalCount,
-
-        page,
-
-        PageSize:
-          pageSize,
-
-        TotalPages:
-          Math.ceil(
-            totalCount /
-              pageSize,
-          ),
-      },
-    );
-  } catch (error) {
-    return databaseFailure(
-      error,
-      "Fetch RGP total list",
-    );
-  }
-};
-// ============================================================Get RGP By ID
-const getRGPById = async (data) => {
-  try {
-    // ============================================================
-    // Validate
-    // ============================================================
-
-    const RGPID =
-      Number(data.RGPID);
-
-    if (
-      !Number.isInteger(RGPID) ||
-      RGPID <= 0
-    ) {
-      return fail(
-        "Valid RGPID is required.",
-        400,
-      );
-    }
-
-    // ============================================================
-    // Get Master
-    // ============================================================
-
-    const masterResult =
-      await pool.query(
-        `
-        SELECT
-          m.RGPID,
-          m.RGPNumber,
-          m.OrganizationID,
-
-          m.ExpectedReturnDate,
-
-          m.VendorName,
-          m.ContactNumber,
-          m.Company,
-
-          m.DepartmentID,
-          d.DepartmentName,
-
-          m.Address,
-          m.TakenBy,
-
-          m.Status,
-
-          -- ======================================================
-          -- Checkout
-          -- ======================================================
-
           m.CheckoutDateTime,
           m.CheckoutBy,
           checkoutUser.FullName AS CheckoutByName,
           m.CheckoutRemarks,
 
-          -- ======================================================
-          -- Cancel
-          -- ======================================================
-
+          -- Cancellation
           m.CancelledBy,
           cancelledUser.FullName AS CancelledByName,
           m.CancelledDateTime,
           m.CancellationRemarks,
 
-          -- ======================================================
-          -- Return
-          -- ======================================================
-
+          -- Return Completion
           m.ReturnedBy,
+          returnedUser.FullName AS ReturnedByName,
           m.ReturnedDateTime,
           m.ReturnRemarks,
 
-          -- ======================================================
-          -- Created
-          -- ======================================================
-
+          -- Created By
           m.CreatedBy,
           createdUser.FullName AS CreatedByName,
           m.CreatedDate,
@@ -2871,111 +1797,1107 @@ const getRGPById = async (data) => {
         FROM Gatepass_RGP_Entry_Master m
 
         LEFT JOIN department_master d
-          ON d.DepartmentID =
-            m.DepartmentID
+          ON d.DepartmentID = m.DepartmentID
 
         LEFT JOIN user_master createdUser
-          ON createdUser.UserID =
-            m.CreatedBy
+          ON createdUser.UserID = m.CreatedBy
 
         LEFT JOIN user_master checkoutUser
-          ON checkoutUser.UserID =
-            m.CheckoutBy
+          ON checkoutUser.UserID = m.CheckoutBy
 
         LEFT JOIN user_master cancelledUser
-          ON cancelledUser.UserID =
-            m.CancelledBy
+          ON cancelledUser.UserID = m.CancelledBy
 
-        WHERE m.RGPID = $1
-          AND m.IsDeleted = FALSE
+        LEFT JOIN user_master returnedUser
+          ON returnedUser.UserID = m.ReturnedBy
 
-        LIMIT 1;
-        `,
-        [RGPID],
+        WHERE ${whereClause}
+
+        ORDER BY m.RGPID DESC
+
+        LIMIT $${limitIndex}
+        OFFSET $${offsetIndex};
+      `,
+      listValues
+    );
+
+    // ============================================================
+    // 13. Fetch Saved Approval Flow
+    //
+    // Supports:
+    // ROLE / USER / REGIONAL
+    //
+    // Existing legacy approvals are also supported.
+    // ============================================================
+
+    const approvalsByRGP = new Map();
+
+    if (result.rows.length > 0) {
+      const rgpIDs = result.rows.map(
+        (row) => Number(row.rgpid)
       );
 
+      const approvalResult = await pool.query(
+        `
+          SELECT
+            a.RGPApprovalID,
+            a.RGPID,
+            a.OrganizationID,
+
+            a.RGPApprovalConfigID,
+            a.ApprovalMasterDetailID,
+
+            a.ApprovalLevel,
+            a.ApprovalRole,
+            a.ApprovalOrder,
+
+            a.ApproverType,
+            a.ApproverUserID,
+            a.IsMandatory,
+
+            a.Status,
+            a.StatusDateTime,
+            a.ActionBy,
+
+            actionUser.FullName AS ActionByName,
+
+            a.Remarks
+
+          FROM Gatepass_RGP_Approval a
+
+          LEFT JOIN user_master actionUser
+            ON actionUser.UserID = a.ActionBy
+
+          WHERE a.RGPID = ANY($1::BIGINT[])
+            AND a.IsDeleted = FALSE
+
+          ORDER BY
+            a.RGPID ASC,
+            a.ApprovalOrder ASC,
+            a.ApprovalLevel ASC,
+            a.RGPApprovalID ASC;
+        `,
+        [rgpIDs]
+      );
+
+      // ==========================================================
+      // 14. Map Approval Records
+      // ==========================================================
+
+      for (const approval of approvalResult.rows) {
+        const rgpID = String(approval.rgpid);
+
+        if (!approvalsByRGP.has(rgpID)) {
+          approvalsByRGP.set(rgpID, []);
+        }
+
+        approvalsByRGP.get(rgpID).push({
+          RGPApprovalID:
+            Number(approval.rgpapprovalid),
+
+          RGPApprovalConfigID:
+            approval.rgpapprovalconfigid == null
+              ? null
+              : Number(approval.rgpapprovalconfigid),
+
+          // New Approval Flow Builder Detail ID
+          ApprovalMasterDetailID:
+            approval.approvalmasterdetailid == null
+              ? null
+              : Number(approval.approvalmasterdetailid),
+
+          ApprovalLevel:
+            Number(approval.approvallevel),
+
+          ApprovalRole:
+            approval.approvalrole,
+
+          ApprovalOrder:
+            Number(approval.approvalorder),
+
+          // ROLE / USER / REGIONAL
+          ApproverType:
+            String(
+              approval.approvertype || "ROLE"
+            ).trim().toUpperCase(),
+
+          // Selected User ID
+          ApproverUserID:
+            approval.approveruserid == null
+              ? null
+              : Number(approval.approveruserid),
+
+          IsMandatory:
+            approval.ismandatory,
+
+          Status:
+            approval.status,
+
+          StatusDateTime:
+            approval.statusdatetime
+              ? formatDate(
+                  approval.statusdatetime,
+                  "DD MMM YYYY"
+                )
+              : null,
+
+          ActionBy:
+            approval.actionby == null
+              ? null
+              : Number(approval.actionby),
+
+          ActionByName:
+            approval.actionbyname || null,
+
+          Remarks:
+            approval.remarks ?? null
+        });
+      }
+    }
+
     // ============================================================
-    // Not Found
+    // 15. Map Final RGP List
     // ============================================================
 
-    if (
-      masterResult.rows.length === 0
-    ) {
-      return fail(
-        "RGP record not found.",
-        404,
+    const mappedData = result.rows.map((row) => {
+      const approvals =
+        approvalsByRGP.get(String(row.rgpid)) || [];
+
+      // ==========================================================
+      // 16. Approval Flow Display
+      //
+      // REJECTED / CANCELLED ke baad:
+      // Next approval stages blank.
+      // ==========================================================
+
+      let approvalFlowStopped = false;
+
+      const mappedApprovals = approvals.map((approval) => {
+        if (approvalFlowStopped) {
+          return {
+            ...approval,
+            Status: "",
+            StatusDateTime: null,
+            ActionBy: null,
+            ActionByName: null,
+            Remarks: ""
+          };
+        }
+
+        const status = String(
+          approval.Status || ""
+        ).trim().toUpperCase();
+
+        if (
+          status === "REJECTED" ||
+          status === "CANCELLED"
+        ) {
+          approvalFlowStopped = true;
+        }
+
+        return approval;
+      });
+
+      // ==========================================================
+      // 17. Final Response
+      // ==========================================================
+
+      return {
+        RGPID:
+          Number(row.rgpid),
+
+        RGPNumber:
+          Number(row.rgpnumber),
+
+        OrganizationID:
+          Number(row.organizationid),
+
+        ExpectedReturnDate:
+          row.expectedreturndate
+            ? formatDate(row.expectedreturndate)
+            : null,
+
+        VendorName:
+          row.vendorname,
+
+        ContactNumber:
+          row.contactnumber,
+
+        Company:
+          row.company,
+
+        DepartmentID:
+          row.departmentid == null
+            ? null
+            : Number(row.departmentid),
+
+        DepartmentName:
+          row.departmentname || null,
+
+        Address:
+          row.address,
+
+        TakenBy:
+          row.takenby,
+
+        // RGP Lifecycle Status
+        Status:
+          row.status,
+
+        // Approval Flow
+        Approvals:
+          mappedApprovals,
+
+        // ========================================================
+        // Checkout
+        // ========================================================
+
+        CheckoutDateTime:
+          row.checkoutdatetime
+            ? formatDate(
+                row.checkoutdatetime,
+                "DD MMM YYYY"
+              )
+            : null,
+
+        CheckoutBy:
+          row.checkoutby == null
+            ? null
+            : Number(row.checkoutby),
+
+        CheckoutByName:
+          row.checkoutbyname || null,
+
+        CheckoutRemarks:
+          row.checkoutremarks ?? null,
+
+        // ========================================================
+        // Cancellation
+        // ========================================================
+
+        CancelledBy:
+          row.cancelledby == null
+            ? null
+            : Number(row.cancelledby),
+
+        CancelledByName:
+          row.cancelledbyname || null,
+
+        CancelledDateTime:
+          row.cancelleddatetime
+            ? formatDate(
+                row.cancelleddatetime,
+                "DD MMM YYYY"
+              )
+            : null,
+
+        CancellationRemarks:
+          row.cancellationremarks ?? null,
+
+        // ========================================================
+        // Return Completion
+        // ========================================================
+
+        ReturnedBy:
+          row.returnedby == null
+            ? null
+            : Number(row.returnedby),
+
+        ReturnedByName:
+          row.returnedbyname || null,
+
+        ReturnedDateTime:
+          row.returneddatetime
+            ? formatDate(
+                row.returneddatetime,
+                "DD MMM YYYY"
+              )
+            : null,
+
+        ReturnRemarks:
+          row.returnremarks ?? null,
+
+        // ========================================================
+        // Created By
+        // ========================================================
+
+        CreatedBy:
+          row.createdby == null
+            ? null
+            : Number(row.createdby),
+
+        CreatedByName:
+          row.createdbyname || null,
+
+        CreatedDate:
+          row.createddate
+            ? formatDate(row.createddate)
+            : null
+      };
+    });
+
+    // ============================================================
+    // 18. Response
+    // ============================================================
+
+    return ok(
+      "RGP total list fetched successfully.",
+      mappedData,
+      {
+        TotalCount: totalCount,
+        page,
+        PageSize: pageSize,
+        TotalPages: Math.ceil(totalCount / pageSize)
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch RGP total list"
+    );
+  }
+};
+// ============================================================Get RGP By ID
+const getRGPById = async (data) => {
+  try {
+    // ============================================================
+    // 1. Validate RGP ID
+    // ============================================================
+
+    const RGPID = Number(data.RGPID);
+
+    if (!Number.isSafeInteger(RGPID) || RGPID <= 0) {
+      return fail("Valid RGPID is required.", 400);
+    }
+
+    // ============================================================
+    // 2. Get RGP Master
+    // ============================================================
+
+    const masterResult = await pool.query(
+      `
+      SELECT
+        m.RGPID,
+        m.RGPNumber,
+        m.OrganizationID,
+        m.ExpectedReturnDate,
+        m.VendorName,
+        m.ContactNumber,
+        m.Company,
+        m.DepartmentID,
+        d.DepartmentName,
+        m.Address,
+        m.TakenBy,
+        m.Status,
+
+        -- Checkout
+        m.CheckoutDateTime,
+        m.CheckoutBy,
+        checkoutUser.FullName AS CheckoutByName,
+        m.CheckoutRemarks,
+
+        -- Cancellation
+        m.CancelledBy,
+        cancelledUser.FullName AS CancelledByName,
+        m.CancelledDateTime,
+        m.CancellationRemarks,
+
+        -- Return
+        m.ReturnedBy,
+        m.ReturnedDateTime,
+        m.ReturnRemarks,
+
+        -- Created
+        m.CreatedBy,
+        createdUser.FullName AS CreatedByName,
+        m.CreatedDate,
+        m.ModifiedBy,
+        m.ModifiedDate
+
+      FROM Gatepass_RGP_Entry_Master m
+
+      LEFT JOIN department_master d
+        ON d.DepartmentID = m.DepartmentID
+
+      LEFT JOIN user_master createdUser
+        ON createdUser.UserID = m.CreatedBy
+
+      LEFT JOIN user_master checkoutUser
+        ON checkoutUser.UserID = m.CheckoutBy
+
+      LEFT JOIN user_master cancelledUser
+        ON cancelledUser.UserID = m.CancelledBy
+
+      WHERE m.RGPID = $1
+        AND m.IsDeleted = FALSE
+
+      LIMIT 1;
+      `,
+      [RGPID]
+    );
+
+    if (masterResult.rows.length === 0) {
+      return fail("RGP record not found.", 404);
+    }
+
+    const masterRow = masterResult.rows[0];
+
+    // ============================================================
+    // 3. Attach Items, Documents, Saved Approvals
+    // ============================================================
+
+    const [rgp] = await attachRGPRelatedData(
+      masterResult.rows
+    );
+
+    // ============================================================
+    // 4. Get Return Transactions
+    // ============================================================
+
+    const returnResult = await pool.query(
+      `
+      SELECT
+        RGPReturnDetailID,
+        RGPItemID,
+        QuantityReceived,
+        RemainingQuantity,
+        ReturnDateTime,
+        ReturnBy,
+        ActualDate,
+        IsReturn,
+        Remarks
+
+      FROM Gatepass_RGP_Item_Return_Details
+
+      WHERE RGPID = $1
+        AND IsDeleted = FALSE
+
+      ORDER BY
+        ReturnDateTime ASC,
+        RGPReturnDetailID ASC;
+      `,
+      [RGPID]
+    );
+
+    const returnsByItem = new Map();
+
+    for (const row of returnResult.rows) {
+      const itemID = Number(row.rgpitemid);
+
+      if (!returnsByItem.has(itemID)) {
+        returnsByItem.set(itemID, []);
+      }
+
+      returnsByItem.get(itemID).push({
+        RGPReturnDetailID: Number(row.rgpreturndetailid),
+        QuantityReceived: Number(row.quantityreceived) || 0,
+        RemainingQuantity: Number(row.remainingquantity) || 0,
+
+        ReturnDateTime: row.returndatetime
+          ? formatDate(
+              row.returndatetime,
+              "DD MMM YYYY HH:mm:ss"
+            )
+          : null,
+
+        ReturnBy:
+          row.returnby == null
+            ? null
+            : Number(row.returnby),
+
+        ActualDate: row.actualdate
+          ? formatDate(row.actualdate)
+          : null,
+
+        IsReturn: row.isreturn === true,
+        Remarks: row.remarks ?? null
+      });
+    }
+
+    // ============================================================
+    // 5. Build Item Return Rows
+    //
+    // Every return transaction = separate row.
+    // Remaining quantity = last pending row.
+    // ============================================================
+
+    rgp.Items = Array.isArray(rgp.Items)
+      ? rgp.Items.flatMap((item) => {
+          const itemID = Number(item.RGPItemID);
+          const originalQuantity = Number(item.Quantity) || 0;
+          const returns = returnsByItem.get(itemID) || [];
+
+          const totalReturned = returns.reduce(
+            (total, detail) =>
+              total + Number(detail.QuantityReceived || 0),
+            0
+          );
+
+          const remainingQuantity = Math.max(
+            originalQuantity - totalReturned,
+            0
+          );
+
+          const itemRows = [];
+
+          for (const detail of returns) {
+            itemRows.push({
+              ...item,
+              RGPReturnDetailID: detail.RGPReturnDetailID,
+              Quantity: detail.QuantityReceived,
+              ReturnedQuantity: detail.QuantityReceived,
+              RemainingQuantity: 0,
+              IsReturned: true,
+              QuantityReceived: detail.QuantityReceived,
+              ReturnDateTime: detail.ReturnDateTime,
+              ReturnBy: detail.ReturnBy,
+              ActualDate: detail.ActualDate,
+              IsReturn: detail.IsReturn,
+              Remarks: detail.Remarks
+            });
+          }
+
+          if (remainingQuantity > 0) {
+            itemRows.push({
+              ...item,
+              Quantity: remainingQuantity,
+              ReturnedQuantity: 0,
+              RemainingQuantity: remainingQuantity,
+              IsReturned: false,
+              RGPReturnDetailID: null,
+              QuantityReceived: 0,
+              ReturnDateTime: null,
+              ReturnBy: null,
+              ActualDate: null,
+              IsReturn: false,
+              Remarks: null
+            });
+          }
+
+          if (itemRows.length === 0) {
+            itemRows.push({
+              ...item,
+              Quantity: originalQuantity,
+              ReturnedQuantity: 0,
+              RemainingQuantity: originalQuantity,
+              IsReturned: false,
+              RGPReturnDetailID: null,
+              QuantityReceived: 0,
+              ReturnDateTime: null,
+              ReturnBy: null,
+              ActualDate: null,
+              IsReturn: false,
+              Remarks: null
+            });
+          }
+
+          return itemRows;
+        })
+      : [];
+
+    // ============================================================
+    // 6. Created Details
+    // ============================================================
+
+    rgp.CreatedBy =
+      masterRow.createdby == null
+        ? null
+        : Number(masterRow.createdby);
+
+    rgp.CreatedByName =
+      masterRow.createdbyname || null;
+
+    // ============================================================
+    // 7. Checkout Details
+    // ============================================================
+
+    rgp.CheckoutDateTime = masterRow.checkoutdatetime
+      ? formatDate(
+          masterRow.checkoutdatetime,
+          "DD MMM YYYY"
+        )
+      : null;
+
+    rgp.CheckoutBy =
+      masterRow.checkoutby == null
+        ? null
+        : Number(masterRow.checkoutby);
+
+    rgp.CheckoutByName =
+      masterRow.checkoutbyname || null;
+
+    rgp.CheckoutRemarks =
+      masterRow.checkoutremarks || null;
+
+    // ============================================================
+    // 8. Cancellation Details
+    // ============================================================
+
+    rgp.CancelledBy =
+      masterRow.cancelledby == null
+        ? null
+        : Number(masterRow.cancelledby);
+
+    rgp.CancelledByName =
+      masterRow.cancelledbyname || null;
+
+    rgp.CancelledDateTime = masterRow.cancelleddatetime
+      ? formatDate(
+          masterRow.cancelleddatetime,
+          "DD MMM YYYY HH:mm:ss"
+        )
+      : null;
+
+    rgp.CancellationRemarks =
+      masterRow.cancellationremarks || null;
+
+    // ============================================================
+    // 9. Get Approval Action Names + Selected Approver Names
+    //
+    // ROLE     -> Role based
+    // USER     -> Selected UserID
+    // REGIONAL -> Selected Regional UserID
+    //
+    // Approval details come from the saved RGP snapshot.
+    // ============================================================
+
+    const approvalNameResult = await pool.query(
+      `
+      SELECT
+        a.RGPApprovalID,
+        a.ApprovalMasterDetailID,
+        a.ApprovalRole,
+        a.ApprovalOrder,
+        a.ApproverType,
+        a.ApproverUserID,
+        a.IsMandatory,
+        a.Status,
+        a.ActionBy,
+
+        actionUser.FullName AS ActionByName,
+        selectedUser.FullName AS ApproverUserName
+
+      FROM Gatepass_RGP_Approval a
+
+      LEFT JOIN user_master actionUser
+        ON actionUser.UserID = a.ActionBy
+
+      LEFT JOIN user_master selectedUser
+        ON selectedUser.UserID = a.ApproverUserID
+
+      WHERE a.RGPID = $1
+        AND a.IsDeleted = FALSE
+
+      ORDER BY
+        a.ApprovalOrder ASC,
+        a.RGPApprovalID ASC;
+      `,
+      [RGPID]
+    );
+
+    const approvalUserMap = new Map();
+
+    for (const approval of approvalNameResult.rows) {
+      approvalUserMap.set(
+        Number(approval.rgpapprovalid),
+        approval
       );
     }
 
     // ============================================================
-    // Keep Master Data
-    // ============================================================
-
-    const masterRow =
-      masterResult.rows[0];
-
-    // ============================================================
-    // Created By
-    // ============================================================
-
-    const createdBy =
-      masterRow.createdby;
-
-    const createdByName =
-      masterRow.createdbyname;
-
-    // ============================================================
-    // Checkout Details
-    // ============================================================
-
-    const checkoutDateTime =
-      masterRow.checkoutdatetime;
-
-    const checkoutBy =
-      masterRow.checkoutby;
-
-    const checkoutByName =
-      masterRow.checkoutbyname;
-
-    const checkoutRemarks =
-      masterRow.checkoutremarks;
-
-    // ============================================================
-    // Cancellation Details
-    // ============================================================
-
-    const cancelledBy =
-      masterRow.cancelledby;
-
-    const cancelledByName =
-      masterRow.cancelledbyname;
-
-    const cancelledDateTime =
-      masterRow.cancelleddatetime;
-
-    const cancellationRemarks =
-      masterRow.cancellationremarks;
-
-    // ============================================================
-    // Attach Existing Related Data
+    // 10. Map Approval Response
     //
-    // Items
-    // Documents
-    // Approvals
-    // ============================================================
-
-    const [rgp] =
-      await attachRGPRelatedData(
-        masterResult.rows,
-      );
-
-    // ============================================================
-    // Get Return Details
+    // Preserve existing response:
+    // - Remove RGPApprovalID
+    // - Remove ApprovalOrder
+    // - Remove ActionBy
     //
-    // Every return transaction remains a separate row.
+    // Add unified approval fields.
+    // ============================================================
+
+    rgp.Approvals = Array.isArray(rgp.Approvals)
+      ? rgp.Approvals.map((approval) => {
+          const detail = approvalUserMap.get(
+            Number(approval.RGPApprovalID)
+          );
+
+          const {
+            RGPApprovalID,
+            ApprovalOrder,
+            ActionBy,
+            ...approvalData
+          } = approval;
+
+          return {
+            ...approvalData,
+
+            ApprovalMasterDetailID:
+              detail?.approvalmasterdetailid == null
+                ? approvalData.ApprovalMasterDetailID ?? null
+                : Number(detail.approvalmasterdetailid),
+
+            ApproverType: String(
+              detail?.approvertype ||
+                approvalData.ApproverType ||
+                "ROLE"
+            )
+              .trim()
+              .toUpperCase(),
+
+            ApproverUserID:
+              detail?.approveruserid == null
+                ? approvalData.ApproverUserID ?? null
+                : Number(detail.approveruserid),
+
+            ApproverUserName:
+              detail?.approverusername || null,
+
+            IsMandatory:
+              detail?.ismandatory ??
+              approvalData.IsMandatory ??
+              true,
+
+            ActionByName:
+              detail?.actionbyname || null
+          };
+        })
+      : [];
+
+    // ============================================================
+    // 11. Legacy Approval Names
+    //
+    // Keep existing frontend / PDF compatibility.
+    // ============================================================
+
+    let HODName = null;
+    let FC_DOFName = null;
+    let GMName = null;
+
+    // Dynamic approval names, ordered by saved stage.
+    const ApprovalFlowNames = [];
+
+    for (const approval of approvalNameResult.rows) {
+      const role = String(
+        approval.approvalrole || ""
+      )
+        .trim()
+        .toUpperCase();
+
+      const status = String(
+        approval.status || ""
+      )
+        .trim()
+        .toUpperCase();
+
+      const approverType = String(
+        approval.approvertype || "ROLE"
+      )
+        .trim()
+        .toUpperCase();
+
+      const actionByName =
+        approval.actionbyname || null;
+
+      const approverUserName =
+        approval.approverusername || null;
+
+      const isActionCompleted = [
+        "APPROVED",
+        "REJECTED",
+        "CANCELLED"
+      ].includes(status);
+
+      ApprovalFlowNames.push({
+        ApprovalMasterDetailID:
+          approval.approvalmasterdetailid == null
+            ? null
+            : Number(approval.approvalmasterdetailid),
+
+        ApprovalOrder:
+          Number(approval.approvalorder),
+
+        ApprovalRole:
+          approval.approvalrole,
+
+        ApproverType:
+          approverType,
+
+        ApproverUserID:
+          approval.approveruserid == null
+            ? null
+            : Number(approval.approveruserid),
+
+        ApproverUserName:
+          approverUserName,
+
+        IsMandatory:
+          approval.ismandatory ?? true,
+
+        Status:
+          approval.status,
+
+        ActionByName:
+          isActionCompleted ? actionByName : null
+      });
+
+      if (!isActionCompleted) {
+        continue;
+      }
+
+      // Only role-based legacy names are assigned here.
+      if (approverType !== "ROLE") {
+        continue;
+      }
+
+      if (role === "HOD") {
+        HODName = actionByName;
+      } else if (
+        role === "FC" ||
+        role === "DOF"
+      ) {
+        FC_DOFName = actionByName;
+      } else if (role === "GM") {
+        GMName = actionByName;
+      }
+    }
+
+    rgp.ApprovalNames = {
+      HODName,
+      FC_DOFName,
+      GMName
+    };
+
+    rgp.ApprovalFlowNames = ApprovalFlowNames;
+
+    // ============================================================
+    // 12. Documents URL
+    // ============================================================
+
+    rgp.Documents = Array.isArray(rgp.Documents)
+      ? rgp.Documents.map((document) => ({
+          ...document,
+          FilePath: document.FilePath
+            ? generateUrl(document.FilePath)
+            : null
+        }))
+      : [];
+
+    // ============================================================
+    // 13. Response
+    // ============================================================
+
+    return ok(
+      "RGP record fetched successfully.",
+      rgp
+    );
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch RGP record"
+    );
+  }
+};
+// ============================================================Get RGP By Number
+const getRGPByNumber = async (data) => {
+  try {
+    // ============================================================
+    // 1. Validate RGP Number
+    // ============================================================
+
+    const RGPNumber = String(data.RGPNumber || "").trim();
+
+    if (!RGPNumber) {
+      return ok("Enter RGP number to search.", null);
+    }
+
+    // ============================================================
+    // 2. Get RGP Master
+    //
+    // Only fully approved RGP with pending return quantity.
+    // ============================================================
+
+    const masterResult = await pool.query(
+      `
+      SELECT
+        m.RGPID,
+        m.RGPNumber,
+        m.OrganizationID,
+        m.ExpectedReturnDate,
+        m.VendorName,
+        m.ContactNumber,
+        m.Company,
+        m.DepartmentID,
+        d.DepartmentName,
+        m.Address,
+        m.TakenBy,
+        m.Status,
+
+        -- Checkout
+        m.CheckoutDateTime,
+        m.CheckoutBy,
+        checkoutUser.FullName AS CheckoutByName,
+        m.CheckoutRemarks,
+
+        -- Cancellation
+        m.CancelledBy,
+        m.CancelledDateTime,
+        m.CancellationRemarks,
+
+        -- Return
+        m.ReturnedBy,
+        m.ReturnedDateTime,
+        m.ReturnRemarks,
+
+        -- Created
+        m.CreatedBy,
+        createdUser.FullName AS CreatedByName,
+        m.CreatedDate,
+        m.ModifiedBy,
+        m.ModifiedDate
+
+      FROM Gatepass_RGP_Entry_Master m
+
+      LEFT JOIN department_master d
+        ON d.DepartmentID = m.DepartmentID
+
+      LEFT JOIN user_master createdUser
+        ON createdUser.UserID = m.CreatedBy
+
+      LEFT JOIN user_master checkoutUser
+        ON checkoutUser.UserID = m.CheckoutBy
+
+      WHERE m.RGPNumber = $1
+        AND m.IsDeleted = FALSE
+
+        -- At least one saved approval stage
+        AND EXISTS (
+          SELECT 1
+          FROM Gatepass_RGP_Approval a
+          WHERE a.RGPID = m.RGPID
+            AND a.IsDeleted = FALSE
+        )
+
+        -- Every saved approval stage must be approved
+        AND NOT EXISTS (
+          SELECT 1
+          FROM Gatepass_RGP_Approval a
+          WHERE a.RGPID = m.RGPID
+            AND a.IsDeleted = FALSE
+            AND UPPER(
+              TRIM(COALESCE(a.Status, 'Pending'))
+            ) <> 'APPROVED'
+        )
+
+        -- At least one item still has remaining quantity
+        AND EXISTS (
+          SELECT 1
+          FROM Gatepass_RGP_Entry_Item_Details i
+          WHERE i.RGPID = m.RGPID
+            AND i.IsDeleted = FALSE
+            AND COALESCE(i.RemainingQuantity, 0) > 0
+        )
+
+      LIMIT 1;
+      `,
+      [RGPNumber]
+    );
+
+    if (!masterResult.rows.length) {
+      return ok("RGP record not found.", null);
+    }
+
+    const masterRow = masterResult.rows[0];
+    const RGPID = Number(masterRow.rgpid);
+
+    // ============================================================
+    // 3. Attach Items, Documents, Saved Approval Flow
+    //
+    // attachRGPRelatedData already supports new approval columns.
+    // ============================================================
+
+    const [rgp] = await attachRGPRelatedData(
+      masterResult.rows
+    );
+
+    // ============================================================
+    // 4. Get Return Transactions
+    // ============================================================
+
+    const returnResult = await pool.query(
+      `
+      SELECT
+        RGPReturnDetailID,
+        RGPItemID,
+        QuantityReceived,
+        RemainingQuantity,
+        ReturnDateTime,
+        ReturnBy,
+        ActualDate,
+        IsReturn,
+        Remarks
+
+      FROM Gatepass_RGP_Item_Return_Details
+
+      WHERE RGPID = $1
+        AND IsDeleted = FALSE
+
+      ORDER BY
+        ReturnDateTime ASC,
+        RGPReturnDetailID ASC;
+      `,
+      [RGPID]
+    );
+
+    // ============================================================
+    // 5. Group Returns By Item
+    // ============================================================
+
+    const returnsByItem = new Map();
+
+    for (const row of returnResult.rows) {
+      const itemID = Number(row.rgpitemid);
+
+      if (!returnsByItem.has(itemID)) {
+        returnsByItem.set(itemID, []);
+      }
+
+      returnsByItem.get(itemID).push({
+        RGPReturnDetailID: Number(row.rgpreturndetailid),
+
+        QuantityReceived:
+          Number(row.quantityreceived) || 0,
+
+        RemainingQuantity:
+          Number(row.remainingquantity) || 0,
+
+        ReturnDateTime: row.returndatetime
+          ? formatDate(
+              row.returndatetime,
+              "DD MMM YYYY HH:mm:ss"
+            )
+          : null,
+
+        ReturnBy:
+          row.returnby == null
+            ? null
+            : Number(row.returnby),
+
+        ActualDate: row.actualdate
+          ? formatDate(row.actualdate)
+          : null,
+
+        IsReturn: row.isreturn === true,
+
+        Remarks: row.remarks ?? null
+      });
+    }
+
+    // ============================================================
+    // 6. Build Item Rows
     //
     // Example:
-    // Original Qty = 994
+    // Original = 994
     // Return 1 = 100
     // Return 2 = 194
     //
@@ -2985,1326 +2907,386 @@ const getRGPById = async (data) => {
     // 700 Pending
     // ============================================================
 
-    const returnResult =
-      await pool.query(
-        `
-        SELECT
-          RGPReturnDetailID,
-          RGPItemID,
-          QuantityReceived,
-          RemainingQuantity,
-          ReturnDateTime,
-          ReturnBy,
-          ActualDate,
-          IsReturn,
-          Remarks
+    rgp.Items = Array.isArray(rgp.Items)
+      ? rgp.Items.flatMap((item) => {
+          const itemID = Number(item.RGPItemID);
 
-        FROM Gatepass_RGP_Item_Return_Details
+          const originalQuantity =
+            Number(item.Quantity) || 0;
 
-        WHERE RGPID = $1
-          AND IsDeleted = FALSE
+          const returns =
+            returnsByItem.get(itemID) || [];
 
-        ORDER BY
-          ReturnDateTime ASC,
-          RGPReturnDetailID ASC;
-        `,
-        [RGPID],
-      );
+          const totalReturned = returns.reduce(
+            (total, detail) =>
+              total + Number(detail.QuantityReceived || 0),
+            0
+          );
+
+          const remainingQuantity = Math.max(
+            originalQuantity - totalReturned,
+            0
+          );
+
+          const itemRows = [];
+
+          // Each return transaction gets a separate row.
+          for (const detail of returns) {
+            itemRows.push({
+              ...item,
+
+              RGPReturnDetailID:
+                detail.RGPReturnDetailID,
+
+              Quantity:
+                detail.QuantityReceived,
+
+              ReturnedQuantity:
+                detail.QuantityReceived,
+
+              RemainingQuantity: 0,
+
+              IsReturned: true,
+
+              QuantityReceived:
+                detail.QuantityReceived,
+
+              ReturnDateTime:
+                detail.ReturnDateTime,
+
+              ReturnBy:
+                detail.ReturnBy,
+
+              ActualDate:
+                detail.ActualDate,
+
+              IsReturn:
+                detail.IsReturn,
+
+              Remarks:
+                detail.Remarks
+            });
+          }
+
+          // Remaining / Pending row must always be last.
+          if (remainingQuantity > 0) {
+            itemRows.push({
+              ...item,
+
+              RGPReturnDetailID: null,
+
+              Quantity: remainingQuantity,
+
+              ReturnedQuantity: 0,
+
+              RemainingQuantity: remainingQuantity,
+
+              IsReturned: false,
+
+              QuantityReceived: 0,
+
+              ReturnDateTime: null,
+
+              ReturnBy: null,
+
+              ActualDate: null,
+
+              IsReturn: false,
+
+              Remarks: null
+            });
+          }
+
+          // Preserve original zero-quantity item behavior.
+          if (itemRows.length === 0) {
+            itemRows.push({
+              ...item,
+
+              RGPReturnDetailID: null,
+
+              Quantity: originalQuantity,
+
+              ReturnedQuantity: 0,
+
+              RemainingQuantity: originalQuantity,
+
+              IsReturned: false,
+
+              QuantityReceived: 0,
+
+              ReturnDateTime: null,
+
+              ReturnBy: null,
+
+              ActualDate: null,
+
+              IsReturn: false,
+
+              Remarks: null
+            });
+          }
+
+          return itemRows;
+        })
+      : [];
 
     // ============================================================
-    // Group Return Transactions By Item
-    // ============================================================
-
-    const returnsByItem =
-      new Map();
-
-    for (
-      const row
-      of returnResult.rows
-    ) {
-      const itemID =
-        Number(
-          row.rgpitemid,
-        );
-
-      if (
-        !returnsByItem.has(
-          itemID,
-        )
-      ) {
-        returnsByItem.set(
-          itemID,
-          [],
-        );
-      }
-
-      returnsByItem
-        .get(itemID)
-        .push({
-          RGPReturnDetailID:
-            Number(
-              row.rgpreturndetailid,
-            ),
-
-          QuantityReceived:
-            Number(
-              row.quantityreceived,
-            ) || 0,
-
-          RemainingQuantity:
-            Number(
-              row.remainingquantity,
-            ) || 0,
-
-          ReturnDateTime:
-            row.returndatetime
-              ? formatDate(
-                  row.returndatetime,
-                  "DD MMM YYYY HH:mm:ss",
-                )
-              : null,
-
-          ReturnBy:
-            row.returnby === null ||
-            row.returnby === undefined
-              ? null
-              : Number(
-                  row.returnby,
-                ),
-
-          ActualDate:
-            row.actualdate
-              ? formatDate(
-                  row.actualdate,
-                )
-              : null,
-
-          IsReturn:
-            row.isreturn === true,
-
-          Remarks:
-            row.remarks ?? null,
-        });
-    }
-
-    // ============================================================
-    // Build Item Rows
-    //
-    // Each saved return = separate Returned row
-    // Remaining quantity = one last Pending row
-    // ============================================================
-
-    rgp.Items =
-      Array.isArray(
-        rgp.Items,
-      )
-        ? rgp.Items.flatMap(
-            (item) => {
-              const itemID =
-                Number(
-                  item.RGPItemID,
-                );
-
-              const originalQuantity =
-                Number(
-                  item.Quantity,
-                ) || 0;
-
-              const returns =
-                returnsByItem.get(
-                  itemID,
-                ) || [];
-
-              // ==================================================
-              // Total Quantity Already Returned
-              // ==================================================
-
-              const totalReturned =
-                returns.reduce(
-                  (
-                    total,
-                    detail,
-                  ) =>
-                    total +
-                    Number(
-                      detail.QuantityReceived ||
-                        0,
-                    ),
-                  0,
-                );
-
-              // ==================================================
-              // Calculate Remaining From Original Quantity
-              //
-              // 994 - (100 + 194) = 700
-              // ==================================================
-
-              const remainingQuantity =
-                Math.max(
-                  originalQuantity -
-                    totalReturned,
-                  0,
-                );
-
-              const itemRows =
-                [];
-
-              // ==================================================
-              // Returned Rows
-              // ==================================================
-
-              for (
-                const detail
-                of returns
-              ) {
-                itemRows.push({
-                  ...item,
-
-                  RGPReturnDetailID:
-                    detail.RGPReturnDetailID,
-
-                  Quantity:
-                    detail.QuantityReceived,
-
-                  ReturnedQuantity:
-                    detail.QuantityReceived,
-
-                  RemainingQuantity:
-                    0,
-
-                  IsReturned:
-                    true,
-
-                  QuantityReceived:
-                    detail.QuantityReceived,
-
-                  ReturnDateTime:
-                    detail.ReturnDateTime,
-
-                  ReturnBy:
-                    detail.ReturnBy,
-
-                  ActualDate:
-                    detail.ActualDate,
-
-                  IsReturn:
-                    detail.IsReturn,
-
-                  Remarks:
-                    detail.Remarks,
-                });
-              }
-
-              // ==================================================
-              // Pending / Remaining Row
-              //
-              // Always last.
-              // Only add when quantity is still pending.
-              // ==================================================
-
-              if (
-                remainingQuantity > 0
-              ) {
-                itemRows.push({
-                  ...item,
-
-                  Quantity:
-                    remainingQuantity,
-
-                  ReturnedQuantity:
-                    0,
-
-                  RemainingQuantity:
-                    remainingQuantity,
-
-                  IsReturned:
-                    false,
-
-                  RGPReturnDetailID:
-                    null,
-
-                  QuantityReceived:
-                    0,
-
-                  ReturnDateTime:
-                    null,
-
-                  ReturnBy:
-                    null,
-
-                  ActualDate:
-                    null,
-
-                  IsReturn:
-                    false,
-
-                  Remarks:
-                    null,
-                });
-              }
-
-              // ==================================================
-              // Safety
-              //
-              // If original quantity itself is 0 and there are
-              // no returns, preserve original item.
-              // ==================================================
-
-              if (
-                itemRows.length === 0
-              ) {
-                itemRows.push({
-                  ...item,
-
-                  Quantity:
-                    originalQuantity,
-
-                  ReturnedQuantity:
-                    0,
-
-                  RemainingQuantity:
-                    originalQuantity,
-
-                  IsReturned:
-                    false,
-
-                  RGPReturnDetailID:
-                    null,
-
-                  QuantityReceived:
-                    0,
-
-                  ReturnDateTime:
-                    null,
-
-                  ReturnBy:
-                    null,
-
-                  ActualDate:
-                    null,
-
-                  IsReturn:
-                    false,
-
-                  Remarks:
-                    null,
-                });
-              }
-
-              return itemRows;
-            },
-          )
-        : [];
-
-    // ============================================================
-    // Explicitly Attach Created By
+    // 7. Created By
     // ============================================================
 
     rgp.CreatedBy =
-      createdBy !== null &&
-      createdBy !== undefined
-        ? Number(
-            createdBy,
-          )
-        : null;
+      masterRow.createdby == null
+        ? null
+        : Number(masterRow.createdby);
 
     rgp.CreatedByName =
-      createdByName || null;
+      masterRow.createdbyname || null;
 
     // ============================================================
-    // Explicitly Attach Checkout Details
+    // 8. Checkout Details
     // ============================================================
 
-    rgp.CheckoutDateTime =
-      checkoutDateTime
-        ? formatDate(
-            checkoutDateTime,
-            "DD MMM YYYY",
-          )
-        : null;
+    rgp.CheckoutDateTime = masterRow.checkoutdatetime
+      ? formatDate(
+          masterRow.checkoutdatetime,
+          "DD MMM YYYY"
+        )
+      : null;
 
     rgp.CheckoutBy =
-      checkoutBy !== null &&
-      checkoutBy !== undefined
-        ? Number(
-            checkoutBy,
-          )
-        : null;
+      masterRow.checkoutby == null
+        ? null
+        : Number(masterRow.checkoutby);
 
     rgp.CheckoutByName =
-      checkoutByName || null;
+      masterRow.checkoutbyname || null;
 
     rgp.CheckoutRemarks =
-      checkoutRemarks || null;
+      masterRow.checkoutremarks || null;
 
     // ============================================================
-    // Explicitly Attach Cancellation Details
-    // ============================================================
-
-    rgp.CancelledBy =
-      cancelledBy !== null &&
-      cancelledBy !== undefined
-        ? Number(
-            cancelledBy,
-          )
-        : null;
-
-    rgp.CancelledByName =
-      cancelledByName || null;
-
-    rgp.CancelledDateTime =
-      cancelledDateTime
-        ? formatDate(
-            cancelledDateTime,
-            "DD MMM YYYY HH:mm:ss",
-          )
-        : null;
-
-    rgp.CancellationRemarks =
-      cancellationRemarks || null;
-
-    // ============================================================
-    // Get Approval Action User Names
+    // 9. Unified Approval Flow Details
     //
-    // APPROVED
-    // REJECTED
-    // CANCELLED
-    //
-    // ActionBy -> user_master.UserID
-    // ActionByName -> user_master.FullName
+    // ROLE / USER / REGIONAL
     // ============================================================
 
-    const approvalNameResult =
-      await pool.query(
-        `
-        SELECT
-          a.RGPApprovalID,
-          a.ApprovalRole,
-          a.ApprovalOrder,
-          a.Status,
-          a.ActionBy,
+    const approvalNameResult = await pool.query(
+      `
+      SELECT
+        a.RGPApprovalID,
+        a.ApprovalMasterDetailID,
+        a.ApprovalRole,
+        a.ApprovalOrder,
+        a.ApproverType,
+        a.ApproverUserID,
+        a.IsMandatory,
+        a.Status,
+        a.ActionBy,
 
-          u.FullName AS ActionByName
+        actionUser.FullName AS ActionByName,
+        selectedUser.FullName AS ApproverUserName
 
-        FROM Gatepass_RGP_Approval a
+      FROM Gatepass_RGP_Approval a
 
-        LEFT JOIN user_master u
-          ON u.UserID =
-            a.ActionBy
+      LEFT JOIN user_master actionUser
+        ON actionUser.UserID = a.ActionBy
 
-        WHERE a.RGPID = $1
-          AND a.IsDeleted = FALSE
+      LEFT JOIN user_master selectedUser
+        ON selectedUser.UserID = a.ApproverUserID
 
-        ORDER BY
-          a.ApprovalOrder ASC,
-          a.RGPApprovalID ASC;
-        `,
-        [RGPID],
-      );
+      WHERE a.RGPID = $1
+        AND a.IsDeleted = FALSE
 
-    // ============================================================
-    // Approval Action User Map
-    //
-    // IMPORTANT:
-    // Map using RGPApprovalID.
-    // ============================================================
+      ORDER BY
+        a.ApprovalOrder ASC,
+        a.RGPApprovalID ASC;
+      `,
+      [RGPID]
+    );
 
-    const approvalUserMap =
-      new Map();
+    const approvalUserMap = new Map();
 
-    for (
-      const approval
-      of approvalNameResult.rows
-    ) {
+    for (const approval of approvalNameResult.rows) {
       approvalUserMap.set(
-        Number(
-          approval.rgpapprovalid,
-        ),
-        {
-          ActionByName:
-            approval.actionbyname ||
-            null,
-        },
+        Number(approval.rgpapprovalid),
+        approval
       );
     }
 
     // ============================================================
-    // Attach ActionByName To Existing Approvals
+    // 10. Approval Response
     //
-    // Final response DOES NOT contain:
-    //
-    // RGPApprovalID
-    // ApprovalOrder
-    // ActionBy
-    //
-    // Final response DOES contain:
-    //
-    // ActionByName
+    // Keep existing fields and add new flow builder fields.
     // ============================================================
 
-    rgp.Approvals =
-      Array.isArray(
-        rgp.Approvals,
+    rgp.Approvals = Array.isArray(rgp.Approvals)
+      ? rgp.Approvals.map((approval) => {
+          const detail = approvalUserMap.get(
+            Number(approval.RGPApprovalID)
+          );
+
+          const {
+            RGPApprovalID,
+            ApprovalOrder,
+            ActionBy,
+            ...approvalData
+          } = approval;
+
+          return {
+            ...approvalData,
+
+            ApprovalMasterDetailID:
+              detail?.approvalmasterdetailid == null
+                ? approvalData.ApprovalMasterDetailID ?? null
+                : Number(detail.approvalmasterdetailid),
+
+            ApproverType: String(
+              detail?.approvertype ||
+                approvalData.ApproverType ||
+                "ROLE"
+            )
+              .trim()
+              .toUpperCase(),
+
+            ApproverUserID:
+              detail?.approveruserid == null
+                ? approvalData.ApproverUserID ?? null
+                : Number(detail.approveruserid),
+
+            ApproverUserName:
+              detail?.approverusername || null,
+
+            IsMandatory:
+              detail?.ismandatory ??
+              approvalData.IsMandatory ??
+              true,
+
+            ActionByName:
+              detail?.actionbyname || null
+          };
+        })
+      : [];
+
+    // ============================================================
+    // 11. Approval Names
+    //
+    // Keep legacy HOD / FC / GM fields.
+    // Add dynamic approval names for the new builder.
+    // ============================================================
+
+    let HODName = null;
+    let FC_DOFName = null;
+    let GMName = null;
+
+    const ApprovalFlowNames = [];
+
+    for (const approval of approvalNameResult.rows) {
+      const role = String(
+        approval.approvalrole || ""
       )
-        ? rgp.Approvals.map(
-            (approval) => {
-              const actionUser =
-                approvalUserMap.get(
-                  Number(
-                    approval.RGPApprovalID,
-                  ),
-                );
+        .trim()
+        .toUpperCase();
 
-              const {
-                RGPApprovalID,
-                ApprovalOrder,
-                ActionBy,
-                ...approvalData
-              } = approval;
+      const status = String(
+        approval.status || ""
+      )
+        .trim()
+        .toUpperCase();
 
-              return {
-                ...approvalData,
+      const approverType = String(
+        approval.approvertype || "ROLE"
+      )
+        .trim()
+        .toUpperCase();
 
-                ActionByName:
-                  actionUser?.ActionByName ??
-                  null,
-              };
-            },
-          )
-        : [];
+      const actionByName =
+        approval.actionbyname || null;
 
-    // ============================================================
-    // Approval Names
-    //
-    // Keep this because existing frontend/PDF may already use it.
-    //
-    // Names can come from:
-    //
-    // APPROVED
-    // REJECTED
-    // CANCELLED
-    // ============================================================
+      const isApproved = status === "APPROVED";
 
-    let HODName =
-      null;
+      ApprovalFlowNames.push({
+        ApprovalMasterDetailID:
+          approval.approvalmasterdetailid == null
+            ? null
+            : Number(approval.approvalmasterdetailid),
 
-    let FC_DOFName =
-      null;
+        ApprovalOrder:
+          Number(approval.approvalorder),
 
-    let GMName =
-      null;
+        ApprovalRole:
+          approval.approvalrole,
 
-    for (
-      const approval
-      of approvalNameResult.rows
-    ) {
-      const role =
-        String(
-          approval.approvalrole ||
-            "",
-        )
-          .trim()
-          .toUpperCase();
+        ApproverType:
+          approverType,
 
-      const status =
-        String(
-          approval.status ||
-            "",
-        )
-          .trim()
-          .toUpperCase();
+        ApproverUserID:
+          approval.approveruserid == null
+            ? null
+            : Number(approval.approveruserid),
 
-      // ==========================================================
-      // Ignore Pending / Blank
-      // ==========================================================
+        ApproverUserName:
+          approval.approverusername || null,
 
-      if (
-        ![
-          "APPROVED",
-          "REJECTED",
-          "CANCELLED",
-        ].includes(
-          status,
-        )
-      ) {
+        IsMandatory:
+          approval.ismandatory ?? true,
+
+        Status:
+          approval.status,
+
+        ActionByName:
+          isApproved ? actionByName : null
+      });
+
+      if (!isApproved || approverType !== "ROLE") {
         continue;
       }
 
-      const actionByName =
-        approval.actionbyname ||
-        null;
-
-      // ==========================================================
-      // HOD
-      // ==========================================================
-
-      if (
-        role === "HOD"
-      ) {
-        HODName =
-          actionByName;
-      }
-
-      // ==========================================================
-      // FC / DOF
-      // ==========================================================
-
-      else if (
+      if (role === "HOD") {
+        HODName = actionByName;
+      } else if (
         role === "FC" ||
         role === "DOF"
       ) {
-        FC_DOFName =
-          actionByName;
-      }
-
-      // ==========================================================
-      // GM
-      // ==========================================================
-
-      else if (
-        role === "GM"
-      ) {
-        GMName =
-          actionByName;
+        FC_DOFName = actionByName;
+      } else if (role === "GM") {
+        GMName = actionByName;
       }
     }
-
-    // ============================================================
-    // Attach Approval Names
-    // ============================================================
 
     rgp.ApprovalNames = {
       HODName,
       FC_DOFName,
-      GMName,
+      GMName
     };
 
-    // ============================================================
-    // Documents URL
-    // ============================================================
-
-    rgp.Documents =
-      Array.isArray(
-        rgp.Documents,
-      )
-        ? rgp.Documents.map(
-            (document) => ({
-              ...document,
-
-              FilePath:
-                document.FilePath
-                  ? generateUrl(
-                      document.FilePath,
-                    )
-                  : null,
-            }),
-          )
-        : [];
+    rgp.ApprovalFlowNames = ApprovalFlowNames;
 
     // ============================================================
-    // Response
+    // 12. Generate Document URLs
+    // ============================================================
+
+    rgp.Documents = Array.isArray(rgp.Documents)
+      ? rgp.Documents.map((document) => ({
+          ...document,
+
+          FilePath: document.FilePath
+            ? generateUrl(document.FilePath)
+            : null
+        }))
+      : [];
+
+    // ============================================================
+    // 13. Response
     // ============================================================
 
     return ok(
       "RGP record fetched successfully.",
-      rgp,
+      rgp
     );
   } catch (error) {
     return databaseFailure(
       error,
-      "Fetch RGP record",
-    );
-  }
-};
-// ============================================================Get RGP By Number
-const getRGPByNumber = async (data) => {
-  try {
-    // ============================================================
-    // RGP Number
-    // ============================================================
-
-    const RGPNumber = String(
-      data.RGPNumber || "",
-    ).trim();
-
-    // ============================================================
-    // Empty Search
-    // ============================================================
-
-    if (!RGPNumber) {
-      return ok(
-        "Enter RGP number to search.",
-        null,
-      );
-    }
-
-    // ============================================================
-    // Get Master
-    // ============================================================
-
-    const masterResult =
-      await pool.query(
-        `
-        SELECT
-          m.RGPID,
-          m.RGPNumber,
-          m.OrganizationID,
-
-          m.ExpectedReturnDate,
-
-          m.VendorName,
-          m.ContactNumber,
-          m.Company,
-
-          m.DepartmentID,
-          d.DepartmentName,
-
-          m.Address,
-          m.TakenBy,
-
-          m.Status,
-
-          m.CheckoutDateTime,
-          m.CheckoutBy,
-          checkoutUser.FullName AS CheckoutByName,
-          m.CheckoutRemarks,
-
-          m.CancelledBy,
-          m.CancelledDateTime,
-          m.CancellationRemarks,
-
-          m.ReturnedBy,
-          m.ReturnedDateTime,
-          m.ReturnRemarks,
-
-          m.CreatedBy,
-          createdUser.FullName AS CreatedByName,
-          m.CreatedDate,
-
-          m.ModifiedBy,
-          m.ModifiedDate
-
-        FROM Gatepass_RGP_Entry_Master m
-
-        LEFT JOIN department_master d
-          ON d.DepartmentID =
-            m.DepartmentID
-
-        LEFT JOIN user_master createdUser
-          ON createdUser.UserID =
-            m.CreatedBy
-
-        LEFT JOIN user_master checkoutUser
-          ON checkoutUser.UserID =
-            m.CheckoutBy
-
-        WHERE m.RGPNumber = $1
-          AND m.IsDeleted = FALSE
-
-          AND EXISTS (
-            SELECT 1
-            FROM Gatepass_RGP_Approval a
-            WHERE a.RGPID = m.RGPID
-              AND a.IsDeleted = FALSE
-          )
-
-          AND NOT EXISTS (
-            SELECT 1
-            FROM Gatepass_RGP_Approval a
-            WHERE a.RGPID = m.RGPID
-              AND a.IsDeleted = FALSE
-              AND UPPER(
-                TRIM(
-                  COALESCE(
-                    a.Status,
-                    'Pending'
-                  )
-                )
-              ) <> 'APPROVED'
-          )
-
-          AND EXISTS (
-            SELECT 1
-            FROM Gatepass_RGP_Entry_Item_Details i
-            WHERE i.RGPID = m.RGPID
-              AND i.IsDeleted = FALSE
-              AND COALESCE(
-                i.RemainingQuantity,
-                0
-              ) > 0
-          )
-
-        LIMIT 1;
-        `,
-        [RGPNumber],
-      );
-
-    // ============================================================
-    // Not Found
-    // ============================================================
-
-    if (
-      !masterResult.rows.length
-    ) {
-      return ok(
-        "RGP record not found.",
-        null,
-      );
-    }
-
-    // ============================================================
-    // Keep Master Data
-    // ============================================================
-
-    const masterRow =
-      masterResult.rows[0];
-
-    const RGPID =
-      Number(
-        masterRow.rgpid,
-      );
-
-    // ============================================================
-    // Created By
-    // ============================================================
-
-    const createdBy =
-      masterRow.createdby;
-
-    const createdByName =
-      masterRow.createdbyname;
-
-    // ============================================================
-    // Checkout Details
-    // ============================================================
-
-    const checkoutDateTime =
-      masterRow.checkoutdatetime;
-
-    const checkoutBy =
-      masterRow.checkoutby;
-
-    const checkoutByName =
-      masterRow.checkoutbyname;
-
-    const checkoutRemarks =
-      masterRow.checkoutremarks;
-
-    // ============================================================
-    // Attach Related Data
-    //
-    // Items
-    // Documents
-    // Approvals
-    // ============================================================
-
-    const [rgp] =
-      await attachRGPRelatedData(
-        masterResult.rows,
-      );
-
-    // ============================================================
-    // Get Item Return Details
-    // ============================================================
-
-    const returnResult =
-      await pool.query(
-        `
-        SELECT
-          RGPReturnDetailID,
-          RGPItemID,
-          QuantityReceived,
-          RemainingQuantity,
-          ReturnDateTime,
-          ReturnBy,
-          ActualDate,
-          IsReturn,
-          Remarks
-
-        FROM Gatepass_RGP_Item_Return_Details
-
-        WHERE RGPID = $1
-          AND IsDeleted = FALSE
-
-        ORDER BY
-          ReturnDateTime ASC,
-          RGPReturnDetailID ASC;
-        `,
-        [RGPID],
-      );
-
-    // ============================================================
-    // Group Returns By Item
-    // ============================================================
-
-    const returnsByItem =
-      new Map();
-
-    for (
-      const row
-      of returnResult.rows
-    ) {
-      const itemID =
-        Number(
-          row.rgpitemid,
-        );
-
-      if (
-        !returnsByItem.has(
-          itemID,
-        )
-      ) {
-        returnsByItem.set(
-          itemID,
-          [],
-        );
-      }
-
-      returnsByItem
-        .get(itemID)
-        .push({
-          RGPReturnDetailID:
-            Number(
-              row.rgpreturndetailid,
-            ),
-
-          QuantityReceived:
-            Number(
-              row.quantityreceived,
-            ) || 0,
-
-          RemainingQuantity:
-            Number(
-              row.remainingquantity,
-            ) || 0,
-
-          ReturnDateTime:
-            row.returndatetime
-              ? formatDate(
-                  row.returndatetime,
-                  "DD MMM YYYY HH:mm:ss",
-                )
-              : null,
-
-          ReturnBy:
-            row.returnby === null ||
-            row.returnby === undefined
-              ? null
-              : Number(
-                  row.returnby,
-                ),
-
-          ActualDate:
-            row.actualdate
-              ? formatDate(
-                  row.actualdate,
-                )
-              : null,
-
-          IsReturn:
-            row.isreturn === true,
-
-          Remarks:
-            row.remarks ?? null,
-        });
-    }
-
-    // ============================================================
-    // Build Item Rows
-    //
-    // Example:
-    //
-    // Original = 994
-    // Return   = 100
-    // Return   = 194
-    //
-    // Result:
-    // 100 Returned
-    // 194 Returned
-    // 700 Pending
-    // ============================================================
-
-    rgp.Items =
-      Array.isArray(rgp.Items)
-        ? rgp.Items.flatMap(
-            (item) => {
-              const itemID =
-                Number(
-                  item.RGPItemID,
-                );
-
-              // Original item quantity
-              const originalQuantity =
-                Number(
-                  item.Quantity,
-                ) || 0;
-
-              const returns =
-                returnsByItem.get(
-                  itemID,
-                ) || [];
-
-              // ================================================
-              // Total Returned
-              // ================================================
-
-              const totalReturned =
-                returns.reduce(
-                  (
-                    total,
-                    detail,
-                  ) =>
-                    total +
-                    Number(
-                      detail.QuantityReceived ||
-                        0,
-                    ),
-                  0,
-                );
-
-              // ================================================
-              // Remaining Quantity
-              // ================================================
-
-              const remainingQuantity =
-                Math.max(
-                  originalQuantity -
-                    totalReturned,
-                  0,
-                );
-
-              const itemRows = [];
-
-              // ================================================
-              // Returned Rows
-              // ================================================
-
-              for (
-                const detail
-                of returns
-              ) {
-                itemRows.push({
-                  ...item,
-
-                  RGPReturnDetailID:
-                    detail.RGPReturnDetailID,
-
-                  Quantity:
-                    detail.QuantityReceived,
-
-                  ReturnedQuantity:
-                    detail.QuantityReceived,
-
-                  RemainingQuantity:
-                    0,
-
-                  IsReturned:
-                    true,
-
-                  QuantityReceived:
-                    detail.QuantityReceived,
-
-                  ReturnDateTime:
-                    detail.ReturnDateTime,
-
-                  ReturnBy:
-                    detail.ReturnBy,
-
-                  ActualDate:
-                    detail.ActualDate,
-
-                  IsReturn:
-                    detail.IsReturn,
-
-                  Remarks:
-                    detail.Remarks,
-                });
-              }
-
-              // ================================================
-              // Remaining / Pending Row
-              // Always Last
-              // ================================================
-
-              if (
-                remainingQuantity > 0
-              ) {
-                itemRows.push({
-                  ...item,
-
-                  RGPReturnDetailID:
-                    null,
-
-                  Quantity:
-                    remainingQuantity,
-
-                  ReturnedQuantity:
-                    0,
-
-                  RemainingQuantity:
-                    remainingQuantity,
-
-                  IsReturned:
-                    false,
-
-                  QuantityReceived:
-                    0,
-
-                  ReturnDateTime:
-                    null,
-
-                  ReturnBy:
-                    null,
-
-                  ActualDate:
-                    null,
-
-                  IsReturn:
-                    false,
-
-                  Remarks:
-                    null,
-                });
-              }
-
-              // ================================================
-              // Safety
-              // ================================================
-
-              if (
-                itemRows.length === 0
-              ) {
-                itemRows.push({
-                  ...item,
-
-                  RGPReturnDetailID:
-                    null,
-
-                  Quantity:
-                    originalQuantity,
-
-                  ReturnedQuantity:
-                    0,
-
-                  RemainingQuantity:
-                    originalQuantity,
-
-                  IsReturned:
-                    false,
-
-                  QuantityReceived:
-                    0,
-
-                  ReturnDateTime:
-                    null,
-
-                  ReturnBy:
-                    null,
-
-                  ActualDate:
-                    null,
-
-                  IsReturn:
-                    false,
-
-                  Remarks:
-                    null,
-                });
-              }
-
-              return itemRows;
-            },
-          )
-        : [];
-
-    // ============================================================
-    // Created By
-    // ============================================================
-
-    rgp.CreatedBy =
-      createdBy !== null &&
-      createdBy !== undefined
-        ? Number(
-            createdBy,
-          )
-        : null;
-
-    rgp.CreatedByName =
-      createdByName || null;
-
-    // ============================================================
-    // Checkout Details
-    // ============================================================
-
-    rgp.CheckoutDateTime =
-      checkoutDateTime
-        ? formatDate(
-            checkoutDateTime,
-            "DD MMM YYYY",
-          )
-        : null;
-
-    rgp.CheckoutBy =
-      checkoutBy !== null &&
-      checkoutBy !== undefined
-        ? Number(
-            checkoutBy,
-          )
-        : null;
-
-    rgp.CheckoutByName =
-      checkoutByName || null;
-
-    rgp.CheckoutRemarks =
-      checkoutRemarks || null;
-
-    // ============================================================
-    // Get Approval User Names
-    // ============================================================
-
-    const approvalNameResult =
-      await pool.query(
-        `
-        SELECT
-          a.RGPApprovalID,
-          a.ApprovalRole,
-          a.ApprovalOrder,
-          a.Status,
-          a.ActionBy,
-
-          u.FullName AS ActionByName
-
-        FROM Gatepass_RGP_Approval a
-
-        LEFT JOIN user_master u
-          ON u.UserID =
-            a.ActionBy
-
-        WHERE a.RGPID = $1
-          AND a.IsDeleted = FALSE
-
-        ORDER BY
-          a.ApprovalOrder ASC,
-          a.RGPApprovalID ASC;
-        `,
-        [RGPID],
-      );
-
-    // ============================================================
-    // Approval Names
-    // ============================================================
-
-    let HODName =
-      null;
-
-    let FC_DOFName =
-      null;
-
-    let GMName =
-      null;
-
-    for (
-      const approval
-      of approvalNameResult.rows
-    ) {
-      const role =
-        String(
-          approval.approvalrole ||
-            "",
-        )
-          .trim()
-          .toUpperCase();
-
-      const status =
-        String(
-          approval.status ||
-            "",
-        )
-          .trim()
-          .toUpperCase();
-
-      if (
-        status !==
-        "APPROVED"
-      ) {
-        continue;
-      }
-
-      const actionByName =
-        approval.actionbyname ||
-        null;
-
-      // HOD
-      if (
-        role === "HOD"
-      ) {
-        HODName =
-          actionByName;
-      }
-
-      // FC / DOF
-      else if (
-        role === "FC" ||
-        role === "DOF"
-      ) {
-        FC_DOFName =
-          actionByName;
-      }
-
-      // GM
-      else if (
-        role === "GM"
-      ) {
-        GMName =
-          actionByName;
-      }
-    }
-
-    // ============================================================
-    // Attach Approval Names
-    // ============================================================
-
-    rgp.ApprovalNames = {
-      HODName,
-      FC_DOFName,
-      GMName,
-    };
-
-    // ============================================================
-    // Generate Document URLs
-    // ============================================================
-
-    rgp.Documents =
-      Array.isArray(
-        rgp.Documents,
-      )
-        ? rgp.Documents.map(
-            (document) => ({
-              ...document,
-
-              FilePath:
-                document.FilePath
-                  ? generateUrl(
-                      document.FilePath,
-                    )
-                  : null,
-            }),
-          )
-        : [];
-
-    // ============================================================
-    // Response
-    // ============================================================
-
-    return ok(
-      "RGP record fetched successfully.",
-      rgp,
-    );
-
-  } catch (error) {
-    return databaseFailure(
-      error,
-      "Fetch RGP record by number",
+      "Fetch RGP record by number"
     );
   }
 };
@@ -5219,6 +4201,7 @@ const deleteRGP = async (data) => {
 // ============================================================RGP APPROVAL
 const processRGPApproval = async (data) => {
   const client = await pool.connect();
+
   let committed = false;
   let notificationEvent;
 
@@ -5229,361 +4212,420 @@ const processRGPApproval = async (data) => {
       RGPID,
       Action,
       Remarks: requestedRemarks,
-
       UserID,
       UserType,
       DepartmentName,
     } = data;
 
     const Remarks = String(requestedRemarks || "").trim();
+    const rgpID = Number(RGPID);
+    const loggedInUserID = Number(UserID);
 
     // ============================================================
     // Validate RGPID
     // ============================================================
 
-    const rgpID =
-      Number(RGPID);
+    if (!Number.isInteger(rgpID) || rgpID <= 0) {
+      await client.query("ROLLBACK");
+
+      return fail("Valid RGPID is required.", 400);
+    }
+
+    // ============================================================
+    // Validate Logged-In User
+    // ============================================================
 
     if (
-      !Number.isInteger(rgpID) ||
-      rgpID <= 0
+      !Number.isInteger(loggedInUserID) ||
+      loggedInUserID <= 0
     ) {
       await client.query("ROLLBACK");
 
-      return fail(
-        "Valid RGPID is required.",
-        400,
-      );
+      return fail("Valid UserID is required.", 400);
     }
 
     // ============================================================
     // Validate Action
-    //
-    // Supported:
-    // APPROVE
-    // REJECT
-    // CANCEL
     // ============================================================
 
-    const normalizedAction =
-      String(Action || "")
-        .trim()
-        .toUpperCase();
+    const normalizedAction = String(Action || "")
+      .trim()
+      .toUpperCase();
 
     if (
-      ![
-        "APPROVE",
-        "REJECT",
-        "CANCEL",
-      ].includes(
-        normalizedAction,
+      !["APPROVE", "REJECT", "CANCEL"].includes(
+        normalizedAction
       )
     ) {
       await client.query("ROLLBACK");
 
       return fail(
         "Action must be APPROVE, REJECT or CANCEL.",
-        400,
+        400
       );
     }
 
-    // Queue consumers can bypass HTTP validation; retain the controller's
-    // required reason for both terminal approval actions.
-    if (["REJECT", "CANCEL"].includes(normalizedAction) && !Remarks) {
+    if (
+      ["REJECT", "CANCEL"].includes(normalizedAction) &&
+      !Remarks
+    ) {
       await client.query("ROLLBACK");
-      return fail(`Remarks are required for ${normalizedAction}.`, 400);
+
+      return fail(
+        `Remarks are required for ${normalizedAction}.`,
+        400
+      );
     }
 
     // ============================================================
     // Logged-In Approval Role
     // ============================================================
 
-    const approvalRole =
-      resolveRGPApprovalRole({
-        UserType,
-        DepartmentName,
-      });
+    const approvalRole = resolveRGPApprovalRole({
+      UserType,
+      DepartmentName,
+    });
 
-    if (!approvalRole) {
-      await client.query("ROLLBACK");
-
-      return fail(
-        "You are not authorized to process RGP approval.",
-        403,
-      );
-    }
+    // USER and REGIONAL approvers are authorized by UserID.
+    // Therefore, do not reject users solely because approvalRole
+    // is missing.
 
     // ============================================================
     // Lock RGP Master
     // ============================================================
 
-    const masterResult =
-      await client.query(
-        `
-        SELECT
-          RGPID,
-          OrganizationID,
-          RGPNumber,
-          DepartmentID,
-          CreatedBy,
-          Status
+    const masterResult = await client.query(
+      `
+      SELECT
+        RGPID,
+        OrganizationID,
+        RGPNumber,
+        DepartmentID,
+        CreatedBy,
+        Status
 
-        FROM Gatepass_RGP_Entry_Master
+      FROM Gatepass_RGP_Entry_Master
 
-        WHERE RGPID = $1
-          AND IsDeleted = FALSE
+      WHERE RGPID = $1
+        AND IsDeleted = FALSE
 
-        FOR UPDATE;
-        `,
-        [rgpID],
-      );
+      FOR UPDATE;
+      `,
+      [rgpID]
+    );
 
-    // ============================================================
-    // RGP Not Found
-    // ============================================================
-
-    if (
-      !masterResult.rows.length
-    ) {
+    if (!masterResult.rows.length) {
       await client.query("ROLLBACK");
 
-      return fail(
-        "RGP record not found.",
-        404,
-      );
+      return fail("RGP record not found.", 404);
     }
 
-    const master =
-      masterResult.rows[0];
-
-    // ============================================================
-    // HOD Department Validation
-    //
-    // HOD can only take action on RGP of own department.
-    // ============================================================
-
-    if (
-      approvalRole === "HOD" &&
-      !(
-        Number(
-          data.UserDepartmentID,
-        ) > 0 &&
-        Number(
-          data.UserDepartmentID,
-        ) ===
-          Number(
-            master.departmentid,
-          )
-      )
-    ) {
-      await client.query("ROLLBACK");
-
-      return fail(
-        "Only the HOD of the RGP department can approve, reject or cancel this RGP.",
-        403,
-      );
-    }
+    const master = masterResult.rows[0];
 
     // ============================================================
     // Current Master Status
     // ============================================================
 
-    const currentMasterStatus =
-      String(
-        master.status || "",
-      )
-        .trim()
-        .toUpperCase();
+    const currentMasterStatus = String(
+      master.status || ""
+    )
+      .trim()
+      .toUpperCase();
 
-    // ============================================================
-    // Final Status Checks
-    // ============================================================
-
-    if (
-      currentMasterStatus ===
-      "APPROVED"
-    ) {
+    if (currentMasterStatus === "APPROVED") {
       await client.query("ROLLBACK");
 
-      return fail(
-        "RGP is already fully approved.",
-        400,
-      );
+      return fail("RGP is already fully approved.", 400);
     }
 
-    if (
-      currentMasterStatus ===
-      "REJECTED"
-    ) {
+    if (currentMasterStatus === "REJECTED") {
       await client.query("ROLLBACK");
 
       return fail(
         "Rejected RGP cannot be processed further.",
-        400,
+        400
       );
     }
 
-    if (
-      currentMasterStatus ===
-      "CANCELLED"
-    ) {
+    if (currentMasterStatus === "CANCELLED") {
       await client.query("ROLLBACK");
 
       return fail(
         "Cancelled RGP cannot be processed further.",
-        400,
+        400
       );
     }
 
     if (
       [
         "CHECKED OUT",
+        "CHECKED_OUT",
         "RETURN PENDING",
+        "RETURN_PENDING",
         "RETURNED",
-      ].includes(
-        currentMasterStatus,
-      )
+      ].includes(currentMasterStatus)
     ) {
       await client.query("ROLLBACK");
 
       return fail(
         `RGP approval cannot be processed when status is ${currentMasterStatus}.`,
-        400,
+        400
       );
     }
 
     // ============================================================
-    // Lock Approval Rows
+    // Lock Approval Snapshot Rows
     // ============================================================
 
-    const approvalResult =
-      await client.query(
-        `
-        SELECT
-          RGPApprovalID,
-          RGPID,
-          OrganizationID,
+    const approvalResult = await client.query(
+      `
+      SELECT
+        RGPApprovalID,
+        RGPID,
+        OrganizationID,
+        RGPApprovalConfigID,
+        ApprovalMasterDetailID,
+        ApprovalLevel,
+        ApprovalRole,
+        ApprovalOrder,
+        ApproverType,
+        ApproverUserID,
+        IsMandatory,
+        Status,
+        StatusDateTime,
+        ActionBy,
+        Remarks
 
-          RGPApprovalConfigID,
+      FROM Gatepass_RGP_Approval
 
-          ApprovalLevel,
-          ApprovalRole,
-          ApprovalOrder,
+      WHERE RGPID = $1
+        AND IsDeleted = FALSE
 
-          Status,
-          StatusDateTime,
-          ActionBy,
-          Remarks
+      ORDER BY
+        ApprovalOrder ASC,
+        ApprovalLevel ASC,
+        RGPApprovalID ASC
 
-        FROM Gatepass_RGP_Approval
+      FOR UPDATE;
+      `,
+      [rgpID]
+    );
 
-        WHERE RGPID = $1
-          AND IsDeleted = FALSE
-
-        ORDER BY
-          ApprovalOrder ASC,
-          ApprovalLevel ASC,
-          RGPApprovalID ASC
-
-        FOR UPDATE;
-        `,
-        [rgpID],
-      );
-
-    // ============================================================
-    // Approval Flow Not Found
-    // ============================================================
-
-    if (
-      !approvalResult.rows.length
-    ) {
+    if (!approvalResult.rows.length) {
       await client.query("ROLLBACK");
 
-      return fail(
-        "RGP approval flow not found.",
-        400,
+      return fail("RGP approval flow not found.", 400);
+    }
+
+    const approvalRows = approvalResult.rows;
+
+    // ============================================================
+    // Prevent Same User From Approving Same RGP Twice
+    // ============================================================
+
+    if (normalizedAction === "APPROVE") {
+      const alreadyApproved = approvalRows.some(
+        (row) =>
+          String(row.status || "")
+            .trim()
+            .toUpperCase() === "APPROVED" &&
+          String(row.actionby) === String(loggedInUserID)
       );
+
+      if (alreadyApproved) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          "You have already approved this RGP.",
+          403
+        );
+      }
     }
 
     // ============================================================
-    // Current Pending Stage
-    //
-    // First approval which is not Approved.
-    //
-    // Example:
-    //
-    // HOD = Approved
-    // FC  = Pending   <-- Current
-    // GM  = Pending
+    // Find Current Pending Stage
     // ============================================================
 
-    const currentStage =
-      approvalResult.rows.find(
-        (row) =>
-          String(
-            row.status ||
-              "Pending",
-          )
-            .trim()
-            .toUpperCase() !==
-          "APPROVED",
-      );
+    const currentStage = approvalRows.find(
+      (row) =>
+        String(row.status || "Pending")
+          .trim()
+          .toUpperCase() !== "APPROVED"
+    );
 
     if (!currentStage) {
       await client.query("ROLLBACK");
 
       return fail(
         "No pending RGP approval stage found.",
-        400,
+        400
       );
     }
 
-    // ============================================================
-    // Current Approval Role
-    // ============================================================
+    const currentStageStatus = String(
+      currentStage.status || "Pending"
+    )
+      .trim()
+      .toUpperCase();
+
+    const currentApproverType = String(
+      currentStage.approvertype || "ROLE"
+    )
+      .trim()
+      .toUpperCase();
 
     const currentApprovalRole =
-      normalizeRGPApprovalRole(
-        currentStage.approvalrole,
-      );
+      currentApproverType === "ROLE"
+        ? normalizeRGPApprovalRole(
+            currentStage.approvalrole
+          )
+        : String(currentStage.approvalrole || "").trim();
 
-    // ============================================================
-    // Logged-In User Must Be Current Approver
-    // ============================================================
-
-    if (
-      currentApprovalRole !==
-      approvalRole
-    ) {
-      await client.query("ROLLBACK");
-
-      return fail(
-        `RGP is currently pending for ${currentApprovalRole} approval.`,
-        403,
-      );
-    }
+    const currentApproverUserID = Number(
+      currentStage.approveruserid
+    );
 
     // ============================================================
     // Current Stage Must Be Pending
     // ============================================================
 
-    const currentStageStatus =
-      String(
-        currentStage.status ||
-          "Pending",
-      )
-        .trim()
-        .toUpperCase();
-
-    if (
-      currentStageStatus !==
-      "PENDING"
-    ) {
+    if (currentStageStatus !== "PENDING") {
       await client.query("ROLLBACK");
 
       return fail(
         `${currentApprovalRole} approval is already ${currentStageStatus}.`,
-        400,
+        400
+      );
+    }
+
+    // ============================================================
+    // Authorize Current Approver
+    // ============================================================
+
+    if (currentApproverType === "ROLE") {
+      // ========================================================
+      // ROLE: Existing Role-Based Authorization
+      // ========================================================
+
+      if (
+        !approvalRole ||
+        currentApprovalRole !== approvalRole
+      ) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          `RGP is currently pending for ${currentApprovalRole} approval.`,
+          403
+        );
+      }
+
+      // HOD can approve only RGP of own department.
+
+      if (
+        approvalRole === "HOD" &&
+        !(
+          Number(data.UserDepartmentID) > 0 &&
+          Number(data.UserDepartmentID) ===
+            Number(master.departmentid)
+        )
+      ) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          "Only the HOD of the RGP department can approve, reject or cancel this RGP.",
+          403
+        );
+      }
+    } else if (currentApproverType === "USER") {
+      // ========================================================
+      // USER: Only Selected UserID
+      // ========================================================
+
+      if (
+        !Number.isInteger(currentApproverUserID) ||
+        currentApproverUserID <= 0
+      ) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          "Selected USER approver is not configured correctly.",
+          400
+        );
+      }
+
+      if (currentApproverUserID !== loggedInUserID) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          "Only the selected user can process this RGP approval.",
+          403
+        );
+      }
+    } else if (currentApproverType === "REGIONAL") {
+      // ========================================================
+      // REGIONAL: Selected User Must Belong to Organization 10
+      // ========================================================
+
+      if (
+        !Number.isInteger(currentApproverUserID) ||
+        currentApproverUserID <= 0
+      ) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          "Selected REGIONAL approver is not configured correctly.",
+          400
+        );
+      }
+
+      if (currentApproverUserID !== loggedInUserID) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          "Only the selected regional user can process this RGP approval.",
+          403
+        );
+      }
+
+      const regionalUserResult = await client.query(
+        `
+        SELECT
+          1
+
+        FROM user_master u
+
+        INNER JOIN user_org_mapping uom
+          ON uom.UserID = u.UserID
+
+        WHERE u.UserID = $1
+          AND u.IsDeleted = FALSE
+          AND u.IsActive = TRUE
+          AND uom.OrganizationID = 10
+          AND uom.IsDeleted = FALSE
+          AND uom.IsActive = TRUE
+
+        LIMIT 1;
+        `,
+        [loggedInUserID]
+      );
+
+      if (!regionalUserResult.rows.length) {
+        await client.query("ROLLBACK");
+
+        return fail(
+          "Only an authorized Organization 10 regional user can process this approval.",
+          403
+        );
+      }
+
+      // Do not compare regional user's organization with
+      // master.OrganizationID. Regional approvals are cross-org.
+    } else {
+      await client.query("ROLLBACK");
+
+      return fail(
+        `Unsupported RGP approver type: ${currentApproverType}.`,
+        400
       );
     }
 
@@ -5597,22 +4639,22 @@ const processRGPApproval = async (data) => {
       CANCEL: "Cancelled",
     };
 
-    const newStatus =
-      approvalStatusMap[
-        normalizedAction
-      ];
+    const newStatus = approvalStatusMap[normalizedAction];
 
-    // Capture the persisted creator and ordered history while the rows are locked.
-    // Dispatch only if this transaction commits; never reconstruct a later stage.
-    notificationEvent = { master, approvals: approvalResult.rows,
-      approvalID: currentStage.rgpapprovalid, action: normalizedAction, remarks: Remarks };
+    // ============================================================
+    // Preserve Notification Event
+    // ============================================================
+
+    notificationEvent = {
+      master,
+      approvals: approvalRows,
+      approvalID: currentStage.rgpapprovalid,
+      action: normalizedAction,
+      remarks: Remarks,
+    };
 
     // ============================================================
     // Update Current Approval Row
-    //
-    // APPROVE -> Approved
-    // REJECT  -> Rejected
-    // CANCEL  -> Cancelled
     // ============================================================
 
     await client.query(
@@ -5621,18 +4663,11 @@ const processRGPApproval = async (data) => {
 
       SET
         Status = $1,
-
-        StatusDateTime =
-          CURRENT_TIMESTAMP,
-
+        StatusDateTime = CURRENT_TIMESTAMP,
         ActionBy = $2,
-
         Remarks = $3,
-
         ModifiedBy = $2,
-
-        ModifiedDate =
-          CURRENT_TIMESTAMP
+        ModifiedDate = CURRENT_TIMESTAMP
 
       WHERE RGPApprovalID = $4
         AND RGPID = $5
@@ -5640,192 +4675,100 @@ const processRGPApproval = async (data) => {
       `,
       [
         newStatus,
-        UserID,
+        loggedInUserID,
         Remarks || null,
         currentStage.rgpapprovalid,
         rgpID,
-      ],
+      ]
     );
 
     // ============================================================
     // CANCEL
-    //
-    // Current Approval Row:
-    // Status = Cancelled
-    //
-    // Master:
-    // Status = CANCELLED
-    // CancelledBy = Current User
-    // CancellationRemarks = Remarks
-    //
-    // Remaining approval rows stay Pending.
     // ============================================================
 
-    if (
-      normalizedAction ===
-      "CANCEL"
-    ) {
+    if (normalizedAction === "CANCEL") {
       await client.query(
         `
         UPDATE Gatepass_RGP_Entry_Master
 
         SET
           Status = 'CANCELLED',
-
           CancelledBy = $1,
-
-          CancelledDateTime =
-            CURRENT_TIMESTAMP,
-
+          CancelledDateTime = CURRENT_TIMESTAMP,
           CancellationRemarks = $2,
-
           ModifiedBy = $1,
-
-          ModifiedDate =
-            CURRENT_TIMESTAMP
+          ModifiedDate = CURRENT_TIMESTAMP
 
         WHERE RGPID = $3
           AND IsDeleted = FALSE;
         `,
-        [
-          UserID,
-          Remarks || null,
-          rgpID,
-        ],
+        [loggedInUserID, Remarks || null, rgpID]
       );
 
-      await client.query(
-        "COMMIT",
-      );
+      await client.query("COMMIT");
       committed = true;
 
-      return ok(
-        "RGP cancelled successfully.",
-        {
-          RGPID:
-            Number(rgpID),
-
-          RGPNumber:
-            Number(
-              master.rgpnumber,
-            ),
-
-          ApprovalRole:
-            currentApprovalRole,
-
-          ApprovalStatus:
-            "CANCELLED",
-
-          Status:
-            "CANCELLED",
-        },
-      );
+      return ok("RGP cancelled successfully.", {
+        RGPID: Number(rgpID),
+        RGPNumber: Number(master.rgpnumber),
+        ApprovalRole: currentApprovalRole,
+        ApprovalStatus: "CANCELLED",
+        Status: "CANCELLED",
+      });
     }
 
     // ============================================================
     // REJECT
-    //
-    // Current Approval Row:
-    // Status = Rejected
-    //
-    // Master:
-    // Status = REJECTED
     // ============================================================
 
-    if (
-      normalizedAction ===
-      "REJECT"
-    ) {
+    if (normalizedAction === "REJECT") {
       await client.query(
         `
         UPDATE Gatepass_RGP_Entry_Master
 
         SET
           Status = 'REJECTED',
-
           ModifiedBy = $1,
-
-          ModifiedDate =
-            CURRENT_TIMESTAMP
+          ModifiedDate = CURRENT_TIMESTAMP
 
         WHERE RGPID = $2
           AND IsDeleted = FALSE;
         `,
-        [
-          UserID,
-          rgpID,
-        ],
+        [loggedInUserID, rgpID]
       );
 
-      await client.query(
-        "COMMIT",
-      );
+      await client.query("COMMIT");
       committed = true;
 
-      return ok(
-        "RGP rejected successfully.",
-        {
-          RGPID:
-            Number(rgpID),
-
-          RGPNumber:
-            Number(
-              master.rgpnumber,
-            ),
-
-          ApprovalRole:
-            currentApprovalRole,
-
-          ApprovalStatus:
-            "REJECTED",
-
-          Status:
-            "REJECTED",
-        },
-      );
+      return ok("RGP rejected successfully.", {
+        RGPID: Number(rgpID),
+        RGPNumber: Number(master.rgpnumber),
+        ApprovalRole: currentApprovalRole,
+        ApprovalStatus: "REJECTED",
+        Status: "REJECTED",
+      });
     }
 
     // ============================================================
-    // APPROVE
-    //
-    // We reach here only when:
-    // normalizedAction === "APPROVE"
-    //
-    // Find next approval stage.
+    // APPROVE: Find Next Stage
     // ============================================================
 
-    const currentApprovalID =
-      Number(
-        currentStage.rgpapprovalid,
-      );
+    const currentApprovalID = Number(
+      currentStage.rgpapprovalid
+    );
 
-    const nextStage =
-      approvalResult.rows.find(
-        (row) =>
-          Number(
-            row.rgpapprovalid,
-          ) !==
-            currentApprovalID &&
-          Number(
-            row.approvalorder,
-          ) >
-            Number(
-              currentStage.approvalorder,
-            ) &&
-          String(
-            row.status ||
-              "Pending",
-          )
-            .trim()
-            .toUpperCase() !==
-            "APPROVED",
-      );
+    const nextStage = approvalRows.find(
+      (row) =>
+        Number(row.rgpapprovalid) !== currentApprovalID &&
+        Number(row.approvalorder) >
+          Number(currentStage.approvalorder) &&
+        String(row.status || "Pending")
+          .trim()
+          .toUpperCase() !== "APPROVED"
+    );
 
     // ============================================================
-    // No Next Stage
-    //
     // All Approvals Completed
-    // Master = APPROVED
     // ============================================================
 
     if (!nextStage) {
@@ -5835,55 +4778,29 @@ const processRGPApproval = async (data) => {
 
         SET
           Status = 'APPROVED',
-
           ModifiedBy = $1,
-
-          ModifiedDate =
-            CURRENT_TIMESTAMP
+          ModifiedDate = CURRENT_TIMESTAMP
 
         WHERE RGPID = $2
           AND IsDeleted = FALSE;
         `,
-        [
-          UserID,
-          rgpID,
-        ],
+        [loggedInUserID, rgpID]
       );
 
-      await client.query(
-        "COMMIT",
-      );
+      await client.query("COMMIT");
       committed = true;
 
-      return ok(
-        "RGP fully approved successfully.",
-        {
-          RGPID:
-            Number(rgpID),
-
-          RGPNumber:
-            Number(
-              master.rgpnumber,
-            ),
-
-          ApprovalRole:
-            currentApprovalRole,
-
-          ApprovalStatus:
-            "APPROVED",
-
-          Status:
-            "APPROVED",
-        },
-      );
+      return ok("RGP fully approved successfully.", {
+        RGPID: Number(rgpID),
+        RGPNumber: Number(master.rgpnumber),
+        ApprovalRole: currentApprovalRole,
+        ApprovalStatus: "APPROVED",
+        Status: "APPROVED",
+      });
     }
 
     // ============================================================
     // Next Approval Pending
-    //
-    // Current approval = Approved
-    // Next approval = Pending
-    // Master remains PENDING
     // ============================================================
 
     await client.query(
@@ -5892,65 +4809,51 @@ const processRGPApproval = async (data) => {
 
       SET
         Status = 'PENDING',
-
         ModifiedBy = $1,
-
-        ModifiedDate =
-          CURRENT_TIMESTAMP
+        ModifiedDate = CURRENT_TIMESTAMP
 
       WHERE RGPID = $2
         AND IsDeleted = FALSE;
       `,
-      [
-        UserID,
-        rgpID,
-      ],
+      [loggedInUserID, rgpID]
     );
 
-    await client.query(
-      "COMMIT",
-    );
+    await client.query("COMMIT");
     committed = true;
 
-    return ok(
-      "RGP approval processed successfully.",
-      {
-        RGPID:
-          Number(rgpID),
+    const nextApproverType = String(
+      nextStage.approvertype || "ROLE"
+    )
+      .trim()
+      .toUpperCase();
 
-        RGPNumber:
-          Number(
-            master.rgpnumber,
-          ),
+    const nextApprovalRole =
+      nextApproverType === "ROLE"
+        ? normalizeRGPApprovalRole(
+            nextStage.approvalrole
+          )
+        : String(nextStage.approvalrole || "").trim();
 
-        ApprovedByRole:
-          currentApprovalRole,
-
-        NextApprovalRole:
-          normalizeRGPApprovalRole(
-            nextStage.approvalrole,
-          ),
-
-        ApprovalStatus:
-          "APPROVED",
-
-        Status:
-          "PENDING",
-      },
-    );
-
+    return ok("RGP approval processed successfully.", {
+      RGPID: Number(rgpID),
+      RGPNumber: Number(master.rgpnumber),
+      ApprovedByRole: currentApprovalRole,
+      NextApprovalRole: nextApprovalRole,
+      ApprovalStatus: "APPROVED",
+      Status: "PENDING",
+    });
   } catch (error) {
-    await client.query(
-      "ROLLBACK",
-    );
+    if (!committed) {
+      await client.query("ROLLBACK");
+    }
 
-    return databaseFailure(
-      error,
-      "Process RGP approval",
-    );
+    return databaseFailure(error, "Process RGP approval");
   } finally {
     client.release();
-    if (committed) notifyCommittedRGPEvent(notificationEvent);
+
+    if (committed) {
+      notifyCommittedRGPEvent(notificationEvent);
+    }
   }
 };
 // ============================================================PROCESS RGP GATE ACTION,CHECKOUT / CANCEL
@@ -7088,6 +5991,8 @@ const processRGPItemReturn = async (data) => {
     client.release();
   }
 };
+
+// ==============================================================================================================This is not in current use
 // ============================================================GET RGP APPROVAL CONFIG
 const getRGPApprovalConfig = async (data) => {
   try {
@@ -7758,9 +6663,10 @@ const deleteRGPApprovalConfig = async (data) => {
     client.release();
   }
 };
+// ==============================================================================================================
+
 // ========================================================================Reports
 // ============================================================RGP List Report
-
 // RGP List Report
 //
 // All RGP Open
@@ -7787,17 +6693,14 @@ const getRGPListReport = async (data) => {
     // Pagination
     // ============================================================
 
-    const page =
-      Number(data.page) || 1;
+    const page = Number(data.page) || 1;
 
-    const pageSize =
-      Math.min(
-        Number(data.PageSize) || 10,
-        100,
-      );
+    const pageSize = Math.min(
+      Number(data.PageSize) || 10,
+      100
+    );
 
-    const offset =
-      (page - 1) * pageSize;
+    const offset = (page - 1) * pageSize;
 
     const values = [];
 
@@ -7810,12 +6713,10 @@ const getRGPListReport = async (data) => {
     // ============================================================
 
     if (data.OrganizationID) {
-      values.push(
-        data.OrganizationID,
-      );
+      values.push(data.OrganizationID);
 
       conditions.push(
-        `m.OrganizationID = $${values.length}`,
+        `m.OrganizationID = $${values.length}`
       );
     }
 
@@ -7824,62 +6725,95 @@ const getRGPListReport = async (data) => {
     // ============================================================
 
     if (data.DepartmentID) {
-      values.push(
-        data.DepartmentID,
-      );
+      values.push(data.DepartmentID);
 
       conditions.push(
-        `m.DepartmentID = $${values.length}`,
+        `m.DepartmentID = $${values.length}`
       );
     }
 
-    // Inclusive date range on the RGP creation date.
-    const dateFilters = {};
-    for (const [field, operator] of [["FromDate", ">="], ["ToDate", "<="]]) {
-      const input = data[field];
-      if (input === undefined || input === null || input === "") continue;
+    // ============================================================
+    // Date Range Filter
+    // ============================================================
 
-      if (typeof input !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(input)) {
-        return fail(`${field} must be a valid date in YYYY-MM-DD format.`, 400);
+    const dateFilters = {};
+
+    for (const [field, operator] of [
+      ["FromDate", ">="],
+      ["ToDate", "<="],
+    ]) {
+      const input = data[field];
+
+      if (
+        input === undefined ||
+        input === null ||
+        input === ""
+      ) {
+        continue;
       }
 
-      const parsed = new Date(`${input}T00:00:00.000Z`);
-      if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== input) {
-        return fail(`${field} must be a valid date in YYYY-MM-DD format.`, 400);
+      if (
+        typeof input !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(input)
+      ) {
+        return fail(
+          `${field} must be a valid date in YYYY-MM-DD format.`,
+          400
+        );
+      }
+
+      const parsed = new Date(
+        `${input}T00:00:00.000Z`
+      );
+
+      if (
+        Number.isNaN(parsed.getTime()) ||
+        parsed.toISOString().slice(0, 10) !== input
+      ) {
+        return fail(
+          `${field} must be a valid date in YYYY-MM-DD format.`,
+          400
+        );
       }
 
       dateFilters[field] = input;
+
       values.push(input);
-      conditions.push(`m.CreatedDate::DATE ${operator} $${values.length}::DATE`);
+
+      conditions.push(
+        `m.CreatedDate::DATE ${operator} $${values.length}::DATE`
+      );
     }
 
-    if (dateFilters.FromDate && dateFilters.ToDate && dateFilters.FromDate > dateFilters.ToDate) {
-      return fail("FromDate must be on or before ToDate.", 400);
+    if (
+      dateFilters.FromDate &&
+      dateFilters.ToDate &&
+      dateFilters.FromDate > dateFilters.ToDate
+    ) {
+      return fail(
+        "FromDate must be on or before ToDate.",
+        400
+      );
     }
 
     // ============================================================
     // RGP Status Report Filter
     // ============================================================
 
-    const reportStatus =
-      String(
-        data.Status || "",
-      ).trim();
+    const reportStatus = String(
+      data.Status || ""
+    ).trim();
 
     switch (reportStatus) {
       // ==========================================================
       // All RGP Open
-      // Pending and approved RGP awaiting checkout
       // ==========================================================
 
       case "All RGP Open":
         conditions.push(`
           UPPER(
             TRIM(
-              COALESCE(
-                m.Status,
-                ''
-              )
+              COALESCE(m.Status, '')
             )
           ) IN ('PENDING', 'APPROVED')
         `);
@@ -7887,17 +6821,13 @@ const getRGPListReport = async (data) => {
 
       // ==========================================================
       // All RGP Out
-      // Checked out and partially returned RGP
       // ==========================================================
 
       case "All RGP Out":
         conditions.push(`
           UPPER(
             TRIM(
-              COALESCE(
-                m.Status,
-                ''
-              )
+              COALESCE(m.Status, '')
             )
           ) IN ('CHECKED OUT', 'RETURN PENDING')
         `);
@@ -7905,17 +6835,13 @@ const getRGPListReport = async (data) => {
 
       // ==========================================================
       // All RGP Closed
-      // Only Returned RGP
       // ==========================================================
 
       case "All RGP Closed":
         conditions.push(`
           UPPER(
             TRIM(
-              COALESCE(
-                m.Status,
-                ''
-              )
+              COALESCE(m.Status, '')
             )
           ) = 'RETURNED'
         `);
@@ -7923,17 +6849,13 @@ const getRGPListReport = async (data) => {
 
       // ==========================================================
       // All RGP Cancelled
-      // Only Cancelled RGP
       // ==========================================================
 
       case "All RGP Cancelled":
         conditions.push(`
           UPPER(
             TRIM(
-              COALESCE(
-                m.Status,
-                ''
-              )
+              COALESCE(m.Status, '')
             )
           ) = 'CANCELLED'
         `);
@@ -7941,10 +6863,6 @@ const getRGPListReport = async (data) => {
 
       // ==========================================================
       // All RGP Overdue
-      //
-      // Expected Return Date nikal chuki ho
-      // AND
-      // RGP abhi Checked Out ho
       // ==========================================================
 
       case "All RGP Overdue":
@@ -7953,10 +6871,7 @@ const getRGPListReport = async (data) => {
 
           AND UPPER(
             TRIM(
-              COALESCE(
-                m.Status,
-                ''
-              )
+              COALESCE(m.Status, '')
             )
           ) = 'CHECKED OUT'
         `);
@@ -7968,12 +6883,10 @@ const getRGPListReport = async (data) => {
     // ============================================================
 
     if (data.RGPNumber) {
-      values.push(
-        data.RGPNumber,
-      );
+      values.push(data.RGPNumber);
 
       conditions.push(
-        `m.RGPNumber = $${values.length}`,
+        `m.RGPNumber = $${values.length}`
       );
     }
 
@@ -7983,13 +6896,11 @@ const getRGPListReport = async (data) => {
 
     if (data.VendorName) {
       values.push(
-        `%${String(
-          data.VendorName,
-        ).trim()}%`,
+        `%${String(data.VendorName).trim()}%`
       );
 
       conditions.push(
-        `m.VendorName ILIKE $${values.length}`,
+        `m.VendorName ILIKE $${values.length}`
       );
     }
 
@@ -7999,60 +6910,38 @@ const getRGPListReport = async (data) => {
 
     if (data.Search) {
       values.push(
-        `%${String(
-          data.Search,
-        ).trim()}%`,
+        `%${String(data.Search).trim()}%`
       );
 
-      const searchIndex =
-        values.length;
+      const searchIndex = values.length;
 
       conditions.push(`
         (
-          CAST(
-            m.RGPNumber AS TEXT
-          ) ILIKE $${searchIndex}
+          CAST(m.RGPNumber AS TEXT)
+            ILIKE $${searchIndex}
 
-          OR COALESCE(
-            m.VendorName,
-            ''
-          ) ILIKE $${searchIndex}
+          OR COALESCE(m.VendorName, '')
+            ILIKE $${searchIndex}
 
-          OR COALESCE(
-            m.Company,
-            ''
-          ) ILIKE $${searchIndex}
+          OR COALESCE(m.Company, '')
+            ILIKE $${searchIndex}
 
-          OR COALESCE(
-            m.ContactNumber,
-            ''
-          ) ILIKE $${searchIndex}
+          OR COALESCE(m.ContactNumber, '')
+            ILIKE $${searchIndex}
 
-          OR COALESCE(
-            m.TakenBy,
-            ''
-          ) ILIKE $${searchIndex}
+          OR COALESCE(m.TakenBy, '')
+            ILIKE $${searchIndex}
 
-          OR COALESCE(
-            d.DepartmentName,
-            ''
-          ) ILIKE $${searchIndex}
+          OR COALESCE(d.DepartmentName, '')
+            ILIKE $${searchIndex}
 
           OR EXISTS (
             SELECT 1
-
             FROM Gatepass_RGP_Entry_Item_Details si
-
-            WHERE si.RGPID =
-                    m.RGPID
-
-              AND si.IsDeleted =
-                    FALSE
-
-              AND COALESCE(
-                si.ItemName,
-                ''
-              ) ILIKE $${searchIndex}
+            WHERE si.RGPID = m.RGPID
+              AND si.IsDeleted = FALSE
+              AND COALESCE(si.ItemName, '')
+                ILIKE $${searchIndex}
           )
         )
       `);
@@ -8062,239 +6951,308 @@ const getRGPListReport = async (data) => {
     // Where Clause
     // ============================================================
 
-    const whereClause =
-      conditions.length
-        ? `WHERE ${conditions.join(
-            " AND ",
-          )}`
-        : "";
+    const whereClause = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
 
     // ============================================================
     // Total Count
     // ============================================================
 
-    const countResult =
-      await pool.query(
-        `
-        SELECT
-          COUNT(*)::BIGINT AS TotalCount
+    const countResult = await pool.query(
+      `
+      SELECT
+        COUNT(*)::BIGINT AS TotalCount
 
-        FROM Gatepass_RGP_Entry_Master m
+      FROM Gatepass_RGP_Entry_Master m
 
-        LEFT JOIN department_master d
-          ON d.DepartmentID =
-            m.DepartmentID
+      LEFT JOIN department_master d
+        ON d.DepartmentID = m.DepartmentID
 
-        ${whereClause};
-        `,
-        values,
-      );
-
-    const totalCount =
-      Number(
-        countResult.rows[0]
-          ?.totalcount || 0,
-      );
-
-    // ============================================================
-    // Pagination
-    // ============================================================
-
-    const listValues = [
-      ...values,
-    ];
-
-    listValues.push(
-      pageSize,
+      ${whereClause};
+      `,
+      values
     );
 
-    const limitIndex =
-      listValues.length;
-
-    listValues.push(
-      offset,
+    const totalCount = Number(
+      countResult.rows[0]?.totalcount || 0
     );
 
-    const offsetIndex =
-      listValues.length;
+    // ============================================================
+    // Pagination Parameters
+    // ============================================================
+
+    const listValues = [...values];
+
+    listValues.push(pageSize);
+    const limitIndex = listValues.length;
+
+    listValues.push(offset);
+    const offsetIndex = listValues.length;
 
     // ============================================================
     // Report Data
+    // Unified Approval Flow Builder Support
     // ============================================================
 
-    const result =
-      await pool.query(
-        `
-        SELECT
-          m.RGPID,
-          m.RGPNumber,
+    const result = await pool.query(
+      `
+      SELECT
+        m.RGPID,
+        m.RGPNumber,
+        m.OrganizationID,
 
-          m.OrganizationID,
+        m.VendorName,
+        m.ContactNumber,
+        m.Company,
 
-          m.VendorName,
-          m.ContactNumber,
-          m.Company,
+        m.ExpectedReturnDate,
 
-          m.ExpectedReturnDate,
+        m.DepartmentID,
+        d.DepartmentName,
 
-          m.DepartmentID,
-          d.DepartmentName,
+        m.TakenBy,
+        m.Status,
 
-          m.TakenBy,
+        m.CreatedDate,
+        m.ModifiedDate,
 
-          m.Status,
+        -- ======================================================
+        -- Dynamic Pending Approver
+        -- ROLE     -> ApprovalRole
+        -- USER     -> Selected User FullName
+        -- REGIONAL -> Selected Regional User FullName
+        -- ======================================================
 
-          m.CreatedDate,
-          m.ModifiedDate,
-          pendingApproval.ApprovalRole AS PendingApprovalRole,
-          GREATEST(
-            CURRENT_DATE - COALESCE(
-              (
-                SELECT MAX(previousApproval.StatusDateTime)::DATE
-                FROM Gatepass_RGP_Approval previousApproval
-                WHERE previousApproval.RGPID = m.RGPID
-                  AND previousApproval.IsDeleted = FALSE
-                  AND UPPER(TRIM(previousApproval.Status)) = 'APPROVED'
-                  AND previousApproval.ApprovalOrder < pendingApproval.ApprovalOrder
-              ),
-              m.CreatedDate::DATE
+        pendingApproval.ApprovalRole
+          AS PendingApprovalRole,
+
+        GREATEST(
+          CURRENT_DATE - COALESCE(
+            (
+              SELECT
+                MAX(
+                  previousApproval.StatusDateTime
+                )::DATE
+
+              FROM Gatepass_RGP_Approval previousApproval
+
+              WHERE previousApproval.RGPID = m.RGPID
+                AND previousApproval.IsDeleted = FALSE
+
+                AND UPPER(
+                  TRIM(previousApproval.Status)
+                ) = 'APPROVED'
+
+                AND previousApproval.ApprovalOrder <
+                    pendingApproval.ApprovalOrder
             ),
-            0
-          ) AS PendingApprovalDays
 
-        FROM Gatepass_RGP_Entry_Master m
+            m.CreatedDate::DATE
+          ),
 
-        LEFT JOIN department_master d
-          ON d.DepartmentID =
-            m.DepartmentID
+          0
+        ) AS PendingApprovalDays
 
-        LEFT JOIN LATERAL (
-          SELECT a.ApprovalRole, a.ApprovalOrder
-          FROM Gatepass_RGP_Approval a
-          WHERE a.RGPID = m.RGPID
-            AND a.IsDeleted = FALSE
-            AND UPPER(TRIM(COALESCE(a.Status, 'Pending'))) = 'PENDING'
-          ORDER BY a.ApprovalOrder ASC, a.ApprovalLevel ASC, a.RGPApprovalID ASC
-          LIMIT 1
-        ) pendingApproval ON TRUE
+      FROM Gatepass_RGP_Entry_Master m
 
-        ${whereClause}
+      LEFT JOIN department_master d
+        ON d.DepartmentID = m.DepartmentID
+
+      -- ========================================================
+      -- Current Pending Approval Stage
+      -- ========================================================
+
+      LEFT JOIN LATERAL (
+        SELECT
+          CASE
+            WHEN UPPER(
+              TRIM(
+                COALESCE(a.ApproverType, 'ROLE')
+              )
+            ) = 'ROLE'
+              THEN a.ApprovalRole
+
+            WHEN UPPER(
+              TRIM(a.ApproverType)
+            ) IN ('USER', 'REGIONAL')
+              THEN COALESCE(
+                NULLIF(
+                  TRIM(u.FullName),
+                  ''
+                ),
+                a.ApprovalRole
+              )
+
+            ELSE a.ApprovalRole
+          END AS ApprovalRole,
+
+          a.ApprovalOrder
+
+        FROM Gatepass_RGP_Approval a
+
+        LEFT JOIN user_master u
+          ON u.UserID = a.ApproverUserID
+          AND u.IsDeleted = FALSE
+
+        WHERE a.RGPID = m.RGPID
+          AND a.IsDeleted = FALSE
+
+          AND UPPER(
+            TRIM(
+              COALESCE(a.Status, 'Pending')
+            )
+          ) = 'PENDING'
 
         ORDER BY
-          m.CreatedDate DESC,
-          m.RGPID DESC
+          a.ApprovalOrder ASC,
+          a.ApprovalLevel ASC,
+          a.RGPApprovalID ASC
 
-        LIMIT $${limitIndex}
-        OFFSET $${offsetIndex};
-        `,
-        listValues,
-      );
+        LIMIT 1
+      ) pendingApproval ON TRUE
+
+      ${whereClause}
+
+      ORDER BY
+        m.CreatedDate DESC,
+        m.RGPID DESC
+
+      LIMIT $${limitIndex}
+      OFFSET $${offsetIndex};
+      `,
+      listValues
+    );
 
     // ============================================================
     // Attach Items + Approvals
     // ============================================================
 
     const relatedRecords =
-      await attachRGPRelatedData(
-        result.rows,
-      );
+      await attachRGPRelatedData(result.rows);
 
     // ============================================================
     // Map Report Data
     // ============================================================
 
-    const reportData =
-  result.rows.map(
-    (row, index) => {
-      let displayStatus =
-        row.status;
+    const reportData = result.rows.map(
+      (row, index) => {
+        let displayStatus = row.status;
 
-      const normalizedStatus =
-        String(row.status || "")
+        const normalizedStatus = String(
+          row.status || ""
+        )
           .trim()
           .toUpperCase();
 
-      if (
-        normalizedStatus === "CHECKED OUT" &&
-        row.expectedreturndate
-      ) {
-        const expectedDate =
-          new Date(row.expectedreturndate);
+        // ========================================================
+        // Overdue Display Status
+        // ========================================================
 
-        const today =
-          new Date();
+        if (
+          normalizedStatus === "CHECKED OUT" &&
+          row.expectedreturndate
+        ) {
+          const expectedDate = new Date(
+            row.expectedreturndate
+          );
 
-        expectedDate.setHours(0, 0, 0, 0);
-        today.setHours(0, 0, 0, 0);
+          const today = new Date();
 
-        if (expectedDate < today) {
-          displayStatus =
-            "OVERDUE";
+          expectedDate.setHours(0, 0, 0, 0);
+          today.setHours(0, 0, 0, 0);
+
+          if (expectedDate < today) {
+            displayStatus = "OVERDUE";
+          }
         }
+
+        // ========================================================
+        // Approval Status
+        // ========================================================
+
+        let approvalStatus = {
+          PENDING: "Pending",
+          APPROVED: "Approved",
+          "CHECKED OUT": "Approved",
+          "RETURN PENDING": "Approved",
+          RETURNED: "Approved",
+          OVERDUE: "Approved",
+          REJECTED: "Rejected",
+          CANCELLED: "Cancelled",
+        }[normalizedStatus] || row.status;
+
+        // ========================================================
+        // Dynamic Pending Approval Message
+        // ========================================================
+
+        if (
+          normalizedStatus === "PENDING" &&
+          row.pendingapprovalrole
+        ) {
+          approvalStatus =
+            `Pending from ${String(
+              row.pendingapprovalrole
+            ).trim()} since ${
+              Number(row.pendingapprovaldays) || 0
+            } day(s)`;
+        }
+
+        const {
+          pendingapprovalrole,
+          pendingapprovaldays,
+          ...reportRow
+        } = row;
+
+        // ========================================================
+        // RGP Status Display
+        // ========================================================
+
+        const rgpStatus = {
+          PENDING: "Open",
+          APPROVED: "Open",
+          "CHECKED OUT": "Checkout",
+          "RETURN PENDING": "Partial Return",
+          RETURNED: "Returned",
+          OVERDUE: "Overdue",
+          REJECTED: "Rejected",
+          CANCELLED: "Cancelled",
+        }[
+          String(displayStatus || "")
+            .trim()
+            .toUpperCase()
+        ] || displayStatus;
+
+        // ========================================================
+        // Final Report Object
+        // ========================================================
+
+        return {
+          ...reportRow,
+
+          ApprovalStatus: approvalStatus,
+          RGPStatus: rgpStatus,
+
+          status: displayStatus,
+
+          expectedreturndate: formatDate(
+            row.expectedreturndate
+          ),
+
+          createddate: formatDate(
+            row.createddate
+          ),
+
+          modifieddate: formatDate(
+            row.modifieddate
+          ),
+
+          Items: relatedRecords[index].Items,
+
+          Approvals: relatedRecords[index].Approvals,
+        };
       }
-
-      let approvalStatus = {
-        PENDING: "Pending",
-        APPROVED: "Approved",
-        "CHECKED OUT": "Approved",
-        "RETURN PENDING": "Approved",
-        RETURNED: "Approved",
-        OVERDUE: "Approved",
-        REJECTED: "Rejected",
-        CANCELLED: "Cancelled",
-      }[normalizedStatus] || row.status;
-
-      if (normalizedStatus === "PENDING" && row.pendingapprovalrole) {
-        approvalStatus = `Pending from ${String(row.pendingapprovalrole).trim()} since ${Number(row.pendingapprovaldays) || 0} day(s)`;
-      }
-
-      const { pendingapprovalrole, pendingapprovaldays, ...reportRow } = row;
-
-      const rgpStatus = {
-        PENDING: "Open",
-        APPROVED: "Open",
-        "CHECKED OUT": "Checkout",
-        "RETURN PENDING": "Partial Return",
-        RETURNED: "Returned",
-        OVERDUE: "Overdue",
-        REJECTED: "Rejected",
-        CANCELLED: "Cancelled",
-      }[String(displayStatus || "").trim().toUpperCase()] || displayStatus;
-
-      return {
-        ...reportRow,
-
-        ApprovalStatus: approvalStatus,
-        RGPStatus: rgpStatus,
-
-        status:
-          displayStatus,
-
-        expectedreturndate:
-          formatDate(
-            row.expectedreturndate,
-          ),
-
-        createddate:
-          formatDate(
-            row.createddate,
-          ),
-
-        modifieddate:
-          formatDate(
-            row.modifieddate,
-          ),
-
-        Items:
-          relatedRecords[index]
-            .Items,
-
-        Approvals:
-          relatedRecords[index]
-            .Approvals,
-      };
-    },
-  );
+    );
 
     // ============================================================
     // Response
@@ -8304,30 +7262,22 @@ const getRGPListReport = async (data) => {
       "RGP list report fetched successfully.",
       reportData,
       {
-        TotalCount:
-          totalCount,
-
-        Page:
-          page,
-
-        PageSize:
-          pageSize,
-
-        TotalPages:
-          Math.ceil(
-            totalCount /
-              pageSize,
-          ),
-      },
+        TotalCount: totalCount,
+        Page: page,
+        PageSize: pageSize,
+        TotalPages: Math.ceil(
+          totalCount / pageSize
+        ),
+      }
     );
   } catch (error) {
     return databaseFailure(
       error,
-      "Fetch RGP list report",
+      "Fetch RGP list report"
     );
   }
 };
-// ============================================================Department Wise Report
+// ===========================================================Department Wise Report
 const getRGPDepartmentWiseReport = async (data) => {
   try {
     const page =
@@ -10288,9 +9238,7 @@ const getRGPListReportPdf = async (data) => {
     // ============================================================
 
     const organizationName =
-      await getRGPReportOrganizationName(
-        data.OrganizationID,
-      );
+      await getRGPReportOrganizationName(data.OrganizationID);
 
     const values = [];
 
@@ -10303,12 +9251,10 @@ const getRGPListReportPdf = async (data) => {
     // ============================================================
 
     if (data.OrganizationID) {
-      values.push(
-        data.OrganizationID,
-      );
+      values.push(data.OrganizationID);
 
       conditions.push(
-        `m.OrganizationID = $${values.length}`,
+        `m.OrganizationID = $${values.length}`
       );
     }
 
@@ -10317,139 +9263,118 @@ const getRGPListReportPdf = async (data) => {
     // ============================================================
 
     if (data.DepartmentID) {
-      values.push(
-        data.DepartmentID,
-      );
+      values.push(data.DepartmentID);
 
       conditions.push(
-        `m.DepartmentID = $${values.length}`,
+        `m.DepartmentID = $${values.length}`
       );
     }
 
-    // Inclusive date range on the RGP creation date.
-    const dateFilters = {};
-    for (const [field, operator] of [["FromDate", ">="], ["ToDate", "<="]]) {
-      const input = data[field];
-      if (input === undefined || input === null || input === "") continue;
+    // ============================================================
+    // Date Range Filter
+    // ============================================================
 
-      if (typeof input !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(input)) {
-        return fail(`${field} must be a valid date in YYYY-MM-DD format.`, 400);
+    const dateFilters = {};
+
+    for (const [field, operator] of [
+      ["FromDate", ">="],
+      ["ToDate", "<="],
+    ]) {
+      const input = data[field];
+
+      if (
+        input === undefined ||
+        input === null ||
+        input === ""
+      ) {
+        continue;
       }
 
-      const parsed = new Date(`${input}T00:00:00.000Z`);
-      if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== input) {
-        return fail(`${field} must be a valid date in YYYY-MM-DD format.`, 400);
+      if (
+        typeof input !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(input)
+      ) {
+        return fail(
+          `${field} must be a valid date in YYYY-MM-DD format.`,
+          400
+        );
+      }
+
+      const parsed = new Date(
+        `${input}T00:00:00.000Z`
+      );
+
+      if (
+        Number.isNaN(parsed.getTime()) ||
+        parsed.toISOString().slice(0, 10) !== input
+      ) {
+        return fail(
+          `${field} must be a valid date in YYYY-MM-DD format.`,
+          400
+        );
       }
 
       dateFilters[field] = input;
       values.push(input);
-      conditions.push(`m.CreatedDate::DATE ${operator} $${values.length}::DATE`);
+
+      conditions.push(
+        `m.CreatedDate::DATE ${operator} $${values.length}::DATE`
+      );
     }
 
-    if (dateFilters.FromDate && dateFilters.ToDate && dateFilters.FromDate > dateFilters.ToDate) {
-      return fail("FromDate must be on or before ToDate.", 400);
+    if (
+      dateFilters.FromDate &&
+      dateFilters.ToDate &&
+      dateFilters.FromDate > dateFilters.ToDate
+    ) {
+      return fail(
+        "FromDate must be on or before ToDate.",
+        400
+      );
     }
 
     // ============================================================
     // RGP Status Report Filter
     // ============================================================
 
-    const reportStatus =
-      String(
-        data.Status || "",
-      ).trim();
+    const reportStatus = String(
+      data.Status || ""
+    ).trim();
 
     switch (reportStatus) {
-      // ==========================================================
-      // All RGP Open
-      // Pending and approved RGP awaiting checkout
-      // ==========================================================
-
       case "All RGP Open":
         conditions.push(`
-          UPPER(
-            TRIM(
-              COALESCE(
-                m.Status,
-                ''
-              )
-            )
-          ) IN ('PENDING', 'APPROVED')
+          UPPER(TRIM(COALESCE(m.Status, '')))
+          IN ('PENDING', 'APPROVED')
         `);
         break;
-
-      // ==========================================================
-      // All RGP Out
-      // Checked out and partially returned RGP
-      // ==========================================================
 
       case "All RGP Out":
         conditions.push(`
-          UPPER(
-            TRIM(
-              COALESCE(
-                m.Status,
-                ''
-              )
-            )
-          ) IN ('CHECKED OUT', 'RETURN PENDING')
+          UPPER(TRIM(COALESCE(m.Status, '')))
+          IN ('CHECKED OUT', 'RETURN PENDING')
         `);
         break;
-
-      // ==========================================================
-      // All RGP Closed
-      // Only RETURNED
-      // ==========================================================
 
       case "All RGP Closed":
         conditions.push(`
-          UPPER(
-            TRIM(
-              COALESCE(
-                m.Status,
-                ''
-              )
-            )
-          ) = 'RETURNED'
+          UPPER(TRIM(COALESCE(m.Status, '')))
+          = 'RETURNED'
         `);
         break;
-
-      // ==========================================================
-      // All RGP Cancelled
-      // Only CANCELLED
-      // ==========================================================
 
       case "All RGP Cancelled":
         conditions.push(`
-          UPPER(
-            TRIM(
-              COALESCE(
-                m.Status,
-                ''
-              )
-            )
-          ) = 'CANCELLED'
+          UPPER(TRIM(COALESCE(m.Status, '')))
+          = 'CANCELLED'
         `);
         break;
 
-      // ==========================================================
-      // All RGP Overdue
-      // Expected Return Date Passed + Still Checked Out
-      // ==========================================================
-
       case "All RGP Overdue":
         conditions.push(`
-          m.ExpectedReturnDate::DATE <
-            CURRENT_DATE
-
-          AND UPPER(
-            TRIM(
-              COALESCE(
-                m.Status,
-                ''
-              )
-            )
-          ) = 'CHECKED OUT'
+          m.ExpectedReturnDate::DATE < CURRENT_DATE
+          AND UPPER(TRIM(COALESCE(m.Status, '')))
+          = 'CHECKED OUT'
         `);
         break;
     }
@@ -10459,12 +9384,10 @@ const getRGPListReportPdf = async (data) => {
     // ============================================================
 
     if (data.RGPNumber) {
-      values.push(
-        data.RGPNumber,
-      );
+      values.push(data.RGPNumber);
 
       conditions.push(
-        `m.RGPNumber = $${values.length}`,
+        `m.RGPNumber = $${values.length}`
       );
     }
 
@@ -10474,13 +9397,11 @@ const getRGPListReportPdf = async (data) => {
 
     if (data.VendorName) {
       values.push(
-        `%${String(
-          data.VendorName,
-        ).trim()}%`,
+        `%${String(data.VendorName).trim()}%`
       );
 
       conditions.push(
-        `m.VendorName ILIKE $${values.length}`,
+        `m.VendorName ILIKE $${values.length}`
       );
     }
 
@@ -10490,60 +9411,38 @@ const getRGPListReportPdf = async (data) => {
 
     if (data.Search) {
       values.push(
-        `%${String(
-          data.Search,
-        ).trim()}%`,
+        `%${String(data.Search).trim()}%`
       );
 
-      const searchIndex =
-        values.length;
+      const searchIndex = values.length;
 
       conditions.push(`
         (
-          CAST(
-            m.RGPNumber AS TEXT
-          ) ILIKE $${searchIndex}
+          CAST(m.RGPNumber AS TEXT)
+            ILIKE $${searchIndex}
 
-          OR COALESCE(
-            m.VendorName,
-            ''
-          ) ILIKE $${searchIndex}
+          OR COALESCE(m.VendorName, '')
+            ILIKE $${searchIndex}
 
-          OR COALESCE(
-            m.Company,
-            ''
-          ) ILIKE $${searchIndex}
+          OR COALESCE(m.Company, '')
+            ILIKE $${searchIndex}
 
-          OR COALESCE(
-            m.ContactNumber,
-            ''
-          ) ILIKE $${searchIndex}
+          OR COALESCE(m.ContactNumber, '')
+            ILIKE $${searchIndex}
 
-          OR COALESCE(
-            m.TakenBy,
-            ''
-          ) ILIKE $${searchIndex}
+          OR COALESCE(m.TakenBy, '')
+            ILIKE $${searchIndex}
 
-          OR COALESCE(
-            d.DepartmentName,
-            ''
-          ) ILIKE $${searchIndex}
+          OR COALESCE(d.DepartmentName, '')
+            ILIKE $${searchIndex}
 
           OR EXISTS (
             SELECT 1
-
             FROM Gatepass_RGP_Entry_Item_Details si
-
-            WHERE si.RGPID =
-                    m.RGPID
-
-              AND si.IsDeleted =
-                    FALSE
-
-              AND COALESCE(
-                    si.ItemName,
-                    ''
-                  ) ILIKE $${searchIndex}
+            WHERE si.RGPID = m.RGPID
+              AND si.IsDeleted = FALSE
+              AND COALESCE(si.ItemName, '')
+                ILIKE $${searchIndex}
           )
         )
       `);
@@ -10553,345 +9452,394 @@ const getRGPListReportPdf = async (data) => {
     // Where Clause
     // ============================================================
 
-    const whereClause =
-      conditions.length
-        ? `WHERE ${conditions.join(
-            " AND ",
-          )}`
-        : "";
+    const whereClause = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
 
     // ============================================================
     // Get RGP Records
+    // Unified Approval Flow Builder Support
     // ============================================================
 
-    const result =
-      await pool.query(
-        `
-        SELECT
-          m.RGPID,
-          m.RGPNumber,
+    const result = await pool.query(
+      `
+      SELECT
+        m.RGPID,
+        m.RGPNumber,
+        m.OrganizationID,
 
-          m.OrganizationID,
+        m.VendorName,
+        m.ContactNumber,
+        m.Company,
 
-          m.VendorName,
-          m.ContactNumber,
-          m.Company,
+        m.ExpectedReturnDate,
 
-          m.ExpectedReturnDate,
+        m.DepartmentID,
+        d.DepartmentName,
 
-          m.DepartmentID,
-          d.DepartmentName,
+        m.TakenBy,
+        m.Status,
 
-          m.TakenBy,
+        m.CreatedDate,
+        m.ModifiedDate,
 
-          m.Status,
+        pendingApproval.ApprovalRole
+          AS PendingApprovalRole,
 
-          m.CreatedDate,
-          m.ModifiedDate,
-          pendingApproval.ApprovalRole AS PendingApprovalRole,
-          GREATEST(
-            CURRENT_DATE - COALESCE(
-              (
-                SELECT MAX(previousApproval.StatusDateTime)::DATE
-                FROM Gatepass_RGP_Approval previousApproval
-                WHERE previousApproval.RGPID = m.RGPID
-                  AND previousApproval.IsDeleted = FALSE
-                  AND UPPER(TRIM(previousApproval.Status)) = 'APPROVED'
-                  AND previousApproval.ApprovalOrder < pendingApproval.ApprovalOrder
-              ),
-              m.CreatedDate::DATE
+        GREATEST(
+          CURRENT_DATE - COALESCE(
+            (
+              SELECT
+                MAX(previousApproval.StatusDateTime)::DATE
+
+              FROM Gatepass_RGP_Approval previousApproval
+
+              WHERE previousApproval.RGPID = m.RGPID
+                AND previousApproval.IsDeleted = FALSE
+
+                AND UPPER(
+                  TRIM(previousApproval.Status)
+                ) = 'APPROVED'
+
+                AND previousApproval.ApprovalOrder <
+                    pendingApproval.ApprovalOrder
             ),
-            0
-          ) AS PendingApprovalDays,
-          lastApproval.Remarks AS LastApprovalRemarks
+            m.CreatedDate::DATE
+          ),
+          0
+        ) AS PendingApprovalDays,
 
-        FROM Gatepass_RGP_Entry_Master m
+        lastApproval.Remarks
+          AS LastApprovalRemarks
 
-        LEFT JOIN department_master d
-          ON d.DepartmentID =
-            m.DepartmentID
+      FROM Gatepass_RGP_Entry_Master m
 
-        LEFT JOIN LATERAL (
-          SELECT a.ApprovalRole, a.ApprovalOrder
-          FROM Gatepass_RGP_Approval a
-          WHERE a.RGPID = m.RGPID
-            AND a.IsDeleted = FALSE
-            AND UPPER(TRIM(COALESCE(a.Status, 'Pending'))) = 'PENDING'
-          ORDER BY a.ApprovalOrder ASC, a.ApprovalLevel ASC, a.RGPApprovalID ASC
-          LIMIT 1
-        ) pendingApproval ON TRUE
+      LEFT JOIN department_master d
+        ON d.DepartmentID = m.DepartmentID
 
-        LEFT JOIN LATERAL (
-          SELECT a.Remarks
-          FROM Gatepass_RGP_Approval a
-          WHERE a.RGPID = m.RGPID
-            AND a.IsDeleted = FALSE
-            AND UPPER(TRIM(a.Status)) IN ('APPROVED', 'REJECTED', 'CANCELLED')
-          ORDER BY a.StatusDateTime DESC NULLS LAST,
-                   a.ApprovalOrder DESC, a.RGPApprovalID DESC
-          LIMIT 1
-        ) lastApproval ON TRUE
+      -- ========================================================
+      -- Dynamic Pending Approver
+      -- ROLE     -> Role Name
+      -- USER     -> User FullName
+      -- REGIONAL -> Regional User FullName
+      -- ========================================================
 
-        ${whereClause}
+      LEFT JOIN LATERAL (
+        SELECT
+          CASE
+            WHEN UPPER(
+              TRIM(COALESCE(a.ApproverType, 'ROLE'))
+            ) = 'ROLE'
+              THEN a.ApprovalRole
+
+            WHEN UPPER(
+              TRIM(a.ApproverType)
+            ) IN ('USER', 'REGIONAL')
+              THEN COALESCE(
+                NULLIF(TRIM(u.FullName), ''),
+                a.ApprovalRole
+              )
+
+            ELSE a.ApprovalRole
+          END AS ApprovalRole,
+
+          a.ApprovalOrder
+
+        FROM Gatepass_RGP_Approval a
+
+        LEFT JOIN user_master u
+          ON u.UserID = a.ApproverUserID
+          AND u.IsDeleted = FALSE
+
+        WHERE a.RGPID = m.RGPID
+          AND a.IsDeleted = FALSE
+
+          AND UPPER(
+            TRIM(COALESCE(a.Status, 'Pending'))
+          ) = 'PENDING'
 
         ORDER BY
-          m.CreatedDate DESC,
-          m.RGPID DESC;
-        `,
-        values,
-      );
+          a.ApprovalOrder ASC,
+          a.ApprovalLevel ASC,
+          a.RGPApprovalID ASC
+
+        LIMIT 1
+      ) pendingApproval ON TRUE
+
+      -- ========================================================
+      -- Last Approval Remarks
+      -- ========================================================
+
+      LEFT JOIN LATERAL (
+        SELECT
+          a.Remarks
+
+        FROM Gatepass_RGP_Approval a
+
+        WHERE a.RGPID = m.RGPID
+          AND a.IsDeleted = FALSE
+
+          AND UPPER(TRIM(a.Status))
+              IN ('APPROVED', 'REJECTED', 'CANCELLED')
+
+        ORDER BY
+          a.StatusDateTime DESC NULLS LAST,
+          a.ApprovalOrder DESC,
+          a.RGPApprovalID DESC
+
+        LIMIT 1
+      ) lastApproval ON TRUE
+
+      ${whereClause}
+
+      ORDER BY
+        m.CreatedDate DESC,
+        m.RGPID DESC;
+      `,
+      values
+    );
 
     // ============================================================
     // Attach RGP Items + Approvals
     // ============================================================
 
     const relatedRecords =
-      await attachRGPRelatedData(
-        result.rows,
-      );
+      await attachRGPRelatedData(result.rows);
 
     // ============================================================
     // Format Report Data
     // ============================================================
 
-    const reportData =
-  result.rows.map(
-    (row, index) => {
-      let displayStatus =
-        row.status;
+    const reportData = result.rows.map(
+      (row, index) => {
+        let displayStatus = row.status;
 
-      const normalizedStatus =
-        String(row.status || "")
+        const normalizedStatus = String(
+          row.status || ""
+        )
           .trim()
           .toUpperCase();
 
-      if (
-        normalizedStatus === "CHECKED OUT" &&
-        row.expectedreturndate
-      ) {
-        const expectedDate =
-          new Date(row.expectedreturndate);
+        // ========================================================
+        // Overdue Display Status
+        // ========================================================
 
-        const today =
-          new Date();
+        if (
+          normalizedStatus === "CHECKED OUT" &&
+          row.expectedreturndate
+        ) {
+          const expectedDate = new Date(
+            row.expectedreturndate
+          );
 
-        expectedDate.setHours(0, 0, 0, 0);
-        today.setHours(0, 0, 0, 0);
+          const today = new Date();
 
-        if (expectedDate < today) {
-          displayStatus =
-            "OVERDUE";
+          expectedDate.setHours(0, 0, 0, 0);
+          today.setHours(0, 0, 0, 0);
+
+          if (expectedDate < today) {
+            displayStatus = "OVERDUE";
+          }
         }
-      }
 
-      let approvalStatus = {
-        PENDING: "Pending",
-        APPROVED: "Approved",
-        "CHECKED OUT": "Approved",
-        "RETURN PENDING": "Approved",
-        RETURNED: "Approved",
-        OVERDUE: "Approved",
-        REJECTED: "Rejected",
-        CANCELLED: "Cancelled",
-      }[normalizedStatus] || row.status;
+        // ========================================================
+        // Approval Status
+        // ========================================================
 
-      if (normalizedStatus === "PENDING" && row.pendingapprovalrole) {
-        approvalStatus = `Pending from ${String(row.pendingapprovalrole).trim()} since ${Number(row.pendingapprovaldays) || 0} day(s)`;
-      }
+        let approvalStatus = {
+          PENDING: "Pending",
+          APPROVED: "Approved",
+          "CHECKED OUT": "Approved",
+          "RETURN PENDING": "Approved",
+          RETURNED: "Approved",
+          OVERDUE: "Approved",
+          REJECTED: "Rejected",
+          CANCELLED: "Cancelled",
+        }[normalizedStatus] || row.status;
 
-      const lastApprovalRemarks = String(row.lastapprovalremarks || "").trim();
-      if (lastApprovalRemarks) {
-        approvalStatus += `\nRemarks: ${lastApprovalRemarks}`;
-      }
+        // ========================================================
+        // Dynamic Pending Approval Message
+        // ========================================================
 
-      const { pendingapprovalrole, pendingapprovaldays, lastapprovalremarks, ...reportRow } = row;
+        if (
+          normalizedStatus === "PENDING" &&
+          row.pendingapprovalrole
+        ) {
+          approvalStatus =
+            `Pending from ${String(
+              row.pendingapprovalrole
+            ).trim()} since ${
+              Number(row.pendingapprovaldays) || 0
+            } day(s)`;
+        }
 
-      const rgpStatus = {
-        PENDING: "Open",
-        APPROVED: "Open",
-        "CHECKED OUT": "Checkout",
-        "RETURN PENDING": "Partial Return",
-        RETURNED: "Returned",
-        OVERDUE: "Overdue",
-        REJECTED: "Rejected",
-        CANCELLED: "Cancelled",
-      }[String(displayStatus || "").trim().toUpperCase()] || displayStatus;
+        // ========================================================
+        // Last Approval Remarks
+        // ========================================================
 
-      return {
-        ...reportRow,
+        const lastApprovalRemarks = String(
+          row.lastapprovalremarks || ""
+        ).trim();
 
-        ApprovalStatus: approvalStatus,
-        RGPStatus: rgpStatus,
+        if (lastApprovalRemarks) {
+          approvalStatus +=
+            `\nRemarks: ${lastApprovalRemarks}`;
+        }
 
-        status:
-          displayStatus,
+        const {
+          pendingapprovalrole,
+          pendingapprovaldays,
+          lastapprovalremarks,
+          ...reportRow
+        } = row;
 
-        expectedreturndate:
-          formatDate(
-            row.expectedreturndate,
+        // ========================================================
+        // RGP Status
+        // ========================================================
+
+        const rgpStatus = {
+          PENDING: "Open",
+          APPROVED: "Open",
+          "CHECKED OUT": "Checkout",
+          "RETURN PENDING": "Partial Return",
+          RETURNED: "Returned",
+          OVERDUE: "Overdue",
+          REJECTED: "Rejected",
+          CANCELLED: "Cancelled",
+        }[
+          String(displayStatus || "")
+            .trim()
+            .toUpperCase()
+        ] || displayStatus;
+
+        return {
+          ...reportRow,
+
+          ApprovalStatus: approvalStatus,
+          RGPStatus: rgpStatus,
+
+          status: displayStatus,
+
+          expectedreturndate: formatDate(
+            row.expectedreturndate
           ),
 
-        createddate:
-          formatDate(
-            row.createddate,
+          createddate: formatDate(
+            row.createddate
           ),
 
-        modifieddate:
-          formatDate(
-            row.modifieddate,
+          modifieddate: formatDate(
+            row.modifieddate
           ),
 
-        Items:
-          relatedRecords[index]
-            .Items,
-
-        Approvals:
-          relatedRecords[index]
-            .Approvals,
-      };
-    },
-  );
+          Items: relatedRecords[index].Items,
+          Approvals: relatedRecords[index].Approvals,
+        };
+      }
+    );
 
     // ============================================================
     // Total Records
-    //
-    // IMPORTANT:
-    // This is RGP record count, NOT flattened item row count.
     // ============================================================
 
-    const totalRecords =
-      result.rows.length;
+    const totalRecords = result.rows.length;
 
     // ============================================================
     // PDF Rows
-    //
-    // UI Fields:
-    // #SR
-    // RGP No.
-    // Vendor / Company
-    // Contact
-    // Department
-    // Taken By
-    // Expected Return
-    // Items
-    // Status
-    // Created On
-    //
-    // Multiple Items:
-    // Parent details only on first item row.
+    // Multiple items: Parent details only on first item row
     // ============================================================
 
     let srNo = 1;
 
-    const pdfRows =
-      reportData.flatMap(
-        (rgp) => {
-          const items =
-            Array.isArray(
-              rgp.Items,
-            ) &&
-            rgp.Items.length > 0
-              ? rgp.Items
-              : [{}];
+    const pdfRows = reportData.flatMap((rgp) => {
+      const items =
+        Array.isArray(rgp.Items) &&
+        rgp.Items.length > 0
+          ? rgp.Items
+          : [{}];
 
-          return items.map(
-            (item, index) => {
-              const quantity =
-                item.Quantity ??
-                item.quantity;
+      return items.map((item, index) => {
+        const quantity =
+          item.Quantity ?? item.quantity;
 
-              return {
-                SR:
-                  index === 0
-                    ? srNo++
-                    : "",
+        return {
+          SR: index === 0 ? srNo++ : "",
 
-                RGPNumber:
-                  index === 0
-                    ? rgp.rgpnumber ??
-                      "-"
-                    : "",
+          RGPNumber:
+            index === 0
+              ? rgp.rgpnumber ?? "-"
+              : "",
 
-                VendorCompany:
-                  index === 0
-                    ? [
-                        rgp.vendorname,
-                        rgp.company,
-                      ]
-                        .filter(
-                          (value) =>
-                            value !==
-                              null &&
-                            value !==
-                              undefined &&
-                            String(
-                              value,
-                            ).trim() !==
-                              "",
-                        )
-                        .join(" / ") ||
-                      "-"
-                    : "",
+          VendorCompany:
+            index === 0
+              ? [
+                  rgp.vendorname,
+                  rgp.company,
+                ]
+                  .filter(
+                    (value) =>
+                      value !== null &&
+                      value !== undefined &&
+                      String(value).trim() !== ""
+                  )
+                  .join(" / ") || "-"
+              : "",
 
-                Contact:
-                  index === 0
-                    ? rgp.contactnumber ||
-                      "-"
-                    : "",
+          Contact:
+            index === 0
+              ? rgp.contactnumber || "-"
+              : "",
 
-                DepartmentName:
-                  index === 0
-                    ? rgp.departmentname ||
-                      "-"
-                    : "",
+          DepartmentName:
+            index === 0
+              ? rgp.departmentname || "-"
+              : "",
 
-                TakenBy:
-                  index === 0
-                    ? rgp.takenby ||
-                      "-"
-                    : "",
+          TakenBy:
+            index === 0
+              ? rgp.takenby || "-"
+              : "",
 
-                ExpectedReturnDate:
-                  index === 0
-                    ? rgp.expectedreturndate ||
-                      "-"
-                    : "",
+          ExpectedReturnDate:
+            index === 0
+              ? rgp.expectedreturndate || "-"
+              : "",
 
-                Item:
-                  `${
-                    item.ItemName ??
-                    item.itemname ??
-                    "-"
-                  }${
-                    quantity !==
-                      null &&
-                    quantity !==
-                      undefined &&
-                    quantity !==
-                      ""
-                      ? ` - ${quantity}`
-                      : ""
-                  }`,
+          Item:
+            `${
+              item.ItemName ??
+              item.itemname ??
+              "-"
+            }${
+              quantity !== null &&
+              quantity !== undefined &&
+              quantity !== ""
+                ? ` - ${quantity}`
+                : ""
+            }`,
 
-                ApprovalStatus:
-                  index === 0 ? rgp.ApprovalStatus || "-" : "",
+          ApprovalStatus:
+            index === 0
+              ? rgp.ApprovalStatus || "-"
+              : "",
 
-                RGPStatus:
-                  index === 0 ? rgp.RGPStatus || "-" : "",
+          RGPStatus:
+            index === 0
+              ? rgp.RGPStatus || "-"
+              : "",
 
-                ModifiedOn:
-                  index === 0 ? rgp.modifieddate || "-" : "",
+          ModifiedOn:
+            index === 0
+              ? rgp.modifieddate || "-"
+              : "",
 
-                CreatedOn:
-                  index === 0
-                    ? rgp.createddate ||
-                      "-"
-                    : "",
-              };
-            },
-          );
-        },
-      );
+          CreatedOn:
+            index === 0
+              ? rgp.createddate || "-"
+              : "",
+        };
+      });
+    });
 
     // ============================================================
     // PDF Metadata
@@ -10899,34 +9847,20 @@ const getRGPListReportPdf = async (data) => {
 
     const metadata = [
       {
-        label:
-          "Organization",
-
-        value:
-          organizationName,
+        label: "Organization",
+        value: organizationName,
       },
       {
-        label:
-          "Status",
-
-        value:
-          reportStatus ||
-          "All",
+        label: "Status",
+        value: reportStatus || "All",
       },
       {
-        label:
-          "Department",
-
-        value:
-          data.DepartmentName ||
-          "All Department",
+        label: "Department",
+        value: data.DepartmentName || "All Department",
       },
       {
-        label:
-          "Total Records",
-
-        value:
-          totalRecords,
+        label: "Total Records",
+        value: totalRecords,
       },
     ];
 
@@ -10934,112 +9868,102 @@ const getRGPListReportPdf = async (data) => {
     // Generate PDF
     // ============================================================
 
-    const pdfBuffer =
-      await generatePdf({
-        title:
-          "RGP LIST REPORT",
+    const pdfBuffer = await generatePdf({
+      title: "RGP LIST REPORT",
 
-        reportName:
-          "RGP List Report",
+      reportName: "RGP List Report",
 
-        organizationId:
-          data.OrganizationID,
+      organizationId: data.OrganizationID,
 
-        orientation:
-          "landscape",
+      orientation: "landscape",
 
-        metadata,
+      metadata,
 
-        columns: [
-          {
-                    "header": "SR#",
-                    "key": "SR",
-                    "width": 20
-          },
-          {
-                    "header": "RGP No.",
-                    "key": "RGPNumber",
-                    "width": 35
-          },
-          {
-                    "header": "Vendor / Company",
-                    "key": "VendorCompany",
-                    "width": 70
-          },
-          {
-                    "header": "Contact",
-                    "key": "Contact",
-                    "width": 50
-          },
-          {
-                    "header": "Department",
-                    "key": "DepartmentName",
-                    "width": 50
-          },
-          {
-                    "header": "Taken By",
-                    "key": "TakenBy",
-                    "width": 45
-          },
-          {
-                    "header": "Items - Qty",
-                    "key": "Item",
-                    "width": "*"
-          },
-          {
-                    "header": "Approval Status",
-                    "key": "ApprovalStatus",
-                    "width": 95
-          },
-          {
-                    "header": "RGP Status",
-                    "key": "RGPStatus",
-                    "width": 50
-          },
-          {
-                    "header": "Expected Return",
-                    "key": "ExpectedReturnDate",
-                    "width": 55
-          },
-          {
-                    "header": "Last Updated",
-                    "key": "ModifiedOn",
-                    "width": 55
-          },
-          {
-                    "header": "Created On",
-                    "key": "CreatedOn",
-                    "width": 55
-          }
-],
+      columns: [
+        {
+          header: "SR#",
+          key: "SR",
+          width: 20,
+        },
+        {
+          header: "RGP No.",
+          key: "RGPNumber",
+          width: 35,
+        },
+        {
+          header: "Vendor / Company",
+          key: "VendorCompany",
+          width: 70,
+        },
+        {
+          header: "Contact",
+          key: "Contact",
+          width: 50,
+        },
+        {
+          header: "Department",
+          key: "DepartmentName",
+          width: 50,
+        },
+        {
+          header: "Taken By",
+          key: "TakenBy",
+          width: 45,
+        },
+        {
+          header: "Items - Qty",
+          key: "Item",
+          width: "*",
+        },
+        {
+          header: "Approval Status",
+          key: "ApprovalStatus",
+          width: 95,
+        },
+        {
+          header: "RGP Status",
+          key: "RGPStatus",
+          width: 50,
+        },
+        {
+          header: "Expected Return",
+          key: "ExpectedReturnDate",
+          width: 55,
+        },
+        {
+          header: "Last Updated",
+          key: "ModifiedOn",
+          width: 55,
+        },
+        {
+          header: "Created On",
+          key: "CreatedOn",
+          width: 55,
+        },
+      ],
 
-        rows:
-          pdfRows,
-      });
+      rows: pdfRows,
+    });
 
     // ============================================================
     // Response
     // ============================================================
 
     return {
-      success:
-        true,
-
+      success: true,
       message:
         "RGP list report PDF generated successfully.",
-
-      data:
-        pdfBuffer,
+      data: pdfBuffer,
     };
   } catch (error) {
     console.error(
       "RGP List Report PDF Error:",
-      error,
+      error
     );
 
     return databaseFailure(
       error,
-      "Generate RGP list report PDF",
+      "Generate RGP list report PDF"
     );
   }
 };
@@ -13571,115 +12495,63 @@ const approvals =
 // ActionByName
 // ============================================================
 
-approvals.forEach(
-  (approval) => {
-    const status =
-      String(
-        approval.Status || "",
-      )
-        .trim()
-        .toUpperCase();
 
-    // ========================================================
-    // Only actual completed actions
-    //
-    // Blank / Pending approval stages PDF me show nahi honge.
-    // ========================================================
+approvals.forEach((approval) => {
+  const status = String(approval.Status || "")
+    .trim()
+    .toUpperCase();
 
-    if (
-      ![
-        "APPROVED",
-        "REJECTED",
-        "CANCELLED",
-      ].includes(
-        status,
-      )
-    ) {
-      return;
-    }
+  // Only completed approval actions
+  if (!["APPROVED", "REJECTED", "CANCELLED"].includes(status)) {
+    return;
+  }
 
-    const role =
-      String(
-        approval.ApprovalRole ||
-          "",
-      ).trim();
+  const approverType = String(
+    approval.ApproverType || "ROLE"
+  ).trim().toUpperCase();
 
-    const actionByName =
-      String(
-        approval.ActionByName ||
-          "",
-      ).trim();
+  const role = String(
+    approval.ApprovalRole || ""
+  ).trim();
 
-    // ========================================================
-    // Role and ActionByName required
-    // ========================================================
+  const actionByName = String(
+    approval.ActionByName || ""
+  ).trim();
 
-    if (
-      !role ||
-      !actionByName
-    ) {
-      return;
-    }
+  const approverName = String(
+    approval.ApproverUserName || ""
+  ).trim();
 
-    // ========================================================
-    // Action Label
-    // ========================================================
+  // ROLE: show role name
+  // USER / REGIONAL: show selected approver name
+  const approverLabel =
+    approverType === "USER" || approverType === "REGIONAL"
+      ? approverName || actionByName || role
+      : role || actionByName;
 
-    let actionLabel = "";
+  if (!approverLabel) {
+    return;
+  }
 
-    if (
-      status === "APPROVED"
-    ) {
-      actionLabel =
-        "Approved";
-    } else if (
-      status === "REJECTED"
-    ) {
-      actionLabel =
-        "Rejected";
-    } else if (
-      status === "CANCELLED"
-    ) {
-      actionLabel =
-        "Cancelled";
-    }
+  const actionLabel = {
+    APPROVED: "Approved",
+    REJECTED: "Rejected",
+    CANCELLED: "Cancelled",
+  }[status];
 
-    // ========================================================
-    // Output Examples:
-    //
-    // Approved by HOD - Kailash Garg
-    // Rejected by HOD - Kailash Garg
-    // Cancelled by HOD - Kailash Garg
-    // ========================================================
+  const displayText =
+    actionByName &&
+    actionByName.toUpperCase() !== approverLabel.toUpperCase()
+      ? `${actionLabel} by ${approverLabel} - ${actionByName}`
+      : `${actionLabel} by ${approverLabel}`;
 
-    approvalActionStack.push({
-      text: [
-        {
-          text:
-            `${actionLabel} by ${role} - `,
+  approvalActionStack.push({
+    text: displayText,
+    fontSize: 9,
+    margin: [0, 0, 0, 5],
+  });
+});
 
-          bold:
-            true,
-        },
-
-        {
-          text:
-            actionByName,
-        },
-      ],
-
-      fontSize:
-        9,
-
-      margin: [
-        0,
-        0,
-        0,
-        5,
-      ],
-    });
-  },
-);
 
 // ============================================================
 // No Approval Action

@@ -67,9 +67,11 @@ router.delete("/DeleteRGP",authenticateToken,deleteRGP,);
 router.put("/ApproveRGP",authenticateToken,processRGPApproval,);
 router.put("/RGPGateAction",authenticateToken,upload.array("Documents", 10),processRGPGateAction,);
 router.put("/RGPItemReturn",authenticateToken,processRGPItemReturn,);
+// ==============================================================================================================This is not in current use
 router.get("/ApprovalConfigList",authenticateToken,getRGPApprovalConfig,);
 router.post("/CreateApprovalConfig",authenticateToken,saveRGPApprovalConfig,);
 router.delete("/DeleteApprovalConfig",authenticateToken,deleteRGPApprovalConfig,);
+// ==============================================================================================================
 // =============================================================Reports
 router.get("/RGPListReports",authenticateToken,getRGPListReport,);
 router.get("/DepartmentWiseReports",authenticateToken,getRGPDepartmentWiseReport,);
