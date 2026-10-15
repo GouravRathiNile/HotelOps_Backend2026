@@ -6,6 +6,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 // ==========================================Db Connect function Import
 const { connectDB } = require("./db");
+const { connectMSSQL } = require("./mssql");
 // =========================================Producer RabbitMQ
 const producerRabbit = require("./producer/rabbitmq");
 // =========================================Consumer RabbitMQ
@@ -112,6 +113,8 @@ const startServer = async () => {
   try {
     // ====================================PostgreSQL Start
     await connectDB();
+    // ====================================MSSQL Start
+    await connectMSSQL();
     // ====================================Producer RabbitMQ Start
     await producerRabbit.connectRabbitMQ();
     // ====================================Consumer RabbitMQ Start
