@@ -6,6 +6,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 // ==========================================Db Connect function Import
 const { connectDB } = require("./db");
+const { connectMSSQL } = require("./mssql");
 // =========================================Producer RabbitMQ
 const producerRabbit = require("./producer/rabbitmq");
 // =========================================Consumer RabbitMQ
@@ -37,6 +38,7 @@ const CreditApplicationRoutes = require("./routes/CreditApplicationRoute/CreditA
 const DailyBreakageRoutes = require("./routes/DailyBreakageRoute/DailyBreakageRoute");
 const GatepassRoutes = require("./routes/GatepassRoutes/GatepassRoutes");
 const ApprovalFlowRoutes = require("./routes/FlowBuilderRoutes/ApprovalFlowRoutes");
+const DashboardRoutes = require("./routes/DashboardRoutes/DashboardRoutes");
 // ==========================================Consumers
 const BrandMasterConsumer = require("./consumer/ITAdminConsumer/BrandMaster");
 const OrganizationHandler = require("./consumer/ITAdminConsumer/OrganizationHandler");
@@ -63,6 +65,7 @@ const { startEngineeringAMCNotificationJob } = require("./services/EngineeringSe
 const CreditApplicationHandler = require("./consumer/CreditApplicationConsumer/CreditApplicationHandler");
 const DailyBreakageHandler = require("./consumer/DailyBreakageConsumer/DailyBreakageHandler");
 const GatepassHandler = require("./consumer/GatepassConsumer/GatepassHandler");
+const DashboardHandler = require("./consumer/DashboardConsumer/DashboardHandler");
 const ApprovalFlowHandler = require("./consumer/FlowBuilderConsumer/ApprovalFlowHandler");
 // ==========================================Packages Start
 
@@ -97,6 +100,7 @@ app.use("/api/CreditApplication", CreditApplicationRoutes);
 app.use("/api/DailyBreakageReport", DailyBreakageRoutes);
 app.use("/api/GatepassManagement", GatepassRoutes);
 app.use("/api/ApprovalFlow", ApprovalFlowRoutes);
+app.use("/api/Dashboard", DashboardRoutes);
 // =========================================Default Route
 app.get("/", (req, res) => {
   res.json({
@@ -109,6 +113,8 @@ const startServer = async () => {
   try {
     // ====================================PostgreSQL Start
     await connectDB();
+    // ====================================MSSQL Start
+    await connectMSSQL();
     // ====================================Producer RabbitMQ Start
     await producerRabbit.connectRabbitMQ();
     // ====================================Consumer RabbitMQ Start
@@ -246,6 +252,13 @@ const startServer = async () => {
       QUEUE.APPROVAL_FLOW.RESPONSE,
       ApprovalFlowHandler
     );
+    // ===================================== Dashboard Consumer
+    await startConsumer(
+      QUEUE.DASHBOARD.REQUEST,
+      QUEUE.DASHBOARD.RESPONSE,
+      DashboardHandler
+    );
+
     // Start only after RabbitMQ consumers are ready; the job itself is
     // concurrency-safe across multiple application instances.
     startEngineeringWarrantyStatusJob();
