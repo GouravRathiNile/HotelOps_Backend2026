@@ -416,6 +416,666 @@ const getCEOOccupancy = async (data) => {
     return databaseFailure(error, "Fetch CEO occupancy");
   }
 };
+// 3. ============================================================ Critical Alerts
+// 3.1. ============================================Glitch
+const getCEOGlitchAlerts = async (data) => {
+  try {
+    const rawOrganizationID = data.OrganizationID;
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      ((typeof rawOrganizationID !== "string" && typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n)
+    ) {
+      return fail("OrganizationID must be a positive integer.", 400);
+    }
+
+    // ========================================================
+
+    // ========================================================
+    // 2. Total Open Glitches
+    // ========================================================
+
+    const countResult = await pool.query(
+      `
+        SELECT COUNT(*)::BIGINT AS TotalCount
+        FROM guest_glitch_entry_master
+        WHERE IsDeleted = FALSE
+          AND UPPER(TRIM(Status)) = 'OPEN'
+          AND ($1::BIGINT IS NULL OR OrganizationID = $1::BIGINT);
+      `,
+      [organizationID || null]
+    );
+
+    const totalCount = Number(
+      countResult.rows[0].totalcount
+    );
+
+    // ========================================================
+    // 3. Latest Open Glitches
+    // ========================================================
+
+    const result = await pool.query(
+      `
+        SELECT
+          glitch.ID,
+          glitch.OrganizationID,
+          organization.ShortName,
+          glitch.GuestName,
+          glitch.Complaint,
+          glitch.EntryDate,
+          glitch.Time,
+          glitch.Status,
+          glitch.RoomNumber,
+          glitch.Department
+
+        FROM guest_glitch_entry_master AS glitch
+        LEFT JOIN Organization_Master AS organization
+          ON organization.OrganizationID = glitch.OrganizationID
+
+        WHERE glitch.IsDeleted = FALSE
+          AND UPPER(TRIM(glitch.Status)) = 'OPEN'
+          AND ($1::BIGINT IS NULL OR glitch.OrganizationID = $1::BIGINT)
+
+        ORDER BY
+          glitch.EntryDate DESC NULLS LAST,
+          glitch.ID DESC
+;
+      `,
+      [organizationID || null]
+    );
+
+    // ========================================================
+    // 4. Response Mapping
+    // ========================================================
+
+    const glitches = result.rows.map((row) => ({
+      ID: Number(row.id),
+
+      OrganizationID:
+        row.organizationid == null
+          ? null
+          : Number(row.organizationid),
+
+      ShortName: row.shortname ?? null,
+
+      GuestName: row.guestname || null,
+      Complaint: row.complaint || null,
+
+      EntryDate: row.entrydate
+        ? new Date(row.entrydate).toISOString().slice(0, 10)
+        : null,
+
+      Time: row.time || null,
+      Status: row.status,
+
+      RoomNumber: row.roomnumber || null,
+      Department: row.department || null,
+
+      Priority: "High",
+    }));
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
+
+    return ok(
+      "CEO open glitch alerts fetched successfully.",
+      glitches,
+      {
+        TotalCount: totalCount,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(error, "Fetch CEO glitch alerts");
+  }
+};
+// 3.2. ============================================Incident
+const getCEOIncidentAlerts = async (data) => {
+  try {
+    const rawOrganizationID = data.OrganizationID;
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      ((typeof rawOrganizationID !== "string" && typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n)
+    ) {
+      return fail("OrganizationID must be a positive integer.", 400);
+    }
+
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+
+    // ========================================================
+    // 3. Date Range (Existing Helper)
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. Total Incident Count
+    // ========================================================
+
+    const countResult = await pool.query(
+      `
+        SELECT
+          COUNT(*)::BIGINT AS TotalCount
+
+        FROM incident_report_entry_master
+
+        WHERE IsDeleted = FALSE
+          AND IncidentDate >= $1::DATE
+          AND IncidentDate <= $2::DATE
+          AND ($3::BIGINT IS NULL OR OrganizationID = $3::BIGINT);
+      `,
+      [
+        dates.CurrentFromDate,
+        dates.CurrentToDate,
+        organizationID || null,
+      ]
+    );
+
+    const totalCount = Number(
+      countResult.rows[0].totalcount
+    );
+
+    // ========================================================
+    // 5. Incident List
+    // ========================================================
+
+    const result = await pool.query(
+      `
+        SELECT
+          incident.ID,
+          incident.OrganizationID,
+          organization.ShortName,
+          incident.ReportDate,
+          incident.IncidentDate,
+          incident.Time,
+          incident.Location,
+          incident.AccidentCause,
+          incident.AnyCasualty,
+          incident.Description,
+          incident.DamagedCaused,
+          incident.Investigation,
+          incident.InvestigatedBy,
+          incident.PresentDuringIncident,
+          incident.ReportTo,
+          incident.ReportBy
+
+        FROM incident_report_entry_master AS incident
+        LEFT JOIN Organization_Master AS organization
+          ON organization.OrganizationID = incident.OrganizationID
+
+        WHERE incident.IsDeleted = FALSE
+          AND incident.IncidentDate >= $1::DATE
+          AND incident.IncidentDate <= $2::DATE
+          AND ($3::BIGINT IS NULL OR incident.OrganizationID = $3::BIGINT)
+
+        ORDER BY
+          incident.IncidentDate DESC,
+          incident.Time DESC NULLS LAST,
+          incident.ID DESC
+;
+      `,
+      [
+        dates.CurrentFromDate,
+        dates.CurrentToDate,
+        organizationID || null,
+      ]
+    );
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const incidents = result.rows.map((row) => ({
+      ID: row.id,
+
+      OrganizationID: Number(row.organizationid),
+      ShortName: row.shortname ?? null,
+
+      ReportDate: row.reportdate
+        ? row.reportdate.toISOString().slice(0, 10)
+        : null,
+
+      IncidentDate: row.incidentdate
+        ? row.incidentdate.toISOString().slice(0, 10)
+        : null,
+
+      Time: row.time || null,
+      Location: row.location || null,
+
+      AccidentCause: row.accidentcause || null,
+      AnyCasualty: row.anycasualty || null,
+
+      Description: row.description || null,
+      DamagedCaused: row.damagedcaused || null,
+
+      Investigation: row.investigation || null,
+      InvestigatedBy: row.investigatedby || null,
+
+      PresentDuringIncident:
+        row.presentduringincident || null,
+
+      ReportTo: row.reportto || null,
+      ReportBy: row.reportby || null,
+    }));
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    return ok(
+      "CEO incident alerts fetched successfully.",
+      incidents,
+      {
+        Filter: filter,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalCount: totalCount,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO incident alerts"
+    );
+  }
+};
+// 3.3 ============================================Engineering Expired AMC
+const getCEOExpiredAMCAlerts = async (data) => {
+  try {
+    const rawOrganizationID = data.OrganizationID;
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      ((typeof rawOrganizationID !== "string" && typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n)
+    ) {
+      return fail("OrganizationID must be a positive integer.", 400);
+    }
+
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+
+    // ========================================================
+    // 3. Date Range (Existing Helper)
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. Total Expired AMC Count
+    // ========================================================
+
+    const countResult = await pool.query(
+      `
+        SELECT
+          COUNT(*)::BIGINT AS TotalCount
+
+        FROM Engineering_Equipment_Entry_Master
+
+        WHERE IsDeleted = FALSE
+          AND AMCEndDate IS NOT NULL
+          AND AMCEndDate >= $1::DATE
+          AND AMCEndDate <= $2::DATE
+          AND AMCEndDate < CURRENT_DATE
+          AND ($3::BIGINT IS NULL OR OrganizationID = $3::BIGINT);
+      `,
+      [
+        dates.CurrentFromDate,
+        dates.CurrentToDate,
+        organizationID || null,
+      ]
+    );
+
+    const totalCount = Number(
+      countResult.rows[0].totalcount
+    );
+
+    // ========================================================
+    // 5. Expired AMC List
+    // ========================================================
+
+    const result = await pool.query(
+      `
+        SELECT
+          equipment.EquipmentID,
+          equipment.OrganizationID,
+          organization.ShortName,
+          equipment.Description,
+          equipment.SerialNumber,
+          equipment.TypeOfMachine,
+          equipment.Make,
+          equipment.ModelNumber,
+          equipment.Area,
+          equipment.AMCType,
+          equipment.AMCStartDate,
+          equipment.AMCEndDate,
+          equipment.AMCStatus,
+          equipment.AMCYearlyExpense,
+          equipment.IsMandatoryAMC
+
+        FROM Engineering_Equipment_Entry_Master AS equipment
+        LEFT JOIN Organization_Master AS organization
+          ON organization.OrganizationID = equipment.OrganizationID
+
+        WHERE equipment.IsDeleted = FALSE
+          AND equipment.AMCEndDate IS NOT NULL
+          AND equipment.AMCEndDate >= $1::DATE
+          AND equipment.AMCEndDate <= $2::DATE
+          AND equipment.AMCEndDate < CURRENT_DATE
+          AND ($3::BIGINT IS NULL OR equipment.OrganizationID = $3::BIGINT)
+
+        ORDER BY
+          equipment.AMCEndDate DESC,
+          equipment.EquipmentID DESC
+;
+      `,
+      [
+        dates.CurrentFromDate,
+        dates.CurrentToDate,
+        organizationID || null,
+      ]
+    );
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const amcAlerts = result.rows.map((row) => ({
+      EquipmentID: Number(row.equipmentid),
+
+      OrganizationID: Number(row.organizationid),
+      ShortName: row.shortname ?? null,
+
+      Description: row.description || null,
+      SerialNumber: row.serialnumber || null,
+      TypeOfMachine: row.typeofmachine || null,
+      Make: row.make || null,
+      ModelNumber: row.modelnumber || null,
+      Area: row.area || null,
+
+      AMCType: row.amctype || null,
+
+      AMCStartDate: row.amcstartdate
+        ? formatDate(row.amcstartdate)
+        : null,
+
+      AMCEndDate: row.amcenddate
+        ? formatDate(row.amcenddate)
+        : null,
+
+      AMCStatus: "Expired",
+
+      AMCYearlyExpense:
+        row.amcyearlyexpense == null
+          ? null
+          : Number(row.amcyearlyexpense),
+
+      IsMandatoryAMC: Boolean(row.ismandatoryamc),
+
+      Priority: "High",
+    }));
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    return ok(
+      "CEO expired AMC alerts fetched successfully.",
+      amcAlerts,
+      {
+        Filter: filter,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalCount: totalCount,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO expired AMC alerts"
+    );
+  }
+};
+// 4. ============================================================ Hotel Revenue vs Budget
+const getCEOHotelRevenueVsBudget = async (data) => {
+  try {
+    // ========================================================
+    // 1. Business Date
+    // ========================================================
+
+    let businessDate = data.BusinessDate;
+
+    if (!businessDate) {
+      const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Kolkata",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(new Date());
+
+      const values = {};
+
+      parts.forEach(({ type, value }) => {
+        if (type !== "literal") {
+          values[type] = Number(value);
+        }
+      });
+
+      const yesterday = new Date(
+        Date.UTC(
+          values.year,
+          values.month - 1,
+          values.day - 1
+        )
+      );
+
+      businessDate = yesterday.toISOString().slice(0, 10);
+    }
+
+    // ========================================================
+    // 2. Date Validation
+    // ========================================================
+
+    if (
+      typeof businessDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(businessDate)
+    ) {
+      return fail(
+        "BusinessDate must be in YYYY-MM-DD format.",
+        400
+      );
+    }
+
+    const parsedDate = new Date(
+      `${businessDate}T00:00:00.000Z`
+    );
+
+    if (
+      Number.isNaN(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== businessDate
+    ) {
+      return fail("Invalid BusinessDate.", 400);
+    }
+
+    // ========================================================
+    // 3. MSSQL Query
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    const result = await mssqlPool
+      .request()
+      .input("BusinessDate", sql.Date, businessDate)
+      .query(`
+        WITH LatestRevenue AS (
+          SELECT
+            ID,
+            OrganizationID,
+            EntryDate,
+
+            FTD_Budget,
+            FTD_Total_Revenue,
+            FTD_Variance,
+
+            MTD_Budget,
+            MTD_Revenue,
+            MTD_Variance,
+
+            YTD_Budget,
+            YTD_Revenue,
+            YTD_Variance,
+
+            ROW_NUMBER() OVER (
+              PARTITION BY OrganizationID
+              ORDER BY ID DESC
+            ) AS RowNo
+
+          FROM
+            [DailyRevenueReport].[DailyRevenueReport_Tbl_Entry_Master]
+
+          WHERE IsDeleted = 0
+            AND EntryDate >= @BusinessDate
+            AND EntryDate < DATEADD(
+              DAY, 1, @BusinessDate
+            )
+        )
+
+        SELECT
+          ID,
+          OrganizationID,
+          EntryDate,
+
+          FTD_Budget,
+          FTD_Total_Revenue,
+          FTD_Variance,
+
+          MTD_Budget,
+          MTD_Revenue,
+          MTD_Variance,
+
+          YTD_Budget,
+          YTD_Revenue,
+          YTD_Variance
+
+        FROM LatestRevenue
+
+        WHERE RowNo = 1
+
+        ORDER BY OrganizationID ASC;
+      `);
+
+    // ========================================================
+    // 4. Response Mapping
+    // ========================================================
+
+    const hotels = result.recordset.map((row, index) => ({
+      SrNo: index + 1,
+
+      OrganizationID: Number(row.OrganizationID),
+
+      FTD: {
+        Budget: Number(row.FTD_Budget ?? 0),
+        Revenue: Number(row.FTD_Total_Revenue ?? 0),
+        Variance: Number(row.FTD_Variance ?? 0),
+      },
+
+      MTD: {
+        Budget: Number(row.MTD_Budget ?? 0),
+        Revenue: Number(row.MTD_Revenue ?? 0),
+        Variance: Number(row.MTD_Variance ?? 0),
+      },
+
+      YTD: {
+        Budget: Number(row.YTD_Budget ?? 0),
+        Revenue: Number(row.YTD_Revenue ?? 0),
+        Variance: Number(row.YTD_Variance ?? 0),
+      },
+    }));
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
+
+    return ok(
+      "CEO hotel revenue vs budget fetched successfully.",
+      hotels,
+      {
+        BusinessDate: businessDate,
+        TotalHotels: hotels.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO hotel revenue vs budget"
+    );
+  }
+};
+
+
+
 
 // ============================================================
 // Exports
@@ -423,5 +1083,9 @@ const getCEOOccupancy = async (data) => {
 module.exports = {
   getCEORevenueSummary,
   getCEOOccupancy,
+  getCEOGlitchAlerts,
+  getCEOIncidentAlerts,
+  getCEOExpiredAMCAlerts,
+  getCEOHotelRevenueVsBudget,
 };
 
