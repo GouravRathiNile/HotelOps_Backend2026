@@ -255,18 +255,29 @@ const applyAction = async (client, opex, data, verifiedActor) => {
     if (data.Revision != null && Number(data.Revision) !== step.revision) {
         throw new AppError("Approval step changed; refresh before submitting again", 409);
     }
+    let actingStep = step;
+    do {
     const result = await client.query(`
         UPDATE opex_workflow_step SET status = $1, approvedquantity = $2,
             remarks = $3, actionby = $4, actiondatetime = CURRENT_TIMESTAMP, revision = revision + 1
         WHERE stepid = $5 RETURNING revision, actiondatetime
-    `, [change.status, change.quantity, change.remarks || null, actor.userid, step.stepid]);
+    `, [change.status, change.quantity, change.remarks || null, actor.userid, actingStep.stepid]);
     await client.query(`
         INSERT INTO opex_workflow_action
             (stepid, revision, action, previousstatus, status, actionby, approvedquantity, remarks)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    `, [step.stepid, result.rows[0].revision, change.action, step.status,
+    `, [actingStep.stepid, result.rows[0].revision, change.action, actingStep.status,
         change.status, actor.userid, change.quantity, change.remarks || null]);
-    step.status = change.status;
+    actingStep.status = change.status;
+    actingStep.revision = result.rows[0].revision;
+    actingStep.actionby = actor.userid;
+    actingStep.actiondatetime = result.rows[0].actiondatetime;
+    const candidate = currentStep(steps);
+    // One approval covers consecutive assignments belonging to the acting user.
+    // Each stage retains its own audit row; other actions never cascade.
+    actingStep = change.action === "APPROVE" && candidate &&
+        allowedActions(opex, steps, candidate, actor).includes("APPROVE") ? candidate : null;
+    } while (actingStep);
     const next = currentStep(steps);
     const finalStatus = change.action === "APPROVE" ? (next ? null : "Approved") : change.status;
     // FinalStatus remains available to legacy consumers during rollout.

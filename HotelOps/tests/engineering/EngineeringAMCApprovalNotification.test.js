@@ -8,19 +8,19 @@ const { resolveAMCApprovalNotificationRecipients, amcApprovalNotificationContent
 const recipientDb = (rows) => ({ query: async (sql, params) => ({ rows: typeof rows === "function"
   ? rows(sql, params) : rows }) });
 
-test("AMC approval notification content uses the exact approved formats", () => {
+test("AMC messages distinguish required action from completed and stopped approvals", () => {
   const base = { equipmentName: "Chiller", organizationShortName: "HJU",
     actorName: "Approver Name", approverRole: "GM" };
   assert.deepEqual(amcApprovalNotificationContent({ ...base, kind: "CREATE", firstRole: "FC" }),
-    { title: "AMC - Chiller - HJU", message: "AMC created and require your action." });
+    { title: "AMC - Chiller - HJU", message: "AMC created and requires your action." });
   assert.deepEqual(amcApprovalNotificationContent({ ...base, kind: "APPROVE", nextRole: "RD" }),
-    { title: "AMC - Chiller - HJU", message: "Approved by Approver Name." });
+    { title: "AMC - Chiller - HJU", message: "AMC approved by Approver Name and requires your action." });
   assert.equal(amcApprovalNotificationContent({ ...base, kind: "FINAL_APPROVE" }).message,
-    "Approved by Approver Name.");
+    "AMC fully approved by Approver Name. Approval process is complete.");
   assert.equal(amcApprovalNotificationContent({ ...base, kind: "RETURN" }).message,
-    "Returned by Approver Name.");
+    "AMC returned by Approver Name. Please review the details.");
   assert.equal(amcApprovalNotificationContent({ ...base, kind: "REJECT" }).message,
-    "Rejected by Approver Name.");
+    "AMC rejected by Approver Name. Approval process has stopped.");
 });
 
 test("recipient query keeps local roles scoped and resolves RD from organization 10", async () => {
@@ -67,8 +67,8 @@ test("custom configured first and next roles are passed through without hardcodi
     roles: ["CEO"], excludeUserID: 11, actorUserID: 11,
     kind: "APPROVE", approverRole: "GM", nextRole: "CEO", action: "APPROVED",
     queryable: db, publishNotification: async (payload) => { payloads.push(payload); return { success: true }; } });
-  assert.equal(payloads[0].message, "AMC created and require your action.");
-  assert.equal(payloads[1].message, "Approved by GM User.");
+  assert.equal(payloads[0].message, "AMC created and requires your action.");
+  assert.equal(payloads[1].message, "AMC approved by GM User and requires your action.");
 });
 
 test("Org 20 CREATE resolves only local FC and excludes a central RD with Org 20 access", async () => {
@@ -102,7 +102,7 @@ test("GM approval resolves central RD dynamically through Organization 10", asyn
     publishNotification: async (payload) => { payloads.push(payload); return { success: true }; } });
 
   assert.deepEqual(payloads[0].userIds, ["12"]);
-  assert.equal(payloads[0].message, "Approved by GM User.");
+  assert.equal(payloads[0].message, "AMC approved by GM User and requires your action.");
 });
 
 test("FC to GM to RD to CEO approvals notify only the next role and exclude actor", async () => {
@@ -121,7 +121,7 @@ test("FC to GM to RD to CEO approvals notify only the next role and exclude acto
     assert.deepEqual(calls[0][2], []);
     assert.equal(calls[0][3], "7");
     assert.deepEqual(payloads[0].userIds, ["9"]);
-    assert.equal(payloads[0].message, `Approved by ${actingRole}.`);
+    assert.equal(payloads[0].message, `AMC approved by ${actingRole} and requires your action.`);
   }
 });
 
@@ -138,7 +138,7 @@ test("final approval notifies only the creator", async () => {
   assert.deepEqual(calls[0][2], ["2"]);
   assert.equal(calls[0][3], null);
   assert.deepEqual(payloads[0].userIds, ["2"]);
-  assert.equal(payloads[0].message, "Approved by CEO Name.");
+  assert.equal(payloads[0].message, "AMC fully approved by CEO Name. Approval process is complete.");
 });
 
 test("RETURN and REJECT notify only the creator while excluding the actor", async () => {
@@ -156,7 +156,7 @@ test("RETURN and REJECT notify only the creator while excluding the actor", asyn
     assert.deepEqual(calls[0][2], ["2"]);
     assert.equal(calls[0][3], "8");
     assert.deepEqual(payloads[0].userIds, ["2"]);
-    assert.equal(payloads[0].message, `${label} by GM User.`);
+    assert.equal(payloads[0].message, kind === "RETURN" ? "AMC returned by GM User. Please review the details." : "AMC rejected by GM User. Approval process has stopped.");
     assert.equal(payloads[0].action, action);
   }
 });

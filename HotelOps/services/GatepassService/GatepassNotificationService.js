@@ -21,13 +21,19 @@ const resolveRGPEvent = ({ master, approvals, approvalID, action, remarks }) => 
   const next = stages.find((row) => String(row.rgpapprovalid) !== String(approvalID) &&
     (action === "CREATE" || Number(row.approvalorder) > Number(current.approvalorder)) &&
     String(row.status || "Pending").trim().toUpperCase() !== "APPROVED");
-  const approverRole = normalizeRGPApprovalRole(current?.approvalrole);
-  const nextRole = normalizeRGPApprovalRole(next?.approvalrole);
+  const approverRole = normalizeRGPApprovalRole(current?.approvalrole, current?.approvaltype);
+  const nextRole = normalizeRGPApprovalRole(next?.approvalrole, next?.approvaltype);
   const directUserIds = [];
   let recipientRole = null;
   if (action === "CREATE" || (action === "APPROVE" && next)) {
     if (!nextRole) throw new Error("RGP notification next approval role is missing");
-    recipientRole = nextRole;
+    const type = String(next.approvertype || 'ROLE').trim().toUpperCase();
+    if (type === 'USER' || type === 'REGIONAL') {
+      directUserIds.push(next.approveruserid);
+      if (!notificationUserIds(directUserIds).length) throw new Error('RGP selected approver is missing');
+    } else {
+      recipientRole = nextRole;
+    }
   } else {
     directUserIds.push(master.createdby);
     if (action === "REJECT" || action === "CANCEL") {
@@ -116,7 +122,7 @@ const buildRGPNotificationContent = ({ action, approverRole, nextRole, remarks,
     const reason = shorten(remarks, 300);
     message = `${actor} ${action === "REJECT" ? "rejected" : "cancelled"} the RGP.${reason ? ` Remarks: ${reason}` : ""}`;
   } else if (nextRole) {
-    message = `${actor} approved the RGP. It is now awaiting ${roleLabel(nextRole)} approval.`;
+    message = `${actor} approved the RGP. It is now awaiting ${roleLabel(nextRole)} approval and requires your action.`;
   } else {
     message = `Your returnable gate pass has been approved.${approverRole === "GM" ? " Please proceed with checkout." : ""}`;
   }

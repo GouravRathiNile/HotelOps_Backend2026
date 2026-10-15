@@ -91,13 +91,13 @@ const amcApprovalNotificationContent = ({ kind, equipmentName,
   const title = `AMC - ${String(equipmentName || "Equipment").trim()} - ${organizationShortName}`;
   const actedBy = actorName || approverRole;
   if (kind === "CREATE") return { title,
-    message: "AMC created and require your action." };
+    message: "AMC created and requires your action." };
   if (kind === "APPROVE") return { title,
-    message: `Approved by ${actedBy}.` };
+    message: `AMC approved by ${actedBy} and requires your action.` };
   if (kind === "FINAL_APPROVE") return { title,
-    message: `Approved by ${actedBy}.` };
-  if (kind === "RETURN") return { title, message: `Returned by ${actedBy}.` };
-  if (kind === "REJECT") return { title, message: `Rejected by ${actedBy}.` };
+    message: `AMC fully approved by ${actedBy}. Approval process is complete.` };
+  if (kind === "RETURN") return { title, message: `AMC returned by ${actedBy}. Please review the details.` };
+  if (kind === "REJECT") return { title, message: `AMC rejected by ${actedBy}. Approval process has stopped.` };
   throw new Error(`Unsupported AMC notification kind: ${kind}`);
 };
 

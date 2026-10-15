@@ -162,3 +162,48 @@ test('AMC migration preserves legacy data; Builder snapshots, actions and equipm
   await client.query('ROLLBACK');client.release();await pool.end();
  }
 });
+
+
+test('AMC visibility SQL enforces every approval turn, including CEO admin and creator inboxes', {
+ skip:process.env.AMC_VISIBILITY_DB_TEST!=='1',timeout:30000
+}, async()=>{
+ const {Pool}=require('pg');
+ const {pool}=require('../../db');
+ const read=require('../../services/EngineeringService/EngineeringAMCWorkflowRead');
+ const db=new Pool({...pool.options,password:pool.options.password,connectionTimeoutMillis:5000,statement_timeout:5000});
+ try {
+  const queries=[],values=[],expectations=[];
+  for (const type of ['ROLE','USER','REGIONAL']) {
+   for (let turn=0;turn<4;turn++) {
+    const roles=['FC','GM','RD','CEO'];
+    const steps=roles.map((role,i)=>({stepid:String(i+1),level:i+1,approvertype:type,
+     role,approvaltype:role==='RD'?'RD-FC':role,assigneduserid:String(100+i),ismandatory:true,
+     status:i<turn?'Approved':'Pending'}));
+    for(let actor=0;actor<4;actor++) {
+     for(const creator of [false,true]) {
+      const fixture={organizationid:20,createdby:creator?100+actor:999,adminaccess:actor===3,
+       organizationaccess:true,regionaleligible:true,iscentralrd:actor===2,companyorganizationid:20,
+       actorrole:actor===0||actor===2?'HOD':roles[actor],actordepartmentname:'FINANCE',
+       actordepartmentorganizationid:20,actordepartmentid:2,departmentid:2,
+       steps,currentstep:steps[turn],finalstatus:'Pending'};
+      for(const status of ['Pending','Approved']) {
+       const q=read.buildQuery({UserID:String(100+actor),OrganizationID:'20',Status:status},true);
+       const sql=`WITH actor_parameter AS (SELECT 1 FROM (VALUES(1::bigint)) a(userid) WHERE userid=$1), records AS (SELECT * FROM jsonb_to_record($${q.values.length+1}::jsonb) AS r(
+        organizationid bigint,createdby bigint,adminaccess boolean,organizationaccess boolean,
+        regionaleligible boolean,iscentralrd boolean,companyorganizationid bigint,actorrole text,
+        actordepartmentname text,actordepartmentorganizationid bigint,actordepartmentid bigint,
+        departmentid bigint,steps jsonb,currentstep jsonb,finalstatus text))
+        SELECT COUNT(*)::int AS count FROM records r ${q.where}`;
+       const offset=values.length;
+       queries.push('('+sql.replace(/\$(\d+)/g,(_,n)=>'$'+(Number(n)+offset))+')');
+       values.push(...q.values,JSON.stringify(fixture));
+       expectations.push({expected:Number(status==='Pending'?actor===turn:actor<turn),type,turn,actor,creator,status});
+      }
+     }
+    }
+   }
+  }
+  const result=await db.query(queries.join(' UNION ALL '),values);
+  result.rows.forEach((row,i)=>assert.equal(row.count,expectations[i].expected,JSON.stringify(expectations[i])));
+ } finally { await db.end(); await pool.end(); }
+});

@@ -5,6 +5,23 @@ const read=require('../../services/EngineeringService/EngineeringAMCWorkflowRead
 const record={amcid:'1',organizationid:'20',departmentid:'2',createdby:'7',finalstatus:'Pending'};
 const actor={userid:'6',usertype:'HOD',departmentname:'Finance',departmentorganizationid:'20',organizationaccess:true,iscentralrd:false};
 const step={stepid:'1',level:1,approvertype:'ROLE',role:'FC',approvaltype:'FC',ismandatory:true,status:'Pending',revision:0};
+
+test('Legacy RD and builder RD-FC expose the same stage while preserving approval history and assignment',()=>{
+ for (const approvaltype of ['RD','RD-FC']) {
+  const mapped=read.mapRow({...record,steps:[{...step,role:'RD',approvaltype,status:'Approved',remarks:'Reviewed'}],
+   finalstatus:'Approved',iscentralrd:true},'6',row=>({CurrentApprovalRole:row.currentapprovalrole,Documents:[]}));
+  assert.equal(mapped.Approvals[0].ApprovalType,'RD-FC');
+  assert.equal(mapped.Approvals[0].ApprovalRole,'RD-FC');
+  assert.equal(mapped.Approvals[0].ColumnKey,'stage:RD-FC:1');
+  assert.equal(mapped.Approvals[0].Status,'Approved');
+  assert.equal(mapped.Approvals[0].Remarks,'Reviewed');
+  assert.equal(mapped.Approvals[0].Role,'RD');
+ }
+ const oldFilter=read.buildQuery({UserID:'6',OrganizationID:'20',ApprovalFlow:'RD'},true);
+ const newFilter=read.buildQuery({UserID:'6',OrganizationID:'20',ApprovalFlow:'RD-FC'},true);
+ assert.deepEqual(oldFilter,newFilter);
+ assert.ok(newFilter.values.includes('RD-FC'));
+});
 test('AMC FC and central RD retain distinct live assignment rules',()=>{
  assert.equal(workflow.isAssigned(step,actor,record),true);
  assert.equal(workflow.isAssigned(step,{...actor,iscentralrd:true},record),false);

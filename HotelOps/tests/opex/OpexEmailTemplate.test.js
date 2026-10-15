@@ -11,6 +11,17 @@ const base = {
     remark: "Reviewed", actionBy: "General Manager", actionDate: "2026-09-15T06:30:00.000Z" },
 };
 
+test("OPEX final approval and canonical notification messages explain email purpose", () => {
+ const email=buildOpexEmail({...base,details:{...base.details,kind:'APPROVE',isFinalApproval:true}});
+ assert.match(email.text,/Your Opex request has been fully approved by General Manager\./);
+ assert.match(email.html,/Your Opex request has been fully approved by General Manager\./);
+ assert.doesNotMatch(email.html,/awaiting your review/);
+ const message='The Opex request has been approved by Alex <FC> and is awaiting your review.';
+ const canonical=buildOpexEmail({...base,details:{...base.details,kind:'APPROVE',message}});
+ assert.ok(canonical.text.includes(message));
+ assert.ok(canonical.html.includes(message.replace('<FC>','&lt;FC&gt;')));
+});
+
 test("OPEX CREATE email has branding, one description, details and no action table", (t) => {
   const previous=process.env.OPEX_FRONTEND_URL;
   process.env.OPEX_FRONTEND_URL="https://hotelops.example.com/Opex";
@@ -19,7 +30,7 @@ test("OPEX CREATE email has branding, one description, details and no action tab
   assert.equal(email.subject, "[HotelOps] OPEX - Printer (2) - Finance - HJU");
   assert.match(email.html, /OPEX Notification/);
   assert.match(email.html, />OPEX - Printer<\/div>/);
-  assert.match(email.html, /A new OPEX request has been created and is available for your review\./);
+  assert.match(email.html, /A new Opex request has been created and is awaiting your review\./);
   assert.match(email.html, /https:\/\/assets\.example\.com\/hju\.png/);
   assert.match(email.html, /OPEX Details/);
   assert.equal((email.html.match(/Replacement printer/g) || []).length, 1);
@@ -28,10 +39,10 @@ test("OPEX CREATE email has branding, one description, details and no action tab
 });
 
 for (const [kind, expected] of Object.entries({
-  APPROVE: "approved by General Manager",
+  APPROVE: "approved by General Manager and is awaiting your review",
   REJECT: "rejected by General Manager",
-  RETURN: "returned by General Manager for further review",
-  HOLD: "placed on hold by General Manager",
+  RETURN: "returned by General Manager for revision",
+  HOLD: "put on hold by General Manager",
 })) {
   test(`OPEX ${kind} email contains its action data and DB date`, () => {
     const email = buildOpexEmail({ ...base, details: { ...base.details, kind } });

@@ -12,6 +12,37 @@ const actors=[{userid:7,usertype:'HOD',departmentname:'Engineering',departmentor
  {userid:4,usertype:'GM'}, {userid:9,usertype:'HOD',departmentname:'Finance',departmentorganizationid:20,centralfinance:true},
  {userid:1,usertype:'CEO'}];
 const record={opexid:100,organizationid:20,department:'Engineering',createdby:12,hasaction:false};
+
+for (const action of ['APPROVE','REJECT','RETURN','HOLD']) test(action+' handles consecutive Finance HOD/FC assignments safely',async()=>{
+ const steps=stages().map(step=>({...step,requestdepartment:'Finance'}));
+ const calls=[];
+ const client={query:async(sql,params)=>{
+  calls.push({sql,params});
+  if(sql.includes('UPDATE opex_workflow_step'))return {rows:[{revision:1,actiondatetime:new Date()}]};
+  if(sql.includes('SELECT'))return {rows:steps};
+  return {rows:[]};
+ }};
+ const result=await workflow.applyAction(client,{...record,department:'Finance'},
+  {Action:action,UserID:6,ApprovalStepID:1,Revision:0,Quantity:3,Remarks:'Reviewed'},actors[1]);
+ const updates=calls.filter(c=>c.sql.includes('UPDATE opex_workflow_step'));
+ assert.deepEqual(updates.map(c=>c.params[4]),action==='APPROVE'?['1','2']:['1']);
+ assert.equal(calls.filter(c=>c.sql.includes('INSERT INTO opex_workflow_action')).length,updates.length);
+ if(action==='APPROVE'){
+  assert.equal(result.next.stepid,'3');assert.deepEqual(result.roles,['GM']);
+  assert.equal(result.finalStatus,null);assert.deepEqual(result.directUserIds,[]);
+ }else assert.equal(steps[1].status,'Pending');
+});
+
+test('Consecutive direct-user approvals can finalize but never cross another assignee',async()=>{
+ for(const sameUser of [true,false]){
+  const steps=stages().slice(0,2).map((s,i)=>({...s,approvertype:'USER',assigneduserid:i===1&&!sameUser?'4':'6'}));
+  const client={query:async(sql)=>sql.includes('UPDATE opex_workflow_step')?
+   {rows:[{revision:1,actiondatetime:new Date()}]}:sql.includes('SELECT')?{rows:steps}:{rows:[]}};
+  const result=await workflow.applyAction(client,record,{Action:'APPROVE',ApprovalStepID:1,UserID:6},actors[1]);
+  assert.equal(result.finalStatus,sameUser?'Approved':null);
+  assert.deepEqual(result.directUserIds,sameUser?[12]:['4']);
+ }
+});
 test('Configured HOD and FC both use role HOD but match different departments',()=>{
  const steps=stages();for(let i=0;i<actors.length;i++)for(let j=0;j<steps.length;j++)assert.equal(workflow.isAssigned(steps[j],actors[i]),i===j);
  assert.equal(workflow.isAssigned(steps[0],{...actors[0],departmentorganizationid:30}),false);

@@ -17,7 +17,7 @@ const stages = (stage) => ["HOD", "FC", "GM"].map((approvalrole, index) => ({
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 function harness({ stage = 0, masterOverrides = {}, commitFailure = false,
-  writeFailure = false, customFlow = [], notificationFailure = false, financeRole = "FC" } = {}) {
+  writeFailure = false, customFlow = [], notificationFailure = false, financeRole = "FC", financeStageType = "FC" } = {}) {
   const calls = [], events = [], deliveries = [];
   let committed = false, released = false, nextID = 101;
   const pool = { connect: async () => ({
@@ -32,13 +32,18 @@ function harness({ stage = 0, masterOverrides = {}, commitFailure = false,
         throw new Error("Write failed");
       }
       if (/FROM Organization_Master/.test(sql)) return { rows: [{ organizationid: 20 }] };
-      if (/FROM Gatepass_RGP_Approval_Config/.test(sql)) return { rows: customFlow };
+      if (/FROM approval_master_details/.test(sql) && !sql.includes('Gatepass_RGP_Approval')) return { rows:
+        (customFlow.length ? customFlow.map(row => ({ role: row.approvalrole, approvaltype: row.approvalrole,
+          level: row.approvallevel, approvalid: row.rgpapprovalconfigid, approvertype: 'ROLE', ismandatory: true })) :
+          ['HOD', 'FC', 'GM'].map((approvaltype, i) => ({ approvalid: i + 1, level: i + 1,
+            role: approvaltype === 'FC' ? 'HOD' : approvaltype, approvaltype, approvertype: 'ROLE', ismandatory: true }))) };
+      if (/FROM approval_master/.test(sql) && !sql.includes('Gatepass_RGP_Approval')) return { rows: [{ approvalmasterid: 1 }] };
       if (/INSERT INTO Gatepass_RGP_Entry_Master\s/.test(sql)) return { rows: [{ ...master }] };
       if (/INSERT INTO Gatepass_RGP_Approval\s/.test(sql)) return { rows: [{ rgpapprovalid: nextID++,
         approvallevel: params[3], approvalrole: params[4], approvalorder: params[5], status: "Pending" }] };
       if (/FROM Gatepass_RGP_Entry_Master/.test(sql)) return { rows: [{ ...master, ...masterOverrides }] };
       if (/FROM Gatepass_RGP_Approval\s/.test(sql)) return { rows: stages(stage).map(row =>
-        row.approvalrole === "FC" ? { ...row, approvalrole: financeRole } : row) };
+        row.approvalrole === "FC" ? { ...row, approvalrole: financeRole, approvaltype: financeStageType } : row) };
       return { rows: [], rowCount: 1 };
     },
   }) };
@@ -97,7 +102,7 @@ test("create dispatches a persisted master/approval snapshot only after commit a
   await Promise.all(h.deliveries);
 });
 
-test("creation snapshots custom organization configuration rather than default roles", async () => {
+test("creation snapshots configured builder stages rather than default roles", async () => {
   const h = harness({ customFlow: [{ rgpapprovalconfigid: 70, approvallevel: 2,
     approvalorder: 1, approvalrole: "GM", ismandatory: true }] });
   await h.create({ OrganizationID: 20, DepartmentID: 7, UserID: 1 });
@@ -217,3 +222,14 @@ test("approval controller accepts normalized cancellation and requires remarks",
   assert.match(invalid.message, /Remarks are required for CANCEL/);
   assert.equal(sent.length, 1);
 });
+
+ test("Builder HOD at FC stage authorizes Finance across departments and blocks Engineering HOD", async () => {
+  for (const financeStageType of ["FC", "DOF"]) {
+    const finance = harness({ stage: 1, financeRole: "HOD", financeStageType });
+    assert.equal((await finance.approve({ ...dataFor(1), UserDepartmentID: 99 })).success, true);
+    assert.equal((await Promise.all(finance.deliveries))[0].skipped, false);
+    const wrong = harness({ stage: 1, financeRole: "HOD", financeStageType });
+    assert.equal((await wrong.approve({ ...dataFor(1), DepartmentName: "Engineering" })).success, false);
+    assert.equal(wrong.events.length, 0);
+  }
+ });

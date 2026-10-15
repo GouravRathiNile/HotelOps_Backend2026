@@ -4105,7 +4105,17 @@ const updateCreditApplication = async (data) => {
     `
       SELECT
         ca.CreditApplicationID,
-        ca.Status
+        ca.Status,
+        (
+          SELECT caa.Status
+          FROM Credit_Application_Approval caa
+          WHERE caa.CreditApplicationID = ca.CreditApplicationID
+            AND caa.IsDeleted = FALSE
+          ORDER BY caa.ApprovalOrder ASC,
+                   caa.ApprovalLevel ASC,
+                   caa.CreditApplicationApprovalID ASC
+          LIMIT 1
+        ) AS FirstApprovalStatus
 
       FROM Credit_Application_Entry_Master ca
 
@@ -4142,7 +4152,10 @@ const updateCreditApplication = async (data) => {
   );
 
 if (
-  applicationStatus === "APPROVED"
+  applicationStatus === "APPROVED" ||
+  normalizeCreditApprovalStatus(
+    existingResult.rows[0].firstapprovalstatus,
+  ) === "APPROVED"
 ) {
   await client.query(
     "ROLLBACK",
@@ -4382,7 +4395,17 @@ const deleteCreditApplication = async (data) => {
     `
       SELECT
         ca.CreditApplicationID,
-        ca.Status
+        ca.Status,
+        (
+          SELECT caa.Status
+          FROM Credit_Application_Approval caa
+          WHERE caa.CreditApplicationID = ca.CreditApplicationID
+            AND caa.IsDeleted = FALSE
+          ORDER BY caa.ApprovalOrder ASC,
+                   caa.ApprovalLevel ASC,
+                   caa.CreditApplicationApprovalID ASC
+          LIMIT 1
+        ) AS FirstApprovalStatus
 
       FROM Credit_Application_Entry_Master ca
 
@@ -4412,7 +4435,10 @@ const deleteCreditApplication = async (data) => {
   );
 
 if (
-  applicationStatus === "APPROVED"
+  applicationStatus === "APPROVED" ||
+  normalizeCreditApprovalStatus(
+    existingResult.rows[0].firstapprovalstatus,
+  ) === "APPROVED"
 ) {
   await client.query(
     "ROLLBACK",

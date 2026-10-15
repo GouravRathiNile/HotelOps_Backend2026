@@ -40,12 +40,15 @@ const row = (label, value) => `
     <td style="padding:9px 12px;border-bottom:1px solid #dbe5f0;color:#172033;font-size:13px;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;">${escapeHtml(display(value))}</td>
   </tr>`;
 
-const introduction = (kind, actor) => ({
-  CREATE: "A new OPEX request has been created and is available for your review.",
-  APPROVE: `The OPEX request has been approved by ${display(actor)}.`,
-  REJECT: `The OPEX request has been rejected by ${display(actor)}.`,
-  RETURN: `The OPEX request has been returned by ${display(actor)} for further review.`,
-  HOLD: `The OPEX request has been placed on hold by ${display(actor)}.`,
+const introduction = (kind, actor, isFinalApproval = false) => ({
+  CREATE: "A new Opex request has been created and is awaiting your review.",
+  APPROVE: isFinalApproval
+    ? `Your Opex request has been fully approved by ${display(actor)}.`
+    : `The Opex request has been approved by ${display(actor)} and is awaiting your review.`,
+  AUTO_APPROVED: `Your Opex request has been fully approved by ${display(actor || "System")}.`,
+  REJECT: `The Opex request has been rejected by ${display(actor)}.`,
+  RETURN: `The Opex request has been returned by ${display(actor)} for revision.`,
+  HOLD: `The Opex request has been put on hold by ${display(actor)}.`,
 }[kind] || "An OPEX request requires your attention.");
 
 // OPEX owns this presentation while the shared email service owns SMTP delivery.
@@ -53,7 +56,8 @@ const buildOpexEmail = ({ notificationTitle, organizationName, logoUrl, details 
   const kind = String(details.kind || "").toUpperCase();
   const isCreate = kind === "CREATE";
   const title = `OPEX - ${display(details.item)}`;
-  const message = introduction(kind, details.actionBy);
+  const message = String(details.message || "").trim()
+    || introduction(kind, details.actionBy, details.isFinalApproval === true);
   const requestUrl = opexPageUrl(details.entityId);
   const footerNote = "This is an automated notification. Please do not reply to this email.";
   const text = [

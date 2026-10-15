@@ -693,7 +693,7 @@ const createRGP = async (data) => {
       // USER/REGIONAL: approvalType is the acting capacity.
       const approvalRole =
         approverType === "ROLE"
-          ? configuredRole
+          ? normalizeRGPApprovalRole(configuredRole, approvalType)
           : approvalType;
 
       if (approvalRole.length > 50) {
@@ -1068,8 +1068,8 @@ const getRGPList = async (data) => {
     const normalizeType = (value) =>
       String(value || "ROLE").trim().toUpperCase();
 
-    const normalizeApprovalType = (value) =>
-      String(value || "").trim().toUpperCase();
+    // Legacy DOF and builder FC represent the same finance approval stage.
+    const normalizeApprovalType = normalizeRGPApprovalRole;
 
     const isAssignedApprover = (approval, departmentID) => {
       if (!approval) return false;
@@ -1092,7 +1092,7 @@ const getRGPList = async (data) => {
       }
 
       const role = normalizeRGPApprovalRole(
-        approval.approvalrole
+        approval.approvalrole, approval.approvaltype
       );
 
       if (role !== approvalRole) {
@@ -1199,8 +1199,13 @@ const getRGPList = async (data) => {
             AND
             (
               CASE
+                WHEN UPPER(TRIM(myApproval.ApprovalRole)) = 'HOD'
+                  AND UPPER(TRIM((SELECT detail.ApprovalType
+                    FROM approval_master_details detail
+                    WHERE detail.ApprovalID = myApproval.ApprovalMasterDetailID)))
+                    IN ('FC', 'DOF', 'FINANCE') THEN 'FC'
                 WHEN UPPER(TRIM(myApproval.ApprovalRole))
-                  IN ('FC', 'DOF')
+                  IN ('FC', 'DOF', 'FINANCE')
                   THEN 'FC'
                 ELSE UPPER(TRIM(myApproval.ApprovalRole))
               END
@@ -1208,6 +1213,10 @@ const getRGPList = async (data) => {
             AND
             (
               UPPER(TRIM(myApproval.ApprovalRole)) <> 'HOD'
+              OR (UPPER(TRIM((SELECT detail.ApprovalType
+                FROM approval_master_details detail
+                WHERE detail.ApprovalID = myApproval.ApprovalMasterDetailID)))
+                  IN ('FC', 'DOF', 'FINANCE') AND $${roleIndex} = 'FC')
               OR m.DepartmentID = $${departmentIndex}
             )
           )
@@ -1595,7 +1604,7 @@ const getRGPList = async (data) => {
       );
 
       const canAction = Boolean(
-        !allApproved &&
+        !approvals.some(approval => normalizeStatus(approval.status) === "APPROVED") &&
         row.createdby != null &&
         String(row.createdby) === String(data.UserID)
       );
@@ -2260,8 +2269,8 @@ const getRGPTotalList = async (data) => {
       // New stages = NOT APPLICABLE.
       // ==========================================================
 
-      const normalizeApprovalType = (value) =>
-        String(value || "").trim().toUpperCase();
+      // Match saved DOF approvals to the renamed FC stage without losing history.
+      const normalizeApprovalType = normalizeRGPApprovalRole;
 
       const usedSavedIndexes = new Set();
 
@@ -3699,6 +3708,22 @@ const updateRGP = async (data) => {
       );
     }
 
+    const firstApprovalResult = await client.query(
+      `SELECT Status FROM Gatepass_RGP_Approval
+       WHERE RGPID = $1 AND IsDeleted = FALSE
+       ORDER BY ApprovalOrder ASC, ApprovalLevel ASC, RGPApprovalID ASC
+       LIMIT 1;`,
+      [data.RGPID],
+    );
+
+    if (
+      String(firstApprovalResult.rows[0]?.status || '').trim().toUpperCase() === 'APPROVED' ||
+      String(existing.rows[0].status || '').trim().toUpperCase() === 'APPROVED'
+    ) {
+      await client.query("ROLLBACK");
+      return fail("Approved RGP cannot be modified.", 400);
+    }
+
     // ==========================================================
     // Update Master
     // ==========================================================
@@ -4722,7 +4747,9 @@ const processRGPApproval = async (data) => {
         Status,
         StatusDateTime,
         ActionBy,
-        Remarks
+        Remarks,
+        (SELECT detail.ApprovalType FROM approval_master_details detail
+          WHERE detail.ApprovalID = Gatepass_RGP_Approval.ApprovalMasterDetailID) AS ApprovalType
 
       FROM Gatepass_RGP_Approval
 
@@ -4805,7 +4832,7 @@ const processRGPApproval = async (data) => {
     const currentApprovalRole =
       currentApproverType === "ROLE"
         ? normalizeRGPApprovalRole(
-            currentStage.approvalrole
+            currentStage.approvalrole, currentStage.approvaltype
           )
         : String(currentStage.approvalrole || "").trim();
 
@@ -5158,7 +5185,7 @@ const processRGPApproval = async (data) => {
     const nextApprovalRole =
       nextApproverType === "ROLE"
         ? normalizeRGPApprovalRole(
-            nextStage.approvalrole
+            nextStage.approvalrole, nextStage.approvaltype
           )
         : String(nextStage.approvalrole || "").trim();
 
@@ -15652,6 +15679,7 @@ const getNRGPList = async (data) => {
 
       const CanAction =
         hasValidUserID &&
+        !rawApprovals.some(approval => String(approval.status || '').trim().toUpperCase() === 'APPROVED') &&
         Number(row.createdby) === loggedInUserID;
 
       return {
@@ -16588,7 +16616,8 @@ const updateNRGP = async (data) => {
       WHERE NRGPID = $1
         AND OrganizationID = $2
         AND IsDeleted = FALSE
-      LIMIT 1;
+      LIMIT 1
+      FOR UPDATE;
       `,
       [
         NRGPID,
@@ -16603,6 +16632,22 @@ const updateNRGP = async (data) => {
         "NRGP record not found.",
         404,
       );
+    }
+
+    const firstApprovalResult = await client.query(
+      `SELECT Status FROM Gatepass_NRGP_Approval
+       WHERE NRGPID = $1 AND IsDeleted = FALSE
+       ORDER BY ApprovalOrder ASC, ApprovalLevel ASC, NRGPApprovalID ASC
+       LIMIT 1;`,
+      [data.NRGPID],
+    );
+
+    if (
+      String(firstApprovalResult.rows[0]?.status || '').trim().toUpperCase() === 'APPROVED' ||
+      String(existingResult.rows[0].status || '').trim().toUpperCase() === 'APPROVED'
+    ) {
+      await client.query("ROLLBACK");
+      return fail("Approved NRGP cannot be modified.", 400);
     }
 
     // ============================================================

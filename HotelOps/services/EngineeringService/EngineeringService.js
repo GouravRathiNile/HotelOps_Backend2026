@@ -8,6 +8,7 @@ const generateUrl = require("../../AzurConfigration/Engineering/AzureGetData");
 const { notifyCommittedAMCApproval } = require("./EngineeringAMCApprovalNotificationService");
 const AMCWorkflow = require("./EngineeringAMCWorkflow");
 const AMCWorkflowRead = require("./EngineeringAMCWorkflowRead");
+const { normalizeAMCApprovalStage } = require("./AMCApprovalStage");
 // ===============================================Pdf Helper
 const { generatePdf, loadLogo } = require("../../utils/pdfHelper");
 const PdfPrinter = require("pdfmake");
@@ -12691,6 +12692,7 @@ const getAllAMC = async (data) => {
         ? String(data.ApprovalFlow)
             .trim()
             .toUpperCase()
+            .replace(/^RD-FC$/, "RD")
         : null;
 
     const validApprovalFlows = [
@@ -13585,8 +13587,10 @@ const getAllAMC = async (data) => {
     // ============================================================
 
     for (const record of records) {
+      record.CurrentApprovalRole = record.CurrentApprovalRole
+        ? normalizeAMCApprovalStage(record.CurrentApprovalRole) : null;
       record.Approvals = record.Approvals.map((approval) => ({
-        ApprovalType: approval.ApprovalType || approval.ApprovalRole,
+        ApprovalType: normalizeAMCApprovalStage(approval.ApprovalType || approval.ApprovalRole),
         Status: approval.Status,
         Remarks: approval.Remarks,
       }));
@@ -14430,6 +14434,15 @@ const getAMCById = async (data) => {
       currentStage?.ApprovalRole === approvalRole &&
       normalizeApprovalStatus(currentStage.Status) === "PENDING",
     );
+
+    // Keep legacy assignment checks above on RD; expose the current stage name.
+    AMC.CurrentApprovalRole = AMC.CurrentApprovalRole
+      ? normalizeAMCApprovalStage(AMC.CurrentApprovalRole) : null;
+    AMC.Approvals = AMC.Approvals.map((approval) => ({
+      ...approval,
+      ApprovalRole: normalizeAMCApprovalStage(approval.ApprovalRole),
+      ApprovalType: normalizeAMCApprovalStage(approval.ApprovalType || approval.ApprovalRole),
+    }));
 
     // ============================================================
     // Response
