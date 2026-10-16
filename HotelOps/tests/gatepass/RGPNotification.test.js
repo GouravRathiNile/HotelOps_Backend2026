@@ -49,8 +49,8 @@ const recipientDb = (captured, rows) => ({ query: async (sql, params) => {
 
 const cases = [
   ["CREATE", 0, "HOD", [], "A returnable gate pass for Pump from Engineering requires your approval."],
-  ["APPROVE", 0, "FC", [], "The Engineering Department HOD approved the RGP. It is now awaiting Finance HOD (DOF) approval."],
-  ["APPROVE", 1, "GM", [], "Finance HOD (DOF) approved the RGP. It is now awaiting GM approval."],
+  ["APPROVE", 0, "FC", [], "The Engineering Department HOD approved the RGP. It is now awaiting Finance HOD (DOF) approval and requires your action."],
+  ["APPROVE", 1, "GM", [], "Finance HOD (DOF) approved the RGP. It is now awaiting GM approval and requires your action."],
   ["APPROVE", 2, null, ["1"], "Your returnable gate pass has been approved. Please proceed with checkout."],
 ];
 for (const [stage, role, previous] of [[0, "The Engineering Department HOD", []], [1, "Finance HOD (DOF)", ["2"]], [2, "GM", ["3"]]]) {
@@ -129,7 +129,7 @@ test("nonfinal GM approval follows configured next stage without checkout wordin
   const sent = [];
   await notifyRGPEvent(event, { queryable: recipientDb([]),
     publishNotification: async (data) => { sent.push(data); return { success: true }; } });
-  assert.equal(sent[0].message, "GM approved the RGP. It is now awaiting CEO approval.");
+  assert.equal(sent[0].message, "GM approved the RGP. It is now awaiting CEO approval and requires your action.");
 });
 
 test("custom final approver does not generate a GM checkout instruction", async () => {
@@ -183,7 +183,7 @@ test("Engineering HOD approval routes persisted DOF/FINANCE/FC stages to all Fin
     assert.equal(calls[0][0], event.master.organizationid);
     assert.deepEqual(plain(sent[0].userIds), ["8", "9"]);
     assert.equal(sent[0].message,
-      "The Engineering Department HOD approved the RGP. It is now awaiting Finance HOD (DOF) approval.");
+      "The Engineering Department HOD approved the RGP. It is now awaiting Finance HOD (DOF) approval and requires your action.");
   }
 });
 
@@ -224,3 +224,15 @@ test("long text is bounded, whitespace normalized and Department is not repeated
   assert.doesNotMatch(content.message, /Department Department|\n|  /);
   assert.match(content.message, /…$/);
 });
+
+ test("Builder HOD finance stage routes to Finance, while selected users stay explicit", () => {
+  const event = eventFor("APPROVE", 0);
+  event.approvals[1] = { ...event.approvals[1], approvalrole: "HOD", approvaltype: "FC", approvertype: "ROLE" };
+  assert.equal(resolveRGPEvent(event).recipientRole, "FC");
+  for (const approvertype of ["USER", "REGIONAL"]) {
+    event.approvals[1] = { ...event.approvals[1], approvertype, approveruserid: 77 };
+    const resolved = resolveRGPEvent(event);
+    assert.equal(resolved.recipientRole, null);
+    assert.deepEqual(plain(resolved.directUserIds), ["77"]);
+  }
+ });

@@ -3,6 +3,7 @@ const AppError = require('../../utils/AppError');
 const { formatDate } = require('../../utils/dateFormatter');
 const documentUrl = require('../../AzurConfigration/Engineering/AzureGetData');
 const workflow = require('./EngineeringAMCWorkflow');
+const { normalizeAMCApprovalStage, amcApprovalStageSQL } = require('./AMCApprovalStage');
 const { AMC_RD_ORGANIZATION_ID } = require('./EngineeringAMCApprovalNotificationService');
 const positiveID = (value,name) => {
     if (!/^[1-9]\d*$/.test(String(value??''))) throw new AppError(name+' must be a positive integer',400);
@@ -29,6 +30,7 @@ const base = `WITH actor AS (
       e.make,e.area,e.commissioningdate,e.warrantystartdate,e.warrantyenddate,e.warrantystatus,
       e.scheduleofservicing,e.scheduleday,e.responsibleperson,e.amcstatus,e.amcyearlyexpense,
       aa.amcapprovalid,aa.finalstatus,aa.finalstatusdatetime,aa.approvalmasterid,
+      ${workflow.hasApprovalSQL()} AS hasapproval,
       om.shortname AS organizationshortname,om.organizationname,
       ed.departmentname,person.fullname AS responsiblepersonname,
       a.usertype AS actorrole,a.departmentid AS actordepartmentid,ad.departmentname AS actordepartmentname,
@@ -78,14 +80,15 @@ const buildQuery = (data={},list=false) => {
     const add=(sql,value)=>{values.push(value);conditions.push(sql.replace('?',`$${values.length}`));};
     conditions.push(`(r.organizationaccess OR EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s
       WHERE (s->>'ismandatory')::boolean AND ${assignmentSQL()}))`);
-    // Keep legacy non-approver organization viewers, creator and SuperAdmin access.
-    // Approvers see their current step or recorded stage, never a future pending assignment.
+    // Only the creator, SuperAdmin or a reached configured assignment can view.
+    // Account role/business-stage labels never substitute for a selected user.
     const assigned=`EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s WHERE (s->>'ismandatory')::boolean AND ${assignmentSQL()})`;
     const reached=`EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s WHERE (s->>'ismandatory')::boolean
-      AND ${assignmentSQL()} AND (s->>'stepid'=r.currentstep->>'stepid' OR UPPER(s->>'status')<>'PENDING'))`;
-    const viewer=`(r.createdby=$1 OR r.adminaccess OR (r.organizationaccess AND NOT ${assigned}
-      AND UPPER(TRIM(r.actorrole)) NOT IN ('GM','CEO','FC','RD')
-      AND NOT (UPPER(TRIM(r.actorrole))='HOD' AND UPPER(TRIM(r.actordepartmentname))='FINANCE')))`;
+      AND ${assignmentSQL()} AND (s->>'stepid'=r.currentstep->>'stepid'
+        OR UPPER(TRIM(s->>'status')) IN ('APPROVED','REJECTED','RETURNED')))`;
+    // Organization-wide admin access must not bypass an assigned approval turn.
+    const viewer=`(r.createdby=$1 OR (r.adminaccess AND NOT ${assigned}))`;
+    const statusViewer=`(${viewer} AND NOT ${assigned})`;
     conditions.push(`(${viewer} OR ${reached})`);
     if (data.OrganizationID!=null) {
         positiveID(data.OrganizationID,'OrganizationID');
@@ -107,16 +110,16 @@ const buildQuery = (data={},list=false) => {
         values.push(String(data.Search));
         conditions.push(`concat_ws(' ',r.vendorname,r.vendoremailaddress,r.vendormobilenumber,r.amctype,r.description,r.serialnumber,r.make,r.modelnumber,r.area) ILIKE '%'||$${values.length}||'%'`);
     }
-    const status=workflow.normalized(data.Status),stage=workflow.normalized(data.ApprovalFlow);
+    const status=workflow.normalized(data.Status),stage=normalizeAMCApprovalStage(data.ApprovalFlow);
     if (status && !['PENDING','APPROVED','REJECTED','RETURNED'].includes(status)) throw new AppError('Invalid AMC status',400);
     if (stage) {
-        values.push(stage);let predicate=`UPPER(s->>'approvaltype')=$${values.length}`;
+        values.push(stage);let predicate=`${amcApprovalStageSQL("s->>'approvaltype'")}=$${values.length}`;
         if (status) {values.push(status);predicate+=` AND UPPER(s->>'status')=$${values.length}`;
             if (status==='PENDING') predicate+=` AND s->>'stepid'=r.currentstep->>'stepid'`;}
         conditions.push(`EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s WHERE ${predicate})`);
     } else if (status) {
         values.push(status);const param=`$${values.length}`;
-        conditions.push(`((${viewer} AND UPPER(COALESCE(r.currentstep->>'status',r.finalstatus,'Approved'))=${param})
+        conditions.push(`((${statusViewer} AND UPPER(COALESCE(r.currentstep->>'status',r.finalstatus,'Approved'))=${param})
           OR EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s WHERE (s->>'ismandatory')::boolean
             AND ${assignmentSQL()} AND UPPER(s->>'status')=${param}
             AND (${param}<>'PENDING' OR s->>'stepid'=r.currentstep->>'stepid')))`);
@@ -128,12 +131,17 @@ const mapRow = (row,userID,mapAMC) => {
     const actor={userid:userID,usertype:row.actorrole,departmentid:row.actordepartmentid,
       departmentname:row.actordepartmentname,departmentorganizationid:row.actordepartmentorganizationid,
       organizationaccess:row.organizationaccess,regionaleligible:row.regionaleligible,iscentralrd:row.iscentralrd};
-    const result=mapAMC({...row,currentapprovalrole:workflow.normalized(row.finalstatus)==='APPROVED'?null:current?.approvaltype,
+    const result=mapAMC({...row,currentapprovalrole:workflow.normalized(row.finalstatus)==='APPROVED'?null:normalizeAMCApprovalStage(current?.approvaltype)||null,
       currentstatus:workflow.normalized(row.finalstatus)==='APPROVED'?'Approved':current?.status||row.finalstatus||'Approved'});
     result.CurrentApprovalStepID=workflow.normalized(row.finalstatus)==='APPROVED'
       || String(current?.stepid??'').startsWith('legacy:') ? null : current?.stepid||null;
     result.WorkflowSource=row.approvalmasterid==null?'LEGACY':'BUILDER';
     result.CanApprove=steps.some(step=>workflow.allowedActions(row,steps,step,actor).includes('APPROVE'));
+    result.CanAction=workflow.canModify(row,actor);
+    result.CanEdit=result.CanAction;
+    result.CanDelete=result.CanAction;
+    result.AllowedActions=current?workflow.allowedActions(row,steps,current,actor):[];
+    result.Revision=current?.revision??null;
     result.DepartmentName=row.departmentname??null;
     result.DepartmentID=row.departmentid==null?null:Number(row.departmentid);
     result.ResponsiblePersonName=row.responsiblepersonname??null;
@@ -141,10 +149,10 @@ const mapRow = (row,userID,mapAMC) => {
     result.AMCYearlyExpense=row.amcyearlyexpense==null?null:Number(row.amcyearlyexpense);
     const occurrences=new Map();
     result.Approvals=steps.map(step=>{
-        const stage=workflow.normalized(step.approvaltype),occurrence=(occurrences.get(stage)||0)+1;
+        const stage=normalizeAMCApprovalStage(step.approvaltype),occurrence=(occurrences.get(stage)||0)+1;
         occurrences.set(stage,occurrence);
         const actions=workflow.allowedActions(row,steps,step,actor);
-        return {LevelNo:step.level,Level:step.level,ApprovalRole:step.approvaltype,ApprovalType:step.approvaltype,
+        return {LevelNo:step.level,Level:step.level,ApprovalRole:stage,ApprovalType:stage,
           ApprovalStepID:String(step.stepid).startsWith('legacy:')?null:step.stepid,ColumnKey:`stage:${stage}:${occurrence}`,ApproverType:step.approvertype,
           Role:step.role,AssignedUserID:step.assigneduserid,IsMandatory:step.ismandatory,
           Status:step.ismandatory===false&&step.status==='Pending'?'Skipped':step.status,
@@ -181,9 +189,9 @@ const list = async (data,mapAMC) => {
       'VendorPincode','ScheduleOfServicing','ScheduleDay','ResponsiblePerson','FinalStatusDateTime']) delete row[field];
     const headerQuery=buildQuery({UserID:data.UserID,OrganizationID:data.OrganizationID},true);
     const columns=await pool.query(`${headerQuery.cte} SELECT columnkey,label,MIN(level) AS level FROM (
-      SELECT 'stage:'||UPPER(s->>'approvaltype')||':'||ROW_NUMBER() OVER(
-        PARTITION BY r.amcid,UPPER(s->>'approvaltype') ORDER BY (s->>'level')::int) AS columnkey,
-        s->>'approvaltype' AS label,(s->>'level')::int AS level
+      SELECT 'stage:'||${amcApprovalStageSQL("s->>'approvaltype'")}||':'||ROW_NUMBER() OVER(
+        PARTITION BY r.amcid,${amcApprovalStageSQL("s->>'approvaltype'")} ORDER BY (s->>'level')::int) AS columnkey,
+        ${amcApprovalStageSQL("s->>'approvaltype'")} AS label,(s->>'level')::int AS level
       FROM records r CROSS JOIN LATERAL jsonb_array_elements(r.steps) s ${headerQuery.where}
     ) columns GROUP BY columnkey,label ORDER BY MIN(level),label,columnkey`,headerQuery.values);
     const TotalCount=Number(count.rows[0].count);

@@ -34,6 +34,11 @@ const saveApprovalFlow = async (data = {}) => {
         client = await pool.connect();
         await client.query("BEGIN");
         inTransaction = true;
+        // Serialize saves in a module so concurrent creates/renames cannot bypass
+        // the duplicate check; different flow names remain valid in that module.
+        await client.query(`SELECT pg_advisory_xact_lock(
+            hashtext($1::text), hashtext(UPPER(TRIM($2::text))))`,
+            [OrganizationID, ModuleName]);
         let existing;
         if (updating) {
             const result = await client.query(`
@@ -45,11 +50,12 @@ const saveApprovalFlow = async (data = {}) => {
         }
         const duplicate = await client.query(`
             SELECT approvalmasterid FROM public.approval_master
-            WHERE organizationid = $1 AND modulename = $2 AND isdelete = FALSE
+            WHERE organizationid = $1 AND UPPER(TRIM(modulename)) = UPPER(TRIM($2))
+                AND UPPER(TRIM(flowname)) = UPPER(TRIM($4)) AND isdelete = FALSE
                 AND ($3::bigint IS NULL OR approvalmasterid <> $3)
-            LIMIT 1`, [OrganizationID, ModuleName, ApprovalMasterID ?? null]);
+            LIMIT 1`, [OrganizationID, ModuleName, ApprovalMasterID ?? null, FlowName]);
         if (duplicate.rows.length) {
-            throw new AppError("Approval Flow already exists for this module", 409);
+            throw new AppError("Approval Flow already exists with this name for this module", 409);
         }
         // Omission preserves an existing status; new flows default to active.
         const IsActive = input.IsActive ?? existing?.isactive ?? true;

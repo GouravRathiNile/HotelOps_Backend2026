@@ -5,6 +5,23 @@ const read=require('../../services/EngineeringService/EngineeringAMCWorkflowRead
 const record={amcid:'1',organizationid:'20',departmentid:'2',createdby:'7',finalstatus:'Pending'};
 const actor={userid:'6',usertype:'HOD',departmentname:'Finance',departmentorganizationid:'20',organizationaccess:true,iscentralrd:false};
 const step={stepid:'1',level:1,approvertype:'ROLE',role:'FC',approvaltype:'FC',ismandatory:true,status:'Pending',revision:0};
+
+test('Legacy RD and builder RD-FC expose the same stage while preserving approval history and assignment',()=>{
+ for (const approvaltype of ['RD','RD-FC']) {
+  const mapped=read.mapRow({...record,steps:[{...step,role:'RD',approvaltype,status:'Approved',remarks:'Reviewed'}],
+   finalstatus:'Approved',iscentralrd:true},'6',row=>({CurrentApprovalRole:row.currentapprovalrole,Documents:[]}));
+  assert.equal(mapped.Approvals[0].ApprovalType,'RD-FC');
+  assert.equal(mapped.Approvals[0].ApprovalRole,'RD-FC');
+  assert.equal(mapped.Approvals[0].ColumnKey,'stage:RD-FC:1');
+  assert.equal(mapped.Approvals[0].Status,'Approved');
+  assert.equal(mapped.Approvals[0].Remarks,'Reviewed');
+  assert.equal(mapped.Approvals[0].Role,'RD');
+ }
+ const oldFilter=read.buildQuery({UserID:'6',OrganizationID:'20',ApprovalFlow:'RD'},true);
+ const newFilter=read.buildQuery({UserID:'6',OrganizationID:'20',ApprovalFlow:'RD-FC'},true);
+ assert.deepEqual(oldFilter,newFilter);
+ assert.ok(newFilter.values.includes('RD-FC'));
+});
 test('AMC FC and central RD retain distinct live assignment rules',()=>{
  assert.equal(workflow.isAssigned(step,actor,record),true);
  assert.equal(workflow.isAssigned(step,{...actor,iscentralrd:true},record),false);
@@ -109,4 +126,29 @@ test('AMC and AMC Renewal aliases share exactly-one-flow validation',async()=>{
   assert.match(calls[0],/IN \('AMC','AMC RENEWAL'\)/);
   assert.equal(calls.length,1);
  }
+});
+
+test('Only creator can edit/delete until first approval; role and admin do not grant edit rights',()=>{
+ const pending={...record,createdby:'7',hasapproval:false};
+ assert.equal(workflow.canModify(pending,{userid:'7'}),true);
+ assert.equal(workflow.canModify(pending,{userid:'6',usertype:'GM'}),false);
+ assert.equal(workflow.canModify(pending,{userid:'1',usertype:'SuperAdmin'}),false);
+ assert.equal(workflow.canModify({...pending,hasapproval:true},{userid:'7'}),false);
+ assert.equal(workflow.canModify({...pending,finalstatus:'Approved'},{userid:'7'}),false);
+ assert.equal(workflow.canModify({...pending,isdeleted:true},{userid:'7'}),false);
+ assert.equal(workflow.canModify({...pending,finalstatus:'Returned'},{userid:'7'}),true);
+});
+test('Selected USER acts at GM stage; account GM has no authority',()=>{
+ const assigned={...step,approvertype:'USER',role:null,assigneduserid:'13',approvaltype:'GM'};
+ const user={...actor,userid:'13',usertype:'HOD'};
+ const gm={...actor,userid:'4',usertype:'GM'};
+ assert.equal(workflow.allowedActions(record,[assigned],assigned,user).includes('APPROVE'),true);
+ assert.deepEqual(workflow.allowedActions(record,[assigned],assigned,gm),[]);
+ const mapped=read.mapRow({...record,steps:[assigned],actorrole:'HOD',organizationaccess:true,
+   hasapproval:false},'13',row=>({AMCID:Number(row.amcid),Documents:[]}));
+ assert.equal(mapped.CanApprove,true);assert.equal(mapped.CanEdit,false);
+ assert.deepEqual(mapped.AllowedActions,['APPROVE','REJECT','RETURN']);
+ const other=read.mapRow({...record,steps:[assigned],actorrole:'GM',organizationaccess:true,
+   hasapproval:false},'4',row=>({Documents:[]}));
+ assert.equal(other.CanApprove,false);assert.deepEqual(other.AllowedActions,[]);
 });

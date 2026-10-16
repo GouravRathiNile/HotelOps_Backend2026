@@ -3,6 +3,26 @@ const { normalized, currentStep, canAct } = require('../CapexService/CapexWorkfl
 const { AMC_RD_ORGANIZATION_ID } = require('./EngineeringAMCApprovalNotificationService');
 const validID = value => /^[1-9]\d*$/.test(String(value ?? ''));
 const statuses = { APPROVE: 'Approved', REJECT: 'Rejected', RETURN: 'Returned' };
+const hasApprovalSQL = (master='m',header='aa') => `(
+    EXISTS(SELECT 1 FROM engineering_amc_workflow_step approved WHERE approved.amcid=${master}.amcid AND UPPER(TRIM(approved.status))='APPROVED')
+    OR EXISTS(SELECT 1 FROM engineering_amc_workflow_action history JOIN engineering_amc_workflow_step approved USING(stepid)
+      WHERE approved.amcid=${master}.amcid AND history.action='APPROVE')
+    OR EXISTS(SELECT 1 FROM jsonb_each_text(to_jsonb(${header})) legacy
+      WHERE legacy.key IN ('fcstatus','gmstatus','rdstatus','ceostatus','finalstatus') AND UPPER(TRIM(legacy.value))='APPROVED'))`;
+const canModify = (record,actor) => !record.isdeleted && record.hasapproval===false
+    && normalized(record.finalstatus)!=='APPROVED' && validID(actor?.userid)
+    && String(record.createdby)===String(actor.userid);
+const authorizeModify = async (client,amcID,userID,organizationID=null) => {
+    const result=await client.query(`SELECT m.*,aa.finalstatus,${hasApprovalSQL()} AS hasapproval
+      FROM engineering_amc_master m LEFT JOIN engineering_amc_approval aa ON aa.amcid=m.amcid AND NOT aa.isdeleted
+      WHERE m.amcid=$1 AND NOT m.isdeleted AND ($2::bigint IS NULL OR m.organizationid=$2)
+      FOR UPDATE OF m`,[amcID,organizationID]);
+    if (!result.rows.length) throw new AppError('AMC record not found',404);
+    const record=result.rows[0];
+    const actor=await getActor(client,record.organizationid,userID,record.amcid);
+    if (!canModify(record,actor)) throw new AppError('Only the AMC creator can edit or delete before the first approval',403);
+    return record;
+};
 
 const regionalEligibilitySQL = (user='um', organization='om') => `EXISTS (
     SELECT 1 FROM user_primary_organization p JOIN organization_master company ON company.organizationid=p.organizationid
@@ -156,4 +176,5 @@ const applyAction = async (client,record,data) => {
     return {step,next,action,status,finalStatus,recipients,kind:final?'FINAL_APPROVE':action};
 };
 module.exports={normalized,currentStep,canAct,statuses,isAssigned,allowedActions,loadSteps,getActor,
-    regionalEligibilitySQL,centralRDSQL,externalAccessSQL,recipientIds,snapshot,applyAction,syncEquipment};
+    regionalEligibilitySQL,centralRDSQL,externalAccessSQL,recipientIds,snapshot,applyAction,syncEquipment,
+    hasApprovalSQL,canModify,authorizeModify};

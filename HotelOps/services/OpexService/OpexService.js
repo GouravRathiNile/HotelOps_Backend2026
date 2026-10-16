@@ -245,6 +245,7 @@ const notifyOpex = async ({ organizationID, opexID, department, roles, directUse
     notificationTitle: content.title,
     details: {
       entityId: opexID, kind, item, department, quantity: qty, rate, total, description,
+      message: content.message, isFinalApproval,
       actionQuantity, remark, actionBy: context.actorName || approverRole || "-", actionDate
     },
   })).catch((error) => console.error("OPEX email dispatch failed:", error.message));
@@ -1552,7 +1553,8 @@ const processOpexApproval = async (data) => {
     const dynamic=await OpexWorkflow.applyAction(client,Opex,data,actor);
     if(dynamic) {
       const target=dynamic.change.action === "APPROVE" ? dynamic.next : dynamic.step;
-      const recipients=[...new Set([...(target ? await OpexWorkflow.recipientIds(client,Opex,target) : []),String(Opex.createdby)])];
+      const recipients=dynamic.change.action === "APPROVE" && target
+        ? await OpexWorkflow.recipientIds(client,Opex,target) : [String(Opex.createdby)];
       await client.query("COMMIT");
       transactionStarted=false;
       notifyCommittedOpex({organizationID:Opex.organizationid,opexID:Opex.opexid,

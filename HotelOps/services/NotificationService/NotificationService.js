@@ -16,6 +16,7 @@ const NOTIFICATION_MODULE_NAMES = Object.freeze({
     incidentreport: "Incident Report",
     opex: "Opex",
     engineering: "Engineering",
+    amcrenewal: "AMC Renewal",
     minutesofmeeting: "Minutes of Meeting",
     creditapplication: "Credit Application",
     gatepass: "Gatepass",
@@ -52,6 +53,14 @@ const normalizeNotificationModuleName = (moduleName) => {
     const normalizedKey = trimmed.toLowerCase().replace(/\s+/g, "");
     return NOTIFICATION_MODULE_NAMES[normalizedKey] || trimmed;
 };
+
+// Panel category differs from the persisted delivery module for legacy AMC
+// workflow events. Expiry summaries remain Engineering, including AMC expiry.
+const notificationCategorySQL = `CASE
+    WHEN UPPER(TRIM(n.module_name)) = 'ENGINEERING'
+        AND UPPER(TRIM(COALESCE(n.entity_type, ''))) = 'AMC'
+        THEN 'AMC Renewal'
+    ELSE n.module_name END`;
 
 // Generic Firebase delivery used after a notification has been committed.
 const pushNotificationToRecipients = async (notification, userIds) => {
@@ -639,7 +648,7 @@ const getNotifications = async (data) => {
         ) {
 
             conditions.push(
-                `n.module_name = $${parameterIndex}`
+                `${notificationCategorySQL} = $${parameterIndex}`
             );
 
             queryParams.push(
@@ -688,7 +697,7 @@ const getNotifications = async (data) => {
                 n.title,
                 n.message,
                 n.type,
-                n.module_name,
+                ${notificationCategorySQL} AS module_name,
                 n.action,
                 n.entity_type,
                 n.entity_id,
@@ -869,7 +878,7 @@ const getUnreadCount = async (userId, moduleName = null) => {
         ) {
 
             conditions.push(
-                `n.module_name = $${parameterIndex}`
+                `${notificationCategorySQL} = $${parameterIndex}`
             );
 
             queryParams.push(
@@ -914,7 +923,7 @@ const getUnreadCount = async (userId, moduleName = null) => {
         const moduleResult = await pool.query(
             `
             SELECT
-                n.module_name AS "moduleName",
+                ${notificationCategorySQL} AS "moduleName",
                 COUNT(*) AS unread_count
 
             FROM notification_recipients nr
@@ -924,9 +933,9 @@ const getUnreadCount = async (userId, moduleName = null) => {
 
             ${whereClause}
 
-            GROUP BY n.module_name
+            GROUP BY ${notificationCategorySQL}
 
-            ORDER BY unread_count DESC, n.module_name ASC;
+            ORDER BY unread_count DESC, "moduleName" ASC;
             `,
             queryParams
         );

@@ -21,12 +21,15 @@ const capexPageUrl = (entityId) => {
   return `${base}/Capex`;
 };
 const row = (label, value) => `<tr><td style="width:38%;padding:9px 12px;border-bottom:1px solid #dbe5f0;background:#f5f8fc;color:#52647a;font-size:13px;font-weight:600;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;">${escapeHtml(label)}</td><td style="padding:9px 12px;border-bottom:1px solid #dbe5f0;color:#172033;font-size:13px;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;">${escapeHtml(display(value))}</td></tr>`;
-const introduction = (kind, actor) => ({
-  CREATE: "A new CAPEX request has been created and is available for your review.",
-  APPROVE: `The CAPEX request has been approved by ${display(actor)}.`,
-  REJECT: `The CAPEX request has been rejected by ${display(actor)}.`,
-  RETURN: `The CAPEX request has been returned by ${display(actor)} for further review.`,
-  HOLD: `The CAPEX request has been placed on hold by ${display(actor)}.`,
+const introduction = (kind, actor, isFinalApproval = false) => ({
+  CREATE: "A new Capex request has been created and is awaiting your review.",
+  APPROVE: isFinalApproval
+    ? `Your Capex request has been fully approved by ${display(actor)}.`
+    : `The Capex request has been approved by ${display(actor)} and is awaiting your review.`,
+  AUTO_APPROVED: `Your Capex request has been fully approved by ${display(actor || "System")}.`,
+  REJECT: `The Capex request has been rejected by ${display(actor)}.`,
+  RETURN: `The Capex request has been returned by ${display(actor)} for revision.`,
+  HOLD: `The Capex request has been put on hold by ${display(actor)}.`,
 }[kind] || "A CAPEX request requires your attention.");
 
 const sendNotificationEmail = async (email, notification) => {
@@ -38,7 +41,8 @@ const sendNotificationEmail = async (email, notification) => {
   const kind = String(details.kind || "").toUpperCase();
   const isCreate = kind === "CREATE";
   const emailTitle = `CAPEX - ${display(details.item)}`;
-  const actionMessage = introduction(kind, details.actionBy);
+  const actionMessage = String(details.message || "").trim()
+    || introduction(kind, details.actionBy, details.isFinalApproval === true);
   const subject = `[HotelOps] ${title}`;
   const note = "This is an automated notification from HotelOps. Please do not reply to this email.";
   const text = [emailTitle, "Dear Sir/Madam,", actionMessage, `Item: ${display(details.item)}`,

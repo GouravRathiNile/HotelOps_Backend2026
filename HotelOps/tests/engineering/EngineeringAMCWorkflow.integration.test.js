@@ -65,7 +65,7 @@ test('AMC migration preserves legacy data; Builder snapshots, actions and equipm
   const details=[
    {Level:1,ApproverType:'REGIONAL',Role:String(regional.userid),ApprovalType:'REGIONAL REVIEW',IsMandatory:true},
    {Level:2,ApproverType:'ROLE',Role:'FC',ApprovalType:'FC',IsMandatory:false},
-   {Level:3,ApproverType:'USER',Role:String(creator.userid),ApprovalType:'CUSTOM FINAL',IsMandatory:true},
+   {Level:3,ApproverType:'USER',Role:String(creator.userid),ApprovalType:'GM',IsMandatory:true},
   ];
   const saved=await builder.saveApprovalFlow({OrganizationID:amc.organizationid,ApprovalMasterID:flow.approvalmasterid,
    FlowName:'AMC reordered test',ModuleName:'AMC',Details:details.slice().reverse(),UserID:creator.userid});
@@ -93,6 +93,20 @@ test('AMC migration preserves legacy data; Builder snapshots, actions and equipm
   assert.deepEqual(Array.from(sent.at(-1).data.userIds),[String(regional.userid)]);
   const steps=await workflow.loadSteps(client,record.amcid);
   assert.deepEqual(steps.map(s=>s.approvaltype),details.map(s=>s.ApprovalType));
+  const creatorDetail=await service.getAMCById({AMCID:record.amcid,EquipmentID:record.equipmentid,UserID:creator.userid});
+  assert.equal(creatorDetail.data.CanEdit,true);assert.equal(creatorDetail.data.CanDelete,true);
+  const deniedEdit=await service.updateAMC({AMCID:record.amcid,OrganizationID:record.organizationid,
+    UserID:regional.userid,Changes:{VendorName:'Unauthorized'}});
+  assert.equal(deniedEdit.statusCode,403);
+  const deniedDelete=await service.deleteAMC({AMCID:record.amcid,UserID:regional.userid});
+  assert.equal(deniedDelete.statusCode,403);
+  const edit=await service.updateAMC({AMCID:record.amcid,OrganizationID:record.organizationid,
+    UserID:creator.userid,Changes:{VendorName:'Creator edited before approval'}});
+  assert.equal(edit.success,true,edit.message);
+  const gm=(await query(`SELECT um.userid FROM user_master um JOIN user_org_mapping member USING(userid)
+    WHERE member.organizationid=$1 AND member.isactive AND NOT member.isdeleted AND UPPER(TRIM(um.usertype))='GM'
+      AND um.isactive AND NOT um.isdeleted AND NOT um.islocked AND um.userid<>$2 LIMIT 1`,[record.organizationid,creator.userid])).rows[0];
+  assert.ok(gm);
   const ractor=await workflow.getActor(client,record.organizationid,regional.userid,record.amcid);
   assert.equal(ractor.organizationaccess,false);assert.equal(ractor.regionaleligible,true);
   const detail=await service.getAMCById({AMCID:record.amcid,EquipmentID:record.equipmentid,UserID:regional.userid});
@@ -103,6 +117,18 @@ test('AMC migration preserves legacy data; Builder snapshots, actions and equipm
   const first=await service.processAMCApproval({AMCID:record.amcid,UserID:regional.userid,Action:'APPROVE',ApprovalStepID:steps[0].stepid,Revision:0});
   assert.equal(first.success,true,first.message);await drain();
   assert.deepEqual(Array.from(sent.at(-1).data.userIds),[String(creator.userid)]);
+  const active=await service.getAMCById({AMCID:record.amcid,EquipmentID:record.equipmentid,UserID:creator.userid});
+  assert.equal(active.data.CanApprove,true);assert.equal(active.data.CanEdit,false);assert.equal(active.data.CanDelete,false);
+  assert.deepEqual(Array.from(active.data.AllowedActions),['APPROVE','REJECT','RETURN']);
+  const wrongGM=await service.getAMCById({AMCID:record.amcid,EquipmentID:record.equipmentid,UserID:gm.userid});
+  assert.equal(wrongGM.statusCode,404);
+  const gmAction=await service.processAMCApproval({AMCID:record.amcid,UserID:gm.userid,Action:'APPROVE',ApprovalStepID:steps[2].stepid});
+  assert.equal(gmAction.statusCode,403);
+  const lockedEdit=await service.updateAMC({AMCID:record.amcid,OrganizationID:record.organizationid,
+    UserID:creator.userid,Changes:{VendorName:'Not permitted after approval'}});
+  assert.equal(lockedEdit.statusCode,403);
+  const lockedDelete=await service.deleteAMC({AMCID:record.amcid,UserID:creator.userid});
+  assert.equal(lockedDelete.statusCode,403);
   assert.deepEqual((await query('SELECT to_jsonb(e) AS row FROM engineering_equipment_entry_master e WHERE equipmentid=$1',[record.equipmentid])).rows[0],eqBefore);
   const stale=await service.processAMCApproval({AMCID:record.amcid,UserID:creator.userid,Action:'APPROVE',ApprovalStepID:steps[2].stepid,Revision:9});
   assert.equal(stale.statusCode,409);
@@ -121,6 +147,10 @@ test('AMC migration preserves legacy data; Builder snapshots, actions and equipm
    const repeat=await service.processAMCApproval({AMCID:row.amcid,UserID:regional.userid,Action:'APPROVE',ApprovalStepID:ss[0].stepid});
    assert.equal(repeat.statusCode,403);
   }
+  const deletable=await create();
+  const deleted=await service.deleteAMC({AMCID:deletable.amcid,UserID:creator.userid});
+  assert.equal(deleted.success,true,deleted.message);
+  assert.equal((await query('SELECT isdeleted FROM engineering_amc_master WHERE amcid=$1',[deletable.amcid])).rows[0].isdeleted,true);
   // Optional-only flow is finalized and equipment synchronization remains atomic.
   const optional=await builder.saveApprovalFlow({OrganizationID:amc.organizationid,ApprovalMasterID:flow.approvalmasterid,
    FlowName:'AMC optional test',ModuleName:'AMC',Details:details.map(d=>({...d,IsMandatory:false})),UserID:creator.userid});
@@ -131,4 +161,49 @@ test('AMC migration preserves legacy data; Builder snapshots, actions and equipm
   await drain();pool.query=originalQuery;pool.connect=originalConnect;
   await client.query('ROLLBACK');client.release();await pool.end();
  }
+});
+
+
+test('AMC visibility SQL enforces every approval turn, including CEO admin and creator inboxes', {
+ skip:process.env.AMC_VISIBILITY_DB_TEST!=='1',timeout:30000
+}, async()=>{
+ const {Pool}=require('pg');
+ const {pool}=require('../../db');
+ const read=require('../../services/EngineeringService/EngineeringAMCWorkflowRead');
+ const db=new Pool({...pool.options,password:pool.options.password,connectionTimeoutMillis:5000,statement_timeout:5000});
+ try {
+  const queries=[],values=[],expectations=[];
+  for (const type of ['ROLE','USER','REGIONAL']) {
+   for (let turn=0;turn<4;turn++) {
+    const roles=['FC','GM','RD','CEO'];
+    const steps=roles.map((role,i)=>({stepid:String(i+1),level:i+1,approvertype:type,
+     role,approvaltype:role==='RD'?'RD-FC':role,assigneduserid:String(100+i),ismandatory:true,
+     status:i<turn?'Approved':'Pending'}));
+    for(let actor=0;actor<4;actor++) {
+     for(const creator of [false,true]) {
+      const fixture={organizationid:20,createdby:creator?100+actor:999,adminaccess:actor===3,
+       organizationaccess:true,regionaleligible:true,iscentralrd:actor===2,companyorganizationid:20,
+       actorrole:actor===0||actor===2?'HOD':roles[actor],actordepartmentname:'FINANCE',
+       actordepartmentorganizationid:20,actordepartmentid:2,departmentid:2,
+       steps,currentstep:steps[turn],finalstatus:'Pending'};
+      for(const status of ['Pending','Approved']) {
+       const q=read.buildQuery({UserID:String(100+actor),OrganizationID:'20',Status:status},true);
+       const sql=`WITH actor_parameter AS (SELECT 1 FROM (VALUES(1::bigint)) a(userid) WHERE userid=$1), records AS (SELECT * FROM jsonb_to_record($${q.values.length+1}::jsonb) AS r(
+        organizationid bigint,createdby bigint,adminaccess boolean,organizationaccess boolean,
+        regionaleligible boolean,iscentralrd boolean,companyorganizationid bigint,actorrole text,
+        actordepartmentname text,actordepartmentorganizationid bigint,actordepartmentid bigint,
+        departmentid bigint,steps jsonb,currentstep jsonb,finalstatus text))
+        SELECT COUNT(*)::int AS count FROM records r ${q.where}`;
+       const offset=values.length;
+       queries.push('('+sql.replace(/\$(\d+)/g,(_,n)=>'$'+(Number(n)+offset))+')');
+       values.push(...q.values,JSON.stringify(fixture));
+       expectations.push({expected:Number(status==='Pending'?actor===turn:actor<turn),type,turn,actor,creator,status});
+      }
+     }
+    }
+   }
+  }
+  const result=await db.query(queries.join(' UNION ALL '),values);
+  result.rows.forEach((row,i)=>assert.equal(row.count,expectations[i].expected,JSON.stringify(expectations[i])));
+ } finally { await db.end(); await pool.end(); }
 });

@@ -11,7 +11,7 @@ test("NotificationList count and data queries are always unread-only", () => {
   const getNotifications = source.match(/const getNotifications = async \(data\)[\s\S]*?\n\};/)?.[0] || "";
   assert.match(getNotifications, /const conditions = \[\s*"nr\.user_id = \$1",\s*"nr\.is_read = FALSE",\s*\]/);
   assert.match(getNotifications, /FROM notifications n[\s\S]*\$\{whereClause\}/);
-  assert.match(getNotifications, /n\.module_name = \$\$\{parameterIndex\}/);
+  assert.match(getNotifications, /\$\{notificationCategorySQL\} = \$\$\{parameterIndex\}/);
   assert.doesNotMatch(getNotifications, /normalizedIsRead|nr\.is_read = \$\$\{parameterIndex\}/);
 });
 

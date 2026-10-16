@@ -58,7 +58,7 @@ test("notification email uses the CAPEX notification content in the generic temp
     assert.match(sent[0].html, />CAPEX - Printer<\/div>/);
     assert.doesNotMatch(sent[0].html, />CAPEX - Printer - Finance - HJU<\/div>/);
     assert.match(sent[0].html, /Dear Sir\/Madam,/);
-    assert.match(sent[0].html, /A new CAPEX request has been created and is available for your review\./);
+    assert.match(sent[0].html, /A new Capex request has been created and is awaiting your review\./);
     assert.match(sent[0].html, /https:\/\/assets\.example\.com\/hju\.png/);
     assert.match(sent[0].html, /Howard Johnson Udaipur/);
     assert.match(sent[0].html, /CAPEX Details/);
@@ -96,7 +96,7 @@ test("CAPEX action email contains action details and configurable request link",
       assert.doesNotMatch(sent[0].html, /<\/tr>\s*<div[^>]*>\s*<div[^>]*>Action Details/);
       assert.match(sent[0].html, />CAPEX - Printer<\/div>/);
       assert.match(sent[0].html, /Dear Sir\/Madam,/);
-      assert.match(sent[0].html, /The CAPEX request has been approved by General Manager\./);
+      assert.match(sent[0].html, /The Capex request has been approved by General Manager and is awaiting your review\./);
       assert.match(sent[0].html, /Action Quantity/);
       assert.match(sent[0].html, /Approved/);
       assert.match(sent[0].html, /General Manager/);
@@ -112,9 +112,9 @@ test("CAPEX action email contains action details and configurable request link",
 test("CAPEX action emails show the finalized action-specific introduction", async () => {
   await withMockTransport(async ({ sendNotificationEmail }, sent) => {
     const expected = {
-      REJECT: "The CAPEX request has been rejected by CEO.",
-      RETURN: "The CAPEX request has been returned by CEO for further review.",
-      HOLD: "The CAPEX request has been placed on hold by CEO.",
+      REJECT: "The Capex request has been rejected by CEO.",
+      RETURN: "The Capex request has been returned by CEO for revision.",
+      HOLD: "The Capex request has been put on hold by CEO.",
     };
     for (const [kind, introduction] of Object.entries(expected)) {
       await sendNotificationEmail("creator@example.com", {
@@ -129,6 +129,32 @@ test("CAPEX action emails show the finalized action-specific introduction", asyn
       assert.match(sent.at(-1).html, new RegExp(introduction.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
       assert.equal((sent.at(-1).html.match(/Only once/g) || []).length, 1);
     }
+  });
+});
+
+test("CAPEX final and automatic approval emails explain completion in text and HTML", async () => {
+  await withMockTransport(async ({ sendNotificationEmail }, sent) => {
+    for (const details of [
+      { kind: "APPROVE", isFinalApproval: true, actionBy: "CEO" },
+      { kind: "AUTO_APPROVED", actionBy: "System" },
+    ]) {
+      await sendNotificationEmail("creator@example.com", { email_data: details });
+      const expected = `Your Capex request has been fully approved by ${details.actionBy}.`;
+      assert.ok(sent.at(-1).text.includes(expected));
+      assert.ok(sent.at(-1).html.includes(expected));
+      assert.doesNotMatch(sent.at(-1).html, /awaiting your review/);
+    }
+  });
+});
+
+test("CAPEX email uses the finalized notification message and escapes HTML", async () => {
+  await withMockTransport(async ({ sendNotificationEmail }, sent) => {
+    const message = "The Capex request has been approved by Alex <GM> and is awaiting your review.";
+    await sendNotificationEmail("next@example.com", { email_data: {
+      kind: "APPROVE", actionBy: "Alex", message,
+    } });
+    assert.ok(sent[0].text.includes(message));
+    assert.ok(sent[0].html.includes(message.replace("<GM>", "&lt;GM&gt;")));
   });
 });
 

@@ -103,6 +103,7 @@ const notifyCapex = async ({ organizationID, capexID, roles, directUserIds,
       // command; it is not persisted and does not alter notification content.
       emailData: {
         kind, item, department, quantity: qty, rate, total, description,
+        message: content.message, isFinalApproval,
         actionQuantity, remark,
         actionBy: recipientContext.actorName || approverRole || "-",
         actionDate,
