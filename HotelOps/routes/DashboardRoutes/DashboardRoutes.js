@@ -6,7 +6,9 @@ const {
   getCEOGlitchAlerts,
   getCEOIncidentAlerts,
   getCEOExpiredAMCAlerts,
-  getCEOHotelRevenueVsBudget
+  getCEOHotelRevenueVsBudget,
+  getCEODSRChart,
+  getCEOSRMSRequests,
 } = require(
   "../../controllers/DashboardController/DashboardController",
 )
@@ -26,4 +28,8 @@ router.get("/CriticalIncidents",authenticateToken,getCEOIncidentAlerts);
 router.get("/CriticalExpiredAMC",authenticateToken,getCEOExpiredAMCAlerts);
 // 4. ============================================================ Hotel Revenue vs Budget
 router.get("/RevenueVsBudget",authenticateToken,getCEOHotelRevenueVsBudget);
+// 5. ============================================================ DSR
+router.get("/DSRTrend",authenticateToken,getCEODSRChart);
+// 6. ============================================================ Total SRMS Requests
+router.get("/TotalSRMSRequests",authenticateToken,getCEOSRMSRequests);
 module.exports = router;

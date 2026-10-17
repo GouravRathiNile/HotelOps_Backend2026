@@ -229,7 +229,7 @@ exports.getCEOExpiredAMCAlerts = async (req, res) => {
 // 4. ============================================================ Hotel Revenue vs Budget
 exports.getCEOHotelRevenueVsBudget = async (req, res) => {
   try {
-    const { BusinessDate } = req.query;
+    const { BusinessDate, OrganizationID } = req.query;
 
     // ========================================================
     // Business Date Validation
@@ -267,6 +267,7 @@ exports.getCEOHotelRevenueVsBudget = async (req, res) => {
 
     const result =
       await DashboardService.getCEOHotelRevenueVsBudget({
+        OrganizationID,
         BusinessDate: BusinessDate || null,
       });
 
@@ -283,6 +284,104 @@ exports.getCEOHotelRevenueVsBudget = async (req, res) => {
 
   } catch (error) {
     return handleError(error, res);
+  }
+};
+// 5. ============================================================ DSR
+exports.getCEODSRChart = async (req, res) => {
+  try {
+    const {
+      Filter = "yearly",
+      OrganizationID,
+    } = req.query;
+
+    // ========================================================
+    // Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // OrganizationID Validation
+    // ========================================================
+
+    if (
+      OrganizationID !== undefined &&
+      String(OrganizationID).trim() !== ""
+    ) {
+      const orgID = String(OrganizationID).trim();
+
+      if (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      ) {
+        throw new AppError(
+          "OrganizationID must be a positive integer.",
+          STATUS_CODES.BAD_REQUEST
+        );
+      }
+    }
+
+    // ========================================================
+    // Service
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEODSRChart({
+        Filter: filter,
+        OrganizationID: OrganizationID || null,
+      });
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 6. ============================================================ Total SRMS Requests
+exports.getCEOSRMSRequests = async (req, res) => {
+  try {
+    const result =
+      await DashboardService.getCEOSRMSRequests({
+        ...req.query,
+      });
+
+    return res
+      .status(
+        result.success
+          ? 200
+          : result.statusCode || 500
+      )
+      .json(result);
+
+  } catch (error) {
+    console.error(
+      "getCEOSRMSRequests Controller Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error.",
+    });
   }
 };
 

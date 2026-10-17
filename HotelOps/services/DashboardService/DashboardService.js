@@ -41,9 +41,6 @@ const databaseFailure = (error, action) => {
     message: `Unable to ${action.toLowerCase()}.`,
   };
 };
-// ==============================================================================================CEO Dashboard 
-// 1.=========================================================Top Drr Revenre Data
-// ================================================== Helpers
 // ===============================Date Filter Helper
 const getDateRange = (filter) => {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -135,6 +132,9 @@ const getDateRange = (filter) => {
     PreviousToDate: format(previousTo),
   };
 };
+// ==============================================================================================CEO Dashboard 
+// 1.=========================================================Top Drr Revenre Data
+// ================================================== Helpers
 // ==============================Revenue Growth Helper
 const calculateRevenue = (current, previous) => {
   const amount = Number(current || 0);
@@ -900,6 +900,20 @@ const getCEOExpiredAMCAlerts = async (data) => {
 // 4. ============================================================ Hotel Revenue vs Budget
 const getCEOHotelRevenueVsBudget = async (data) => {
   try {
+    const rawOrganizationID = data.OrganizationID;
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      ((typeof rawOrganizationID !== "string" && typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n)
+    ) {
+      return fail("OrganizationID must be a positive integer.", 400);
+    }
+
     // ========================================================
     // 1. Business Date
     // ========================================================
@@ -967,6 +981,7 @@ const getCEOHotelRevenueVsBudget = async (data) => {
     const result = await mssqlPool
       .request()
       .input("BusinessDate", sql.Date, businessDate)
+      .input("OrganizationID", sql.BigInt, organizationID || null)
       .query(`
         WITH LatestRevenue AS (
           SELECT
@@ -995,6 +1010,7 @@ const getCEOHotelRevenueVsBudget = async (data) => {
             [DailyRevenueReport].[DailyRevenueReport_Tbl_Entry_Master]
 
           WHERE IsDeleted = 0
+            AND (@OrganizationID IS NULL OR OrganizationID = @OrganizationID)
             AND EntryDate >= @BusinessDate
             AND EntryDate < DATEADD(
               DAY, 1, @BusinessDate
@@ -1003,7 +1019,8 @@ const getCEOHotelRevenueVsBudget = async (data) => {
 
         SELECT
           ID,
-          OrganizationID,
+          LatestRevenue.OrganizationID,
+          organization.ShortDisplayLabel AS OrganizationShortName,
           EntryDate,
 
           FTD_Budget,
@@ -1019,10 +1036,14 @@ const getCEOHotelRevenueVsBudget = async (data) => {
           YTD_Variance
 
         FROM LatestRevenue
+        LEFT JOIN [dbo].[htl_tbl_organization_master] AS organization
+          ON organization.OrganizationID = LatestRevenue.OrganizationID
 
         WHERE RowNo = 1
 
-        ORDER BY OrganizationID ASC;
+        ORDER BY
+          organization.ShortDisplayLabel ASC,
+          LatestRevenue.OrganizationID ASC;
       `);
 
     // ========================================================
@@ -1033,6 +1054,7 @@ const getCEOHotelRevenueVsBudget = async (data) => {
       SrNo: index + 1,
 
       OrganizationID: Number(row.OrganizationID),
+      OrganizationShortName: row.OrganizationShortName ?? null,
 
       FTD: {
         Budget: Number(row.FTD_Budget ?? 0),
@@ -1073,8 +1095,345 @@ const getCEOHotelRevenueVsBudget = async (data) => {
     );
   }
 };
+// 5. ============================================================ DSR
+const getCEODSRChart = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
 
+    const filter = String(data.Filter || "yearly")
+      .trim()
+      .toLowerCase();
 
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID =
+      rawOrganizationID == null
+        ? ""
+        : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range (Existing Helper)
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Query
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .query(`
+        SELECT
+          organization.OrganizationID,
+          organization.ShortDisplayLabel AS OrganizationShortName,
+          COUNT(visit.OrganizationID) AS TotalVisit
+
+        FROM [dbo].[htl_tbl_organization_master] AS organization
+        LEFT JOIN [DailySalesReport].[DailySalesReport_Tbl_Account_Visit] AS visit
+          ON visit.OrganizationID = organization.OrganizationID
+          AND visit.CreatedDatetime >= @FromDate
+          AND visit.CreatedDatetime < DATEADD(
+            DAY, 1, @ToDate
+          )
+
+        WHERE (
+            @OrganizationID IS NULL
+            OR organization.OrganizationID = @OrganizationID
+          )
+
+        GROUP BY organization.OrganizationID, organization.ShortDisplayLabel
+
+        ORDER BY organization.ShortDisplayLabel ASC, organization.OrganizationID ASC;
+      `);
+
+    // ========================================================
+    // 5. Response Mapping
+    // ========================================================
+
+    const chartData = result.recordset.map((row) => ({
+      OrganizationID: Number(row.OrganizationID),
+      OrganizationShortName: row.OrganizationShortName ?? null,
+      TotalVisit: Number(row.TotalVisit),
+    }));
+
+    // ========================================================
+    // 6. Response
+    // ========================================================
+
+    return ok(
+      "CEO DSR chart fetched successfully.",
+      chartData,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: chartData.length,
+
+        TotalVisits: chartData.reduce(
+          (sum, row) => sum + row.TotalVisit,
+          0
+        ),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO DSR chart"
+    );
+  }
+};
+// 6. ============================================================ Total SRMS Requests
+const getCEOSRMSRequests = async (data = {}) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yearly")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return {
+        success: false,
+        message: "Invalid SRMS filter.",
+        statusCode: 400,
+      };
+    }
+
+    // ========================================================
+    // 2. Organization Validation (Optional)
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID =
+      rawOrganizationID == null
+        ? ""
+        : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return {
+        success: false,
+        message: "Invalid OrganizationID.",
+        statusCode: 400,
+      };
+    }
+
+    // ========================================================
+    // 3. SQL Server Connection
+    // ========================================================
+
+    const db = await getMssqlPool();
+
+    // ========================================================
+    // 4. Fetch Hotel Wise SRMS Requests
+    // ========================================================
+
+    const result = await db
+      .request()
+      .input("Filter", sql.VarChar(20), filter)
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .query(`
+        DECLARE @Today DATE =
+            CAST(GETDATE() AS DATE);
+
+        DECLARE @StartDate DATETIME2;
+        DECLARE @EndDate DATETIME2;
+
+        -- YESTERDAY
+        IF @Filter = 'yesterday'
+        BEGIN
+            SET @StartDate =
+                DATEADD(DAY, -1, @Today);
+
+            SET @EndDate = @Today;
+        END
+
+        -- WEEKLY (LAST 7 DAYS INCLUDING TODAY)
+        ELSE IF @Filter = 'weekly'
+        BEGIN
+            SET @StartDate =
+                DATEADD(DAY, -6, @Today);
+
+            SET @EndDate =
+                DATEADD(DAY, 1, @Today);
+        END
+
+        -- MONTHLY (CURRENT MONTH)
+        ELSE IF @Filter = 'monthly'
+        BEGIN
+            SET @StartDate =
+                DATEFROMPARTS(
+                    YEAR(@Today),
+                    MONTH(@Today),
+                    1
+                );
+
+            SET @EndDate =
+                DATEADD(
+                    MONTH,
+                    1,
+                    @StartDate
+                );
+        END
+
+        -- YEARLY (CURRENT YEAR)
+        ELSE IF @Filter = 'yearly'
+        BEGIN
+            SET @StartDate =
+                DATEFROMPARTS(
+                    YEAR(@Today),
+                    1,
+                    1
+                );
+
+            SET @EndDate =
+                DATEADD(
+                    YEAR,
+                    1,
+                    @StartDate
+                );
+        END
+
+        SELECT
+            OrganizationID,
+            COUNT(*) AS TotalRequests
+
+        FROM
+            Srms.VW_SRMS_Tbl_ServiceRequest_Master
+
+        WHERE
+            RequestDateTime >= @StartDate
+            AND RequestDateTime < @EndDate
+
+            AND (
+                @OrganizationID IS NULL
+                OR OrganizationID = @OrganizationID
+            )
+
+        GROUP BY
+            OrganizationID
+
+        ORDER BY
+            OrganizationID ASC;
+      `);
+
+    // ========================================================
+    // 5. Format Chart Data
+    // ========================================================
+
+    const chartData = result.recordset.map((row) => ({
+      OrganizationID: String(row.OrganizationID),
+      TotalRequests: Number(row.TotalRequests || 0),
+    }));
+
+    // ========================================================
+    // 6. Total Requests
+    // ========================================================
+
+    const totalRequests = chartData.reduce(
+      (total, item) => total + item.TotalRequests,
+      0
+    );
+
+    // ========================================================
+    // 7. Return Response
+    // ========================================================
+
+    return {
+      success: true,
+      message: "SRMS requests fetched successfully.",
+      data: {
+        Filter: filter,
+        TotalRequests: totalRequests,
+        TotalOrganizations: chartData.length,
+        ChartData: chartData,
+      },
+    };
+
+  } catch (error) {
+    console.error(
+      "getCEOSRMSRequests Error:",
+      error
+    );
+
+    return {
+      success: false,
+      message: "Failed to fetch SRMS requests.",
+      statusCode: 500,
+    };
+  }
+};
 
 
 // ============================================================
@@ -1087,5 +1446,7 @@ module.exports = {
   getCEOIncidentAlerts,
   getCEOExpiredAMCAlerts,
   getCEOHotelRevenueVsBudget,
+  getCEODSRChart,
+  getCEOSRMSRequests,
 };
 
