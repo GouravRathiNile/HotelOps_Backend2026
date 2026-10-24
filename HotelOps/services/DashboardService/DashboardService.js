@@ -332,7 +332,7 @@ const getCEORevenueSummary = async (data) => {
 const getCEOOccupancy = async (data) => {
   try {
     // ========================================================
-    // Filter Validation
+    // 1. Filter Validation
     // ========================================================
 
     const filter = String(data.Filter || "yesterday")
@@ -340,7 +340,8 @@ const getCEOOccupancy = async (data) => {
       .toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
     ) {
       return fail(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -349,52 +350,170 @@ const getCEOOccupancy = async (data) => {
     }
 
     // ========================================================
-    // Date Range (Existing Helper)
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range (Existing Helper)
     // ========================================================
 
     const dates = getDateRange(filter);
 
     // ========================================================
-    // PostgreSQL Query
+    // 4. MSSQL Connection
     // ========================================================
 
-    const result = await pool.query(
-      `
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query - HOTEL WISE OCCUPANCY
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .query(`
+        ;WITH Hotels AS
+        (
+          SELECT
+            org.OrganizationID,
+            org.ShortDisplayLabel AS Hotel
+
+          FROM dbo.htl_tbl_organization_master AS org
+
+          WHERE org.Activation_status = 1
+            AND org.IsNileHotel = 1
+
+            AND (
+              @OrganizationID IS NULL
+              OR org.OrganizationID = @OrganizationID
+            )
+        ),
+
+        -- ====================================================
+        -- ROOMS OCCUPIED AND ROOMS AVAILABLE
+        -- ====================================================
+
+        RoomData AS
+        (
+          SELECT
+            a.OrganizationID,
+
+            SUM(
+              CASE
+                WHEN i.Item = 'Rooms Occupied'
+                THEN ISNULL(b.Amount, 0)
+                ELSE 0
+              END
+            ) AS RoomsOccupied,
+
+            SUM(
+              CASE
+                WHEN i.Item = 'Rooms Available'
+                THEN ISNULL(b.Amount, 0)
+                ELSE 0
+              END
+            ) AS RoomsAvailable
+
+          FROM DailyRevenueReport.DailyRevenueReport_Tbl_Entry_Master AS a
+
+          INNER JOIN DailyRevenueReport.DailyRevenueReport_Tbl_Entry_Room_Details AS b
+            ON a.ID = b.EntryID
+
+          INNER JOIN DailyRevenueReport.DailyRevenueReport_Tbl_Room_Item_Master AS i
+            ON b.ItemID = i.ItemID
+
+          WHERE a.IsDeleted = 0
+            AND b.IsDelete = 0
+
+            AND a.EntryDate >= @FromDate
+            AND a.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+            AND i.Item IN (
+              'Rooms Occupied',
+              'Rooms Available'
+            )
+
+          GROUP BY a.OrganizationID
+        )
+
+        -- ====================================================
+        -- FINAL HOTEL-WISE OCCUPANCY
+        -- ====================================================
+
         SELECT
-          organization.OrganizationID,
-          organization.ShortName,
-          COALESCE(ROUND(AVG(entry.Occupancy), 2), 0) AS Occupancy
+          h.OrganizationID,
+          h.Hotel,
 
-        FROM Organization_Master AS organization
-        LEFT JOIN GuestMeet_Daily_Entry_Master AS entry
-          ON entry.OrganizationID = organization.OrganizationID
-          AND entry.IsDeleted = FALSE
-          AND entry.EntryDate >= $1::DATE
-          AND entry.EntryDate <= $2::DATE
-          AND entry.Occupancy IS NOT NULL
+          CAST(
+            CASE
+              WHEN ISNULL(r.RoomsAvailable, 0) > 0
+              THEN
+                (r.RoomsOccupied * 100.0)
+                / r.RoomsAvailable
+              ELSE 0
+            END
+            AS DECIMAL(12, 2)
+          ) AS OCC
 
-        GROUP BY organization.OrganizationID, organization.ShortName
+        FROM Hotels AS h
 
-        ORDER BY organization.OrganizationID ASC;
-      `,
-      [
-        dates.CurrentFromDate,
-        dates.CurrentToDate,
-      ]
-    );
+        LEFT JOIN RoomData AS r
+          ON h.OrganizationID = r.OrganizationID
+
+        ORDER BY h.Hotel;
+      `);
 
     // ========================================================
-    // Response Mapping
+    // 6. Response Mapping
     // ========================================================
 
-    const occupancyData = result.rows.map((row) => ({
-      OrganizationID: Number(row.organizationid),
-      ShortName: row.shortname ?? null,
-      Occupancy: Number(row.occupancy),
+    const occupancyData = result.recordset.map((row) => ({
+      OrganizationID: Number(row.OrganizationID),
+
+      ShortName: row.Hotel ?? null,
+
+      Occupancy: Number(row.OCC ?? 0),
+      occupancypercentage: `${Math.round(Number(row.OCC ?? 0))}%`,
     }));
 
     // ========================================================
-    // Response
+    // 7. Response
     // ========================================================
 
     return ok(
@@ -402,19 +521,27 @@ const getCEOOccupancy = async (data) => {
       {
         Filter: filter,
 
+        OrganizationID: organizationID || null,
+
         DateRange: {
           FromDate: dates.CurrentFromDate,
           ToDate: dates.CurrentToDate,
         },
+
+        TotalOrganizations: occupancyData.length,
 
         OccupancyData: occupancyData,
       }
     );
 
   } catch (error) {
-    return databaseFailure(error, "Fetch CEO occupancy");
+    return databaseFailure(
+      error,
+      "Fetch CEO occupancy"
+    );
   }
 };
+
 // 3. ============================================================ Critical Alerts
 // 3.1. ============================================Glitch
 const getCEOGlitchAlerts = async (data) => {

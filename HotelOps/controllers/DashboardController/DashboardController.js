@@ -58,16 +58,20 @@ exports.getCEORevenueSummary = async (req, res) => {
 // 2. ============================================================ Get CEO Occupancy
 exports.getCEOOccupancy = async (req, res) => {
   try {
-    const { Filter = "yesterday" } = req.query;
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+    } = req.query;
 
     // ========================================================
-    // Filter Validation
+    // 1. Filter Validation
     // ========================================================
 
     const filter = String(Filter).trim().toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
     ) {
       throw new AppError(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -76,12 +80,38 @@ exports.getCEOOccupancy = async (req, res) => {
     }
 
     // ========================================================
-    // Service
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. Service Call
     // ========================================================
 
     const result = await DashboardService.getCEOOccupancy({
       Filter: filter,
+      OrganizationID: orgID || null,
     });
+
+    // ========================================================
+    // 4. Response
+    // ========================================================
 
     if (!result.success) {
       throw new AppError(
@@ -90,12 +120,15 @@ exports.getCEOOccupancy = async (req, res) => {
       );
     }
 
-    return res.status(STATUS_CODES.SUCCESS).json(result);
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
 
   } catch (error) {
     return handleError(error, res);
   }
 };
+
 // 3. ============================================================ Critical Alerts
 // 3.1. ============================================Glitch
 exports.getCEOGlitchAlerts = async (req, res) => {
