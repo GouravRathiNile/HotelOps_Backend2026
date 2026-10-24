@@ -3116,7 +3116,9 @@ const getCEODSRChart = async (data) => {
             DAY, 1, @ToDate
           )
 
-        WHERE (
+        WHERE organization.Activation_status = 1
+          AND NULLIF(LTRIM(RTRIM(organization.ShortDisplayLabel)), '') IS NOT NULL
+          AND (
             @OrganizationID IS NULL
             OR organization.OrganizationID = @OrganizationID
           )
@@ -4887,7 +4889,10 @@ const getCEOGuestMetChart = async (data) => {
           AND d.OrganizationID = m.OrganizationID
           AND d.IsDeleted = FALSE
 
-        WHERE (
+        WHERE organization.IsActive = TRUE
+          AND organization.IsDeleted = FALSE
+          AND NULLIF(TRIM(organization.ShortName), '') IS NOT NULL
+          AND (
             $3::BIGINT IS NULL
             OR organization.OrganizationID = $3::BIGINT
           )
@@ -11911,7 +11916,10 @@ const getCEOEngineeringMaintenanceChart = async (data) => {
         (
           SELECT OrganizationID, ShortName
           FROM Organization_Master
-          WHERE $3::BIGINT IS NULL OR OrganizationID = $3::BIGINT
+          WHERE IsActive = TRUE
+            AND IsDeleted = FALSE
+            AND NULLIF(TRIM(ShortName), '') IS NOT NULL
+            AND ($3::BIGINT IS NULL OR OrganizationID = $3::BIGINT)
         )
 
         SELECT
@@ -12323,7 +12331,10 @@ const getCEOEngineeringBreakdownChart = async (data) => {
 
           FROM Organization_Master
 
-          WHERE (
+          WHERE IsActive = TRUE
+            AND IsDeleted = FALSE
+            AND NULLIF(TRIM(ShortName), '') IS NOT NULL
+            AND (
             $3::BIGINT IS NULL
             OR OrganizationID = $3::BIGINT
           )
@@ -12490,7 +12501,10 @@ const getCEODailyBreakageChart = async (data) => {
 
           FROM Organization_Master
 
-          WHERE (
+          WHERE IsActive = TRUE
+            AND IsDeleted = FALSE
+            AND NULLIF(TRIM(ShortName), '') IS NOT NULL
+            AND (
             $3::BIGINT IS NULL
             OR OrganizationID = $3::BIGINT
           )
