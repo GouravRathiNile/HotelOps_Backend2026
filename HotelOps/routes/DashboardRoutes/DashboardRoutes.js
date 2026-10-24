@@ -57,6 +57,7 @@ const {
   getCEOSalesContractChart,
   getCEOSalesContractDetails,
   getCEOARRRevPARChart,
+  getCEOOutOfOrderChart,
 } = require(
   "../../controllers/DashboardController/DashboardController",
 )
@@ -176,5 +177,6 @@ router.get("/SalesContractTrend",authenticateToken,getCEOSalesContractChart);
 router.get("/SalesContractDetails",authenticateToken,getCEOSalesContractDetails);
 // 29. ============================================================ Revenue Trend
 router.get("/ARRRevPARChart",authenticateToken,getCEOARRRevPARChart);
-
+// 30. ============================================================ Out Of Order Trend
+router.get("/OutOfOrderTrend",authenticateToken,getCEOOutOfOrderChart);
 module.exports = router;

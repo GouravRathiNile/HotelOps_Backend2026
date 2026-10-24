@@ -12550,6 +12550,190 @@ const getCEOARRRevPARChart = async (data) => {
     );
   }
 };
+// 30. ============================================================ Out Of Order Trend
+const getCEOOutOfOrderChart = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range (Existing Helper)
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .query(`
+        SELECT
+          org.OrganizationID,
+
+          dbo.FN_Get_OrganizationShortName(
+            org.OrganizationID
+          ) AS Hotel,
+
+          ISNULL(ooo.Total, 0) AS Total
+
+        FROM dbo.htl_tbl_organization_master AS org
+
+        LEFT JOIN
+        (
+          SELECT
+            a.OrganizationID,
+
+            SUM(
+              ISNULL(b.Amount, 0)
+            ) AS Total
+
+          FROM DailyRevenueReport.DailyRevenueReport_Tbl_Entry_Master AS a
+
+          INNER JOIN DailyRevenueReport.DailyRevenueReport_Tbl_Entry_Room_Details AS b
+            ON a.ID = b.EntryID
+
+          INNER JOIN DailyRevenueReport.DailyRevenueReport_Tbl_Room_Item_Master AS i
+            ON b.ItemID = i.ItemID
+
+          WHERE i.Item = 'Out of Order'
+
+            AND a.EntryDate >= @FromDate
+            AND a.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+          GROUP BY a.OrganizationID
+
+        ) AS ooo
+          ON org.OrganizationID = ooo.OrganizationID
+
+        WHERE org.Activation_status = 1
+          AND org.IsNileHotel = 1
+
+          AND (
+            @OrganizationID IS NULL
+            OR org.OrganizationID = @OrganizationID
+          )
+
+        ORDER BY Hotel;
+      `);
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const chartData = result.recordset.map((row) => ({
+      OrganizationID:
+        row.OrganizationID == null
+          ? null
+          : String(row.OrganizationID),
+
+      Hotel: row.Hotel ?? null,
+
+      Total: Number(row.Total ?? 0),
+    }));
+
+    // ========================================================
+    // 7. Overall Total
+    // ========================================================
+
+    const totalOutOfOrder = chartData.reduce(
+      (sum, row) => sum + row.Total,
+      0
+    );
+
+    // ========================================================
+    // 8. Response
+    // ========================================================
+
+    return ok(
+      "CEO out of order chart fetched successfully.",
+      chartData,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: chartData.length,
+
+        TotalOutOfOrder: totalOutOfOrder,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO out of order chart"
+    );
+  }
+};
+
 
 
 
@@ -12613,6 +12797,7 @@ module.exports = {
   getCEOCateringSalesDetails,
   getCEOSalesContractChart,
   getCEOSalesContractDetails,
-  getCEOARRRevPARChart
+  getCEOARRRevPARChart,
+  getCEOOutOfOrderChart
 };
 
