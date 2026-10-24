@@ -23,6 +23,7 @@ const {
   getCEOPayMastersDetails,
   getCEOForecastADR,
   getCEOPPMRooms,
+  getCEOPPMChecklistDetails,
   getCEOTrainingHours,
   getCEOTrainingHoursDetails,
   getCEORestaurantFeedback,
@@ -54,6 +55,8 @@ const {
   getCEOCateringSalesChart,
   getCEOCateringSalesDetails,
   getCEOSalesContractChart,
+  getCEOSalesContractDetails,
+  getCEOARRRevPARChart,
 } = require(
   "../../controllers/DashboardController/DashboardController",
 )
@@ -105,6 +108,8 @@ router.get("/PayMastersDetails",authenticateToken,getCEOPayMastersDetails);
 router.get("/ForecastADRTrend",authenticateToken,getCEOForecastADR);
 // 13. ============================================================ PPM Rooms Trend
 router.get("/PPMRoomsTrend",authenticateToken,getCEOPPMRooms);
+// 13.1 ============================================================ PPM Rooms Details
+router.get("/PPMChecklistDetails",authenticateToken,getCEOPPMChecklistDetails);
 // 14. ============================================================ Training Hours Trend
 router.get("/TrainingHoursTrend",authenticateToken,getCEOTrainingHours);
 // 14.1============================================================= Training Hours Details
@@ -167,5 +172,9 @@ router.get("/CateringSalesTrend",authenticateToken,getCEOCateringSalesChart);
 router.get("/CateringSalesDetails",authenticateToken,getCEOCateringSalesDetails);
 // 28. ============================================================ Sales Contracts Trend
 router.get("/SalesContractTrend",authenticateToken,getCEOSalesContractChart);
+// 28.1. ============================================================ Sales Contracts Details
+router.get("/SalesContractDetails",authenticateToken,getCEOSalesContractDetails);
+// 29. ============================================================ Revenue Trend
+router.get("/ARRRevPARChart",authenticateToken,getCEOARRRevPARChart);
 
 module.exports = router;

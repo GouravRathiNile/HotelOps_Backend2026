@@ -1441,6 +1441,109 @@ exports.getCEOPPMRooms = async (req, res) => {
     return handleError(error, res);
   }
 };
+// 13.1. ============================================================ PPM Rooms Details
+exports.getCEOPPMChecklistDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+      page = 1,
+      PageSize = 10,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter)
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Pagination Validation
+    // ========================================================
+
+    const pageNumber = Number(page);
+    const pageSizeNumber = Number(PageSize);
+
+    if (
+      !Number.isSafeInteger(pageNumber) ||
+      pageNumber <= 0 ||
+      !Number.isSafeInteger(pageSizeNumber) ||
+      pageSizeNumber < 1 ||
+      pageSizeNumber > 100 ||
+      (pageNumber - 1) * pageSizeNumber >
+        2147483647 - pageSizeNumber
+    ) {
+      throw new AppError(
+        "Invalid page or PageSize.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 5. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOPPMChecklistDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+        page: pageNumber,
+        PageSize: pageSizeNumber,
+      });
+
+    // ========================================================
+    // 6. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+
 // 14. ============================================================ Training Hours Trend
 exports.getCEOTrainingHours = async (req, res) => {
   try {
@@ -3986,6 +4089,204 @@ exports.getCEOSalesContractChart = async (req, res) => {
     return handleError(error, res);
   }
 };
+// 28.1 ============================================================ Sales Contracts Details
+exports.getCEOSalesContractDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yearly",
+      Status = "Total",
+      OrganizationID,
+      page = 1,
+      PageSize = 10,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter)
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. Status Validation
+    // ========================================================
+
+    const status = String(Status)
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["total", "active", "expired"].includes(status)
+    ) {
+      throw new AppError(
+        "Status must be Total, Active or Expired.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 5. Pagination Validation
+    // ========================================================
+
+    const pageNumber = Number(page);
+    const pageSizeNumber = Number(PageSize);
+
+    if (
+      !Number.isSafeInteger(pageNumber) ||
+      pageNumber <= 0 ||
+      !Number.isSafeInteger(pageSizeNumber) ||
+      pageSizeNumber < 1 ||
+      pageSizeNumber > 100 ||
+      (pageNumber - 1) * pageSizeNumber >
+        2147483647 - pageSizeNumber
+    ) {
+      throw new AppError(
+        "Invalid page or PageSize.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 6. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOSalesContractDetails({
+        Filter: filter,
+        Status: status,
+        OrganizationID: orgID || null,
+        page: pageNumber,
+        PageSize: pageSizeNumber,
+      });
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 29. ============================================================ Revenue Trend
+exports.getCEOARRRevPARChart = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter)
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOARRRevPARChart({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+
 
 
 
