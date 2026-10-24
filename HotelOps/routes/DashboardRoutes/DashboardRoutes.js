@@ -6,6 +6,9 @@ const {
   getCEOADRRevPARDetails,
   getCEOOutletRevenueDetails,
   getCEOBanquetRevenueDetails,
+  getCEOTotalRevenueDetails,
+  getCEORoomsRevenueDetails,
+  getCEOFBRevenueDetails,
   getCEOOccupancy,
   getCEOGlitchAlerts,
   getCEOIncidentAlerts,
@@ -62,6 +65,7 @@ const {
   getCEOSalesContractDetails,
   getCEOARRRevPARChart,
   getCEOOutOfOrderChart,
+  getCEOCompRoomsSummary,
 } = require(
   "../../controllers/DashboardController/DashboardController",
 )
@@ -78,6 +82,12 @@ router.get("/ADRRevPARDetails",authenticateToken,getCEOADRRevPARDetails);
 router.get("/OutletRevenueDetails",authenticateToken,getCEOOutletRevenueDetails);
 // 1.4============================================================CEO Revenue Summary banquet Details
 router.get("/BanquetRevenueDetails",authenticateToken,getCEOBanquetRevenueDetails);
+// 1.5============================================================CEO Revenue Summary Total Revenew Details
+router.get("/TotalRevenueDetails",authenticateToken,getCEOTotalRevenueDetails);
+// 1.6============================================================CEO Revenue Summary Room Revenew Details
+router.get("/RoomsRevenueDetails",authenticateToken,getCEORoomsRevenueDetails);
+// 1.7============================================================CEO Revenue Summary F&B Revenew Details
+router.get("/FBRevenueDetails",authenticateToken,getCEOFBRevenueDetails);
 // 2. ============================================================ Get CEO Occupancy
 router.get("/OccupancyTrend",authenticateToken,getCEOOccupancy);
 // 3. ============================================================ Critical Alerts
@@ -191,4 +201,6 @@ router.get("/SalesContractDetails",authenticateToken,getCEOSalesContractDetails)
 router.get("/ARRRevPARChart",authenticateToken,getCEOARRRevPARChart);
 // 30. ============================================================ Out Of Order Trend
 router.get("/OutOfOrderTrend",authenticateToken,getCEOOutOfOrderChart);
+// 31. ============================================================ Comp Rooms Count
+router.get("/CompRoomsSummary",authenticateToken,getCEOCompRoomsSummary);
 module.exports = router;

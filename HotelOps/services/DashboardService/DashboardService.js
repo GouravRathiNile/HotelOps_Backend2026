@@ -1540,10 +1540,600 @@ const getCEOBanquetRevenueDetails = async (data) => {
     );
   }
 };
-// 1.5============================================================CEO Revenue Summary Total Details
-// 1.6============================================================CEO Revenue Summary Adr and Other
-// 1.7============================================================CEO Revenue Summary Adr and Other
+// 1.5============================================================CEO Revenue Summary Total Revenew Details
+const getCEOTotalRevenueDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
 
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query - TOTAL REVENUE
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .query(`
+        ;WITH HotelData AS
+        (
+          SELECT
+            a.OrganizationID,
+
+            dbo.FN_Get_OrganizationShortName(
+              a.OrganizationID
+            ) AS Hotel,
+
+            SUM(
+              ISNULL(a.FTD_Total_Revenue, 0)
+            ) AS TotalRevenue
+
+          FROM DailyRevenueReport.DailyRevenueReport_Tbl_Entry_Master a
+
+          WHERE a.IsDeleted = 0
+
+            AND (
+              @OrganizationID IS NULL
+              OR a.OrganizationID = @OrganizationID
+            )
+
+            AND a.EntryDate >= @FromDate
+            AND a.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+          GROUP BY a.OrganizationID
+        )
+
+        SELECT
+          OrganizationID,
+          Hotel,
+          TotalRevenue
+
+        FROM
+        (
+          SELECT
+            0 AS SortOrder,
+            OrganizationID,
+            Hotel,
+            TotalRevenue
+          FROM HotelData
+
+          UNION ALL
+
+          SELECT
+            1 AS SortOrder,
+            CAST(NULL AS BIGINT) AS OrganizationID,
+            'TOTAL' AS Hotel,
+
+            ISNULL(
+              SUM(TotalRevenue),
+              0
+            ) AS TotalRevenue
+
+          FROM HotelData
+        ) x
+
+        ORDER BY SortOrder, Hotel;
+      `);
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const rows = result.recordset || [];
+
+    const revenueDetails = rows
+      .filter((row) => row.OrganizationID != null)
+      .map((row, index) => ({
+        SrNo: index + 1,
+
+        OrganizationID: String(row.OrganizationID),
+
+        Hotel: row.Hotel ?? null,
+
+        TotalRevenue: Number(row.TotalRevenue ?? 0),
+      }));
+
+    const totalRow = rows.find(
+      (row) => row.OrganizationID == null
+    );
+
+    const grandTotal = {
+      Hotel: "TOTAL",
+      TotalRevenue: Number(totalRow?.TotalRevenue ?? 0),
+    };
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    return ok(
+      "CEO total revenue details fetched successfully.",
+      {
+        TotalRevenueDetails: revenueDetails,
+        GrandTotal: grandTotal,
+      },
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: revenueDetails.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO total revenue details"
+    );
+  }
+};
+// 1.6============================================================CEO Revenue Summary Room Revenew Details
+const getCEORoomsRevenueDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query - ROOMS REVENUE
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .query(`
+        ;WITH HotelData AS
+        (
+          SELECT
+            a.OrganizationID,
+
+            dbo.FN_Get_OrganizationShortName(
+              a.OrganizationID
+            ) AS Hotel,
+
+            SUM(
+              ISNULL(a.FTD_Room_Revenue, 0)
+            ) AS RoomsRevenue
+
+          FROM DailyRevenueReport.DailyRevenueReport_Tbl_Entry_Master a
+
+          WHERE a.IsDeleted = 0
+
+            AND (
+              @OrganizationID IS NULL
+              OR a.OrganizationID = @OrganizationID
+            )
+
+            AND a.EntryDate >= @FromDate
+            AND a.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+          GROUP BY a.OrganizationID
+        )
+
+        SELECT
+          OrganizationID,
+          Hotel,
+          RoomsRevenue
+
+        FROM
+        (
+          SELECT
+            0 AS SortOrder,
+            OrganizationID,
+            Hotel,
+            RoomsRevenue
+          FROM HotelData
+
+          UNION ALL
+
+          SELECT
+            1 AS SortOrder,
+            CAST(NULL AS BIGINT) AS OrganizationID,
+            'TOTAL' AS Hotel,
+
+            ISNULL(
+              SUM(RoomsRevenue),
+              0
+            ) AS RoomsRevenue
+
+          FROM HotelData
+        ) x
+
+        ORDER BY SortOrder, Hotel;
+      `);
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const rows = result.recordset || [];
+
+    const revenueDetails = rows
+      .filter((row) => row.OrganizationID != null)
+      .map((row, index) => ({
+        SrNo: index + 1,
+
+        OrganizationID: String(row.OrganizationID),
+
+        Hotel: row.Hotel ?? null,
+
+        RoomsRevenue: Number(row.RoomsRevenue ?? 0),
+      }));
+
+    const totalRow = rows.find(
+      (row) => row.OrganizationID == null
+    );
+
+    const grandTotal = {
+      Hotel: "TOTAL",
+      RoomsRevenue: Number(totalRow?.RoomsRevenue ?? 0),
+    };
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    return ok(
+      "CEO rooms revenue details fetched successfully.",
+      {
+        RoomsRevenueDetails: revenueDetails,
+        GrandTotal: grandTotal,
+      },
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: revenueDetails.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO rooms revenue details"
+    );
+  }
+};
+// 1.7============================================================CEO Revenue Summary F&B Revenew Details
+const getCEOFBRevenueDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query - F&B REVENUE
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .query(`
+        ;WITH HotelData AS
+        (
+          SELECT
+            a.OrganizationID,
+
+            dbo.FN_Get_OrganizationShortName(
+              a.OrganizationID
+            ) AS Hotel,
+
+            SUM(
+              ISNULL(a.FTD_FB_Revenue, 0)
+            ) AS FBRevenue
+
+          FROM DailyRevenueReport.DailyRevenueReport_Tbl_Entry_Master a
+
+          WHERE a.IsDeleted = 0
+
+            AND (
+              @OrganizationID IS NULL
+              OR a.OrganizationID = @OrganizationID
+            )
+
+            AND a.EntryDate >= @FromDate
+            AND a.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+          GROUP BY a.OrganizationID
+        )
+
+        SELECT
+          OrganizationID,
+          Hotel,
+          FBRevenue
+
+        FROM
+        (
+          SELECT
+            0 AS SortOrder,
+            OrganizationID,
+            Hotel,
+            FBRevenue
+          FROM HotelData
+
+          UNION ALL
+
+          SELECT
+            1 AS SortOrder,
+            CAST(NULL AS BIGINT) AS OrganizationID,
+            'TOTAL' AS Hotel,
+
+            ISNULL(
+              SUM(FBRevenue),
+              0
+            ) AS FBRevenue
+
+          FROM HotelData
+        ) x
+
+        ORDER BY SortOrder, Hotel;
+      `);
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const rows = result.recordset || [];
+
+    const revenueDetails = rows
+      .filter((row) => row.OrganizationID != null)
+      .map((row, index) => ({
+        SrNo: index + 1,
+
+        OrganizationID: String(row.OrganizationID),
+
+        Hotel: row.Hotel ?? null,
+
+        FBRevenue: Number(row.FBRevenue ?? 0),
+      }));
+
+    const totalRow = rows.find(
+      (row) => row.OrganizationID == null
+    );
+
+    const grandTotal = {
+      Hotel: "TOTAL",
+      FBRevenue: Number(totalRow?.FBRevenue ?? 0),
+    };
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    return ok(
+      "CEO F&B revenue details fetched successfully.",
+      {
+        FBRevenueDetails: revenueDetails,
+        GrandTotal: grandTotal,
+      },
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: revenueDetails.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO F&B revenue details"
+    );
+  }
+};
 // 2. ============================================================ Get CEO Occupancy
 const getCEOOccupancy = async (data) => {
   try {
@@ -14075,6 +14665,239 @@ const getCEOOutOfOrderChart = async (data) => {
     );
   }
 };
+// 31. ============================================================ Comp Rooms Count
+const getCEOCompRoomsSummary = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yearly")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range (Existing Helper)
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query - PMS VS HOTELOPS COMP ROOMS
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .query(`
+        -- ====================================================
+        -- PMS COMP ROOMS
+        -- ====================================================
+
+        ;WITH PMSData AS
+        (
+          SELECT
+            m.OrganizationID,
+
+            SUM(
+              ISNULL(
+                TRY_CONVERT(
+                  DECIMAL(18, 2),
+                  NULLIF(
+                    REPLACE(r.FTD_Actual, ',', ''),
+                    ''
+                  )
+                ),
+                0
+              )
+            ) AS PMS
+
+          FROM DailyRevenueReport.DailyRevenueReport_Tbl_Report_Entry_Master m
+
+          INNER JOIN DailyRevenueReport.DailyRevenueReport_Tbl_Report_Room_Entry r
+            ON m.EntryID = r.EntryID
+
+          WHERE m.IsDeleted = 0
+
+            AND (
+              @OrganizationID IS NULL
+              OR m.OrganizationID = @OrganizationID
+            )
+
+            AND m.EntryDate >= @FromDate
+            AND m.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+            AND r.ItemID = 7
+
+          GROUP BY m.OrganizationID
+        ),
+
+        -- ====================================================
+        -- HOTELOPS COMP ROOMS
+        -- ====================================================
+
+        HotelOpsData AS
+        (
+          SELECT
+            c.OrganizationID,
+
+            COUNT(*) AS HotelOps
+
+          FROM CompRoom.CompRoom_Tbl_Entry_Master c
+
+          WHERE (
+            @OrganizationID IS NULL
+            OR c.OrganizationID = @OrganizationID
+          )
+
+            AND c.ArrivalDate < DATEADD(DAY, 1, @ToDate)
+            AND c.DepartureDate > @FromDate
+
+          GROUP BY c.OrganizationID
+        ),
+
+        -- ====================================================
+        -- COMBINE PMS + HOTELOPS
+        -- ====================================================
+
+        CombinedData AS
+        (
+          SELECT
+            COALESCE(
+              p.OrganizationID,
+              h.OrganizationID
+            ) AS OrganizationID,
+
+            ISNULL(p.PMS, 0) AS PMS,
+
+            ISNULL(h.HotelOps, 0) AS HotelOps
+
+          FROM PMSData p
+
+          FULL OUTER JOIN HotelOpsData h
+            ON p.OrganizationID = h.OrganizationID
+        )
+
+        -- ====================================================
+        -- FINAL SUMMARY
+        -- ====================================================
+
+        SELECT
+          CAST(
+            ISNULL(SUM(PMS), 0)
+            AS DECIMAL(18, 2)
+          ) AS PMS,
+
+          ISNULL(
+            SUM(HotelOps),
+            0
+          ) AS HotelOps,
+
+          CAST(
+            ISNULL(SUM(HotelOps), 0)
+            - ISNULL(SUM(PMS), 0)
+            AS DECIMAL(18, 2)
+          ) AS Variance
+
+        FROM CombinedData;
+      `);
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const row = result.recordset?.[0] || {};
+
+    const summary = {
+      PMS: Number(row.PMS ?? 0),
+
+      HotelOps: Number(row.HotelOps ?? 0),
+
+      Variance: Number(row.Variance ?? 0),
+    };
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    return ok(
+      "CEO comp rooms summary fetched successfully.",
+      summary,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO comp rooms summary"
+    );
+  }
+};
+
 
 
 
@@ -14089,6 +14912,9 @@ module.exports = {
   getCEOADRRevPARDetails,
   getCEOOutletRevenueDetails,
   getCEOBanquetRevenueDetails,
+  getCEOTotalRevenueDetails,
+  getCEORoomsRevenueDetails,
+  getCEOFBRevenueDetails,
   getCEOOccupancy,
   getCEOGlitchAlerts,
   getCEOIncidentAlerts,
@@ -14144,6 +14970,7 @@ module.exports = {
   getCEOSalesContractChart,
   getCEOSalesContractDetails,
   getCEOARRRevPARChart,
-  getCEOOutOfOrderChart
+  getCEOOutOfOrderChart,
+  getCEOCompRoomsSummary
 };
 

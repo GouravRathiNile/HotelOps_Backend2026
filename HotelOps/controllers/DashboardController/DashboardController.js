@@ -326,6 +326,210 @@ exports.getCEOBanquetRevenueDetails = async (req, res) => {
     return handleError(error, res);
   }
 };
+// 1.5============================================================CEO Revenue Summary Total Revenew Details
+exports.getCEOTotalRevenueDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+    } = req.query;
+
+    // ========================================================
+    // Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOTotalRevenueDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res.status(STATUS_CODES.SUCCESS).json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 1.6============================================================CEO Revenue Summary Room Revenew Details
+exports.getCEORoomsRevenueDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+    } = req.query;
+
+    // ========================================================
+    // Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEORoomsRevenueDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res.status(STATUS_CODES.SUCCESS).json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 1.7============================================================CEO Revenue Summary F&B Revenew Details
+exports.getCEOFBRevenueDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+    } = req.query;
+
+    // ========================================================
+    // Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOFBRevenueDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res.status(STATUS_CODES.SUCCESS).json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
 // 2. ============================================================ Get CEO Occupancy
 exports.getCEOOccupancy = async (req, res) => {
   try {
@@ -2608,7 +2812,6 @@ exports.getCEODiscardDetails = async (req, res) => {
     return handleError(error, res);
   }
 };
-
 // 19. ============================================================ Lost and Found Trend
 exports.getCEOLostAndFound = async (req, res) => {
   try {
@@ -4641,6 +4844,82 @@ exports.getCEOOutOfOrderChart = async (req, res) => {
 
     const result =
       await DashboardService.getCEOOutOfOrderChart({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 31. ============================================================ Comp Rooms Count
+exports.getCEOCompRoomsSummary = async (req, res) => {
+  try {
+    const {
+      Filter = "yearly",
+      OrganizationID,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter)
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOCompRoomsSummary({
         Filter: filter,
         OrganizationID: orgID || null,
       });
