@@ -6575,7 +6575,6 @@ const getCEOPPMChecklistDetails = async (data) => {
     );
   }
 };
-
 // 14. ============================================================ Training Hours Trend
 const getCEOTrainingHours = async (data) => {
   try {
@@ -13010,7 +13009,12 @@ const getCEOHLPReportChart = async (data) => {
     // 4. Response Mapping
     // ========================================================
 
-    const chartData = result.rows.map((row) => ({
+    const chartData = result.rows
+      .filter((row) =>
+        String(row.Label ?? "").trim() !== "" &&
+        Number(row.Total ?? 0) !== 0
+      )
+      .map((row) => ({
       OrganizationID:
         row.OrganizationID == null
           ? null

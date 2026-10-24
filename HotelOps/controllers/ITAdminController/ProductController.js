@@ -104,6 +104,7 @@ exports.getAllProducts = async (req, res) => {
     const page = Number(req.query.page || 1);
     const pageSize = Number(req.query.pageSize || 10);
     const ProductName = String(req.query.ProductName || "").trim();
+    const CategoryName = String(req.query.CategoryName || "").trim();
     const categoryFilter = req.query.ProductCategoryID;
     const ProductCategoryID = categoryFilter === undefined || categoryFilter === ""
       ? null
@@ -138,7 +139,8 @@ exports.getAllProducts = async (req, res) => {
         page,
         pageSize,
         ProductName,
-        ProductCategoryID
+        ProductCategoryID,
+        CategoryName
       );
 
     if (!response.success) {

@@ -147,7 +147,8 @@ const getAllProducts = async (
   page = 1,
   pageSize = 10,
   ProductName = "",
-  ProductCategoryID = null
+  ProductCategoryID = null,
+  CategoryName = ""
 ) => {
   try {
 
@@ -161,7 +162,8 @@ const getAllProducts = async (
         ON pm.ProductCategoryID = pcm.ProductCategoryID
       WHERE pm.IsDeleted = FALSE
         AND pm.ProductName ILIKE $1
-        AND ($2::INTEGER IS NULL OR pm.ProductCategoryID = $2);
+        AND ($2::INTEGER IS NULL OR pm.ProductCategoryID = $2)
+        AND ($3::TEXT = '' OR LOWER(pcm.CategoryName) = LOWER($3));
     `;
 
     const query = `
@@ -184,19 +186,21 @@ const getAllProducts = async (
       WHERE pm.IsDeleted = FALSE
         AND pm.ProductName ILIKE $1
         AND ($2::INTEGER IS NULL OR pm.ProductCategoryID = $2)
+        AND ($3::TEXT = '' OR LOWER(pcm.CategoryName) = LOWER($3))
 
       ORDER BY pm.ProductName ASC
-      LIMIT $3 OFFSET $4;
+      LIMIT $4 OFFSET $5;
     `;
 
     const [result, countResult] = await Promise.all([
       pool.query(query, [
         productNameFilter,
         ProductCategoryID,
+        CategoryName,
         pageSize,
         offset,
       ]),
-      pool.query(countQuery, [productNameFilter, ProductCategoryID]),
+      pool.query(countQuery, [productNameFilter, ProductCategoryID, CategoryName]),
     ]);
 
     const totalCount = countResult.rows[0].totalcount;
