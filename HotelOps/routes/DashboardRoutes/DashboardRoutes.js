@@ -2,6 +2,10 @@ const express = require("express");
 const authenticateToken = require("../../middleware/authMiddleware");
 const {
   getCEORevenueSummary,
+  getCEORevenuePerformance,
+  getCEOADRRevPARDetails,
+  getCEOOutletRevenueDetails,
+  getCEOBanquetRevenueDetails,
   getCEOOccupancy,
   getCEOGlitchAlerts,
   getCEOIncidentAlerts,
@@ -66,6 +70,14 @@ const router = express.Router();
 // ==============================================================================================CEO Dashboard 
 // 1.=============================================================Top Drr Revenre Data
 router.get("/RevenueSummary",authenticateToken,getCEORevenueSummary);
+// 1.1============================================================CEO Revenue Summary Adr and Other
+router.get("/RevenuePerformance",authenticateToken,getCEORevenuePerformance);
+// 1.2============================================================CEO Revenue Summary Adr/Revpar Details
+router.get("/ADRRevPARDetails",authenticateToken,getCEOADRRevPARDetails);
+// 1.3============================================================CEO Revenue Summary Oulet Details
+router.get("/OutletRevenueDetails",authenticateToken,getCEOOutletRevenueDetails);
+// 1.4============================================================CEO Revenue Summary banquet Details
+router.get("/BanquetRevenueDetails",authenticateToken,getCEOBanquetRevenueDetails);
 // 2. ============================================================ Get CEO Occupancy
 router.get("/OccupancyTrend",authenticateToken,getCEOOccupancy);
 // 3. ============================================================ Critical Alerts

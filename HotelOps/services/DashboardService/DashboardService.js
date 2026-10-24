@@ -134,7 +134,6 @@ const getDateRange = (filter) => {
 };
 // ==============================================================================================CEO Dashboard 
 // 1.=========================================================Top Drr Revenre Data
-// ================================================== Helpers
 // ==============================Revenue Growth Helper
 const calculateRevenue = (current, previous) => {
   const amount = Number(current || 0);
@@ -161,7 +160,7 @@ const calculateRevenue = (current, previous) => {
       growth < 0 ? "DOWN" : "SAME",
   };
 };
-// ============================================================CEO Revenue Summary
+// ===============================================================CEO Revenue Summary
 const getCEORevenueSummary = async (data) => {
   try {
     // ========================================================
@@ -328,6 +327,1223 @@ const getCEORevenueSummary = async (data) => {
     );
   }
 };
+// 1.1============================================================CEO Revenue Summary Adr and Other
+const getCEORevenuePerformance = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range (Existing Helper)
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .query(`
+        -- ====================================================
+        -- PREVIOUS PERIOD
+        -- ====================================================
+
+        DECLARE @Days INT =
+          DATEDIFF(DAY, @FromDate, @ToDate) + 1;
+
+        DECLARE @PreviousFromDate DATE =
+          DATEADD(DAY, -@Days, @FromDate);
+
+        DECLARE @PreviousToDate DATE =
+          DATEADD(DAY, -1, @FromDate);
+
+        -- ====================================================
+        -- CURRENT AND PREVIOUS PERIOD
+        -- ====================================================
+
+        ;WITH Periods AS
+        (
+          SELECT
+            'Current' AS PeriodName,
+            @FromDate AS FromDate,
+            @ToDate AS ToDate
+
+          UNION ALL
+
+          SELECT
+            'Previous',
+            @PreviousFromDate,
+            @PreviousToDate
+        ),
+
+        -- ====================================================
+        -- ACTIVE NILE HOTELS
+        -- ====================================================
+
+        ActiveHotels AS
+        (
+          SELECT DISTINCT
+            OrganizationID
+
+          FROM dbo.htl_tbl_organization_master
+
+          WHERE Activation_status = 1
+            AND IsNileHotel = 1
+        ),
+
+        -- ====================================================
+        -- REPORT MASTER DATA
+        -- ====================================================
+
+        ReportData AS
+        (
+          SELECT
+            p.PeriodName,
+            m.EntryID,
+            m.OrganizationID
+
+          FROM Periods p
+
+          INNER JOIN
+            DailyRevenueReport.DailyRevenueReport_Tbl_Report_Entry_Master m
+              ON m.EntryDate >= p.FromDate
+             AND m.EntryDate < DATEADD(DAY, 1, p.ToDate)
+
+          WHERE m.IsDeleted = 0
+
+            AND (
+              @OrganizationID IS NULL
+              OR m.OrganizationID = @OrganizationID
+            )
+        ),
+
+        -- ====================================================
+        -- ADR / REVPAR - HOTEL WISE
+        -- ====================================================
+
+        RoomHotelData AS
+        (
+          SELECT
+            m.PeriodName,
+            m.OrganizationID,
+
+            AVG(
+              CASE
+                WHEN r.ItemID = 16
+                THEN TRY_CONVERT(
+                  DECIMAL(18, 2),
+                  NULLIF(
+                    REPLACE(r.FTD_Actual, ',', ''),
+                    ''
+                  )
+                )
+              END
+            ) AS ADR,
+
+            AVG(
+              CASE
+                WHEN r.ItemID = 17
+                THEN TRY_CONVERT(
+                  DECIMAL(18, 2),
+                  NULLIF(
+                    REPLACE(r.FTD_Actual, ',', ''),
+                    ''
+                  )
+                )
+              END
+            ) AS RevPAR
+
+          FROM ReportData m
+
+          INNER JOIN
+            DailyRevenueReport.DailyRevenueReport_Tbl_Report_Room_Entry r
+              ON m.EntryID = r.EntryID
+
+          WHERE r.ItemID IN (16, 17)
+
+          GROUP BY
+            m.PeriodName,
+            m.OrganizationID
+        ),
+
+        -- ====================================================
+        -- ADR / REVPAR - COMBINED TOTAL
+        -- ====================================================
+
+        RoomTotals AS
+        (
+          SELECT
+            PeriodName,
+            AVG(ADR) AS ADR,
+            AVG(RevPAR) AS RevPAR
+
+          FROM RoomHotelData
+
+          GROUP BY PeriodName
+        ),
+
+        -- ====================================================
+        -- OUTLET / BANQUET REVENUE
+        -- ====================================================
+
+        RevenueTotals AS
+        (
+          SELECT
+            m.PeriodName,
+
+            -- OUTLET REVENUE
+            SUM(
+              CASE
+                WHEN UPPER(LTRIM(RTRIM(o.ItemType))) = 'OUTLET'
+                 AND UPPER(LTRIM(RTRIM(o.Item))) = 'TOTAL'
+
+                THEN ISNULL(
+                  TRY_CONVERT(
+                    DECIMAL(18, 2),
+                    NULLIF(
+                      REPLACE(o.FTD_Actual, ',', ''),
+                      ''
+                    )
+                  ),
+                  0
+                )
+
+                ELSE 0
+              END
+            ) AS OutletRevenue,
+
+            -- BANQUET REVENUE
+            SUM(
+              CASE
+                WHEN UPPER(LTRIM(RTRIM(o.ItemType))) = 'BANQUET'
+                 AND UPPER(LTRIM(RTRIM(o.Item))) = 'TOTAL'
+                 AND h.OrganizationID IS NOT NULL
+
+                THEN ISNULL(
+                  TRY_CONVERT(
+                    DECIMAL(18, 2),
+                    NULLIF(
+                      REPLACE(o.FTD_Actual, ',', ''),
+                      ''
+                    )
+                  ),
+                  0
+                )
+
+                ELSE 0
+              END
+            ) AS BanquetRevenue
+
+          FROM ReportData m
+
+          INNER JOIN
+            DailyRevenueReport.DailyRevenueReport_Tbl_Report_Outlet_Entry o
+              ON m.EntryID = o.EntryID
+
+          LEFT JOIN ActiveHotels h
+            ON m.OrganizationID = h.OrganizationID
+
+          WHERE UPPER(LTRIM(RTRIM(o.Item))) = 'TOTAL'
+
+          GROUP BY m.PeriodName
+        ),
+
+        -- ====================================================
+        -- CURRENT AND PREVIOUS METRIC VALUES
+        -- ====================================================
+
+        MetricData AS
+        (
+          SELECT
+            p.PeriodName,
+
+            CAST(
+              ISNULL(r.ADR, 0)
+              AS DECIMAL(18, 2)
+            ) AS ADR,
+
+            CAST(
+              ISNULL(r.RevPAR, 0)
+              AS DECIMAL(18, 2)
+            ) AS RevPAR,
+
+            CAST(
+              ISNULL(v.OutletRevenue, 0)
+              AS DECIMAL(18, 2)
+            ) AS OutletRevenue,
+
+            CAST(
+              ISNULL(v.BanquetRevenue, 0)
+              AS DECIMAL(18, 2)
+            ) AS BanquetRevenue
+
+          FROM Periods p
+
+          LEFT JOIN RoomTotals r
+            ON p.PeriodName = r.PeriodName
+
+          LEFT JOIN RevenueTotals v
+            ON p.PeriodName = v.PeriodName
+        ),
+
+        -- ====================================================
+        -- CURRENT VS PREVIOUS
+        -- ====================================================
+
+        MetricComparison AS
+        (
+          SELECT
+            1 AS SortOrder,
+            'ADR' AS Metric,
+            c.ADR AS Amount,
+            p.ADR AS PreviousAmount
+
+          FROM MetricData c
+          CROSS JOIN MetricData p
+
+          WHERE c.PeriodName = 'Current'
+            AND p.PeriodName = 'Previous'
+
+          UNION ALL
+
+          SELECT
+            2,
+            'RevPAR',
+            c.RevPAR,
+            p.RevPAR
+
+          FROM MetricData c
+          CROSS JOIN MetricData p
+
+          WHERE c.PeriodName = 'Current'
+            AND p.PeriodName = 'Previous'
+
+          UNION ALL
+
+          SELECT
+            3,
+            'Outlet Revenue',
+            c.OutletRevenue,
+            p.OutletRevenue
+
+          FROM MetricData c
+          CROSS JOIN MetricData p
+
+          WHERE c.PeriodName = 'Current'
+            AND p.PeriodName = 'Previous'
+
+          UNION ALL
+
+          SELECT
+            4,
+            'Banquet Revenue',
+            c.BanquetRevenue,
+            p.BanquetRevenue
+
+          FROM MetricData c
+          CROSS JOIN MetricData p
+
+          WHERE c.PeriodName = 'Current'
+            AND p.PeriodName = 'Previous'
+        )
+
+        -- ====================================================
+        -- FINAL RESULT
+        -- ====================================================
+
+        SELECT
+          Metric,
+
+          Amount,
+
+          PreviousAmount,
+
+          CAST(
+            Amount - PreviousAmount
+            AS DECIMAL(18, 2)
+          ) AS Difference,
+
+          CAST(
+            CASE
+              WHEN PreviousAmount = 0 THEN 0
+
+              ELSE
+                (Amount - PreviousAmount)
+                * 100.0
+                / PreviousAmount
+            END
+            AS DECIMAL(18, 2)
+          ) AS GrowthPercentage,
+
+          CASE
+            WHEN Amount > PreviousAmount THEN 'UP'
+            WHEN Amount < PreviousAmount THEN 'DOWN'
+            ELSE 'SAME'
+          END AS Trend
+
+        FROM MetricComparison
+
+        ORDER BY SortOrder;
+      `);
+
+    // ========================================================
+    // 6. Previous Period Date Calculation
+    // ========================================================
+
+    const fromDate = new Date(
+      `${dates.CurrentFromDate}T00:00:00.000Z`
+    );
+
+    const toDate = new Date(
+      `${dates.CurrentToDate}T00:00:00.000Z`
+    );
+
+    const days = Math.round(
+      (toDate.getTime() - fromDate.getTime()) /
+        86400000
+    ) + 1;
+
+    const previousFrom = new Date(fromDate);
+    previousFrom.setUTCDate(
+      previousFrom.getUTCDate() - days
+    );
+
+    const previousTo = new Date(fromDate);
+    previousTo.setUTCDate(
+      previousTo.getUTCDate() - 1
+    );
+
+    // ========================================================
+    // 7. Response Mapping
+    // ========================================================
+
+    const metrics = result.recordset.map((row) => ({
+      Metric: row.Metric,
+
+      Amount: Number(row.Amount ?? 0),
+
+      PreviousAmount: Number(
+        row.PreviousAmount ?? 0
+      ),
+
+      Difference: Number(row.Difference ?? 0),
+
+      GrowthPercentage: Number(
+        row.GrowthPercentage ?? 0
+      ),
+
+      Trend: row.Trend ?? "SAME",
+    }));
+
+    // ========================================================
+    // 8. Response
+    // ========================================================
+
+    return ok(
+      "CEO revenue performance fetched successfully.",
+      metrics,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        CurrentPeriod: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        PreviousPeriod: {
+          FromDate:
+            previousFrom.toISOString().slice(0, 10),
+
+          ToDate:
+            previousTo.toISOString().slice(0, 10),
+        },
+
+        TotalMetrics: metrics.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO revenue performance"
+    );
+  }
+};
+// 1.2============================================================CEO Revenue Summary Adr/Revpar Details
+const getCEOADRRevPARDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query - ADR / RevPAR
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input("FromDate", sql.Date, dates.CurrentFromDate)
+      .input("ToDate", sql.Date, dates.CurrentToDate)
+      .query(`
+        ;WITH HotelData AS
+        (
+          SELECT
+            m.OrganizationID,
+
+            dbo.FN_Get_OrganizationShortName(
+              m.OrganizationID
+            ) AS Hotel,
+
+            CAST(
+              AVG(
+                CASE
+                  WHEN r.ItemID = 16
+                  THEN TRY_CONVERT(
+                    DECIMAL(18, 2),
+                    NULLIF(
+                      REPLACE(r.FTD_Actual, ',', ''),
+                      ''
+                    )
+                  )
+                END
+              ) AS DECIMAL(18, 2)
+            ) AS ADR,
+
+            CAST(
+              AVG(
+                CASE
+                  WHEN r.ItemID = 17
+                  THEN TRY_CONVERT(
+                    DECIMAL(18, 2),
+                    NULLIF(
+                      REPLACE(r.FTD_Actual, ',', ''),
+                      ''
+                    )
+                  )
+                END
+              ) AS DECIMAL(18, 2)
+            ) AS RevPAR
+
+          FROM DailyRevenueReport.DailyRevenueReport_Tbl_Report_Entry_Master AS m
+
+          INNER JOIN DailyRevenueReport.DailyRevenueReport_Tbl_Report_Room_Entry AS r
+            ON m.EntryID = r.EntryID
+
+          WHERE m.IsDeleted = 0
+
+            AND (
+              @OrganizationID IS NULL
+              OR m.OrganizationID = @OrganizationID
+            )
+
+            AND m.EntryDate >= @FromDate
+            AND m.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+            AND r.ItemID IN (16, 17)
+
+          GROUP BY m.OrganizationID
+        ),
+
+        FinalResult AS
+        (
+          SELECT
+            0 AS SortOrder,
+            OrganizationID,
+            Hotel,
+            ADR,
+            RevPAR
+          FROM HotelData
+
+          UNION ALL
+
+          SELECT
+            1 AS SortOrder,
+            NULL AS OrganizationID,
+            'TOTAL' AS Hotel,
+
+            CAST(
+              AVG(ADR) AS DECIMAL(18, 2)
+            ) AS ADR,
+
+            CAST(
+              AVG(RevPAR) AS DECIMAL(18, 2)
+            ) AS RevPAR
+
+          FROM HotelData
+        )
+
+        SELECT
+          OrganizationID,
+          Hotel,
+          ADR,
+          RevPAR
+
+        FROM FinalResult
+
+        ORDER BY SortOrder, Hotel;
+      `);
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const rows = result.recordset || [];
+
+    const hotelDetails = rows
+      .filter((row) => row.Hotel !== "TOTAL")
+      .map((row, index) => ({
+        SrNo: index + 1,
+
+        OrganizationID: row.OrganizationID == null
+          ? null
+          : String(row.OrganizationID),
+
+        Hotel: row.Hotel ?? null,
+
+        ADR: row.ADR == null ? null : Number(row.ADR),
+
+        RevPAR: row.RevPAR == null
+          ? null
+          : Number(row.RevPAR),
+      }));
+
+    const totalRow = rows.find(
+      (row) => row.Hotel === "TOTAL"
+    );
+
+    const grandTotal = {
+      Hotel: "TOTAL",
+
+      ADR: totalRow?.ADR == null
+        ? null
+        : Number(totalRow.ADR),
+
+      RevPAR: totalRow?.RevPAR == null
+        ? null
+        : Number(totalRow.RevPAR),
+    };
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    return ok(
+      "CEO ADR and RevPAR details fetched successfully.",
+      {
+        ADRRevPARDetails: hotelDetails,
+        GrandTotal: grandTotal,
+      },
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: hotelDetails.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO ADR RevPAR details"
+    );
+  }
+};
+// 1.3============================================================CEO Revenue Summary Oulet Details
+const getCEOOutletRevenueDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query - OUTLET REVENUE
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input("FromDate", sql.Date, dates.CurrentFromDate)
+      .input("ToDate", sql.Date, dates.CurrentToDate)
+      .query(`
+        ;WITH HotelData AS
+        (
+          SELECT
+            m.OrganizationID,
+
+            dbo.FN_Get_OrganizationShortName(
+              m.OrganizationID
+            ) AS Hotel,
+
+            SUM(
+              ISNULL(
+                TRY_CONVERT(
+                  DECIMAL(18, 2),
+                  NULLIF(
+                    REPLACE(o.FTD_Actual, ',', ''),
+                    ''
+                  )
+                ),
+                0
+              )
+            ) AS OutletRevenue
+
+          FROM DailyRevenueReport.DailyRevenueReport_Tbl_Report_Entry_Master AS m
+
+          INNER JOIN DailyRevenueReport.DailyRevenueReport_Tbl_Report_Outlet_Entry AS o
+            ON m.EntryID = o.EntryID
+
+          WHERE m.IsDeleted = 0
+
+            AND (
+              @OrganizationID IS NULL
+              OR m.OrganizationID = @OrganizationID
+            )
+
+            AND m.EntryDate >= @FromDate
+            AND m.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+            AND LTRIM(RTRIM(o.Item)) = 'Total'
+            AND LTRIM(RTRIM(o.ItemType)) = 'Outlet'
+
+          GROUP BY m.OrganizationID
+        )
+
+        SELECT
+          OrganizationID,
+          Hotel,
+          OutletRevenue
+
+        FROM
+        (
+          SELECT
+            0 AS SortOrder,
+            OrganizationID,
+            Hotel,
+            OutletRevenue
+          FROM HotelData
+
+          UNION ALL
+
+          SELECT
+            1 AS SortOrder,
+            CAST(NULL AS BIGINT) AS OrganizationID,
+            'TOTAL' AS Hotel,
+
+            ISNULL(
+              SUM(OutletRevenue),
+              0
+            ) AS OutletRevenue
+
+          FROM HotelData
+        ) AS FinalResult
+
+        ORDER BY SortOrder, Hotel;
+      `);
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const rows = result.recordset || [];
+
+    const hotelDetails = rows
+      .filter((row) => row.Hotel !== "TOTAL")
+      .map((row, index) => ({
+        SrNo: index + 1,
+
+        OrganizationID: row.OrganizationID == null
+          ? null
+          : String(row.OrganizationID),
+
+        Hotel: row.Hotel ?? null,
+
+        OutletRevenue: Number(row.OutletRevenue ?? 0),
+      }));
+
+    const totalRow = rows.find(
+      (row) => row.Hotel === "TOTAL"
+    );
+
+    const grandTotal = {
+      Hotel: "TOTAL",
+
+      OutletRevenue: Number(
+        totalRow?.OutletRevenue ?? 0
+      ),
+    };
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    return ok(
+      "CEO outlet revenue details fetched successfully.",
+      {
+        OutletRevenueDetails: hotelDetails,
+        GrandTotal: grandTotal,
+      },
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: hotelDetails.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO outlet revenue details"
+    );
+  }
+};
+// 1.4============================================================CEO Revenue Summary banquet Details
+const getCEOBanquetRevenueDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query - BANQUET REVENUE
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input("FromDate", sql.Date, dates.CurrentFromDate)
+      .input("ToDate", sql.Date, dates.CurrentToDate)
+      .query(`
+        ;WITH Hotels AS
+        (
+          SELECT
+            h.OrganizationID,
+
+            dbo.FN_Get_OrganizationShortName(
+              h.OrganizationID
+            ) AS Hotel
+
+          FROM dbo.htl_tbl_organization_master h
+
+          WHERE h.Activation_status = 1
+            AND h.IsNileHotel = 1
+
+            AND (
+              @OrganizationID IS NULL
+              OR h.OrganizationID = @OrganizationID
+            )
+        ),
+
+        -- ====================================================
+        -- BANQUET REVENUE
+        -- ====================================================
+
+        BanquetData AS
+        (
+          SELECT
+            m.OrganizationID,
+
+            SUM(
+              ISNULL(
+                TRY_CONVERT(
+                  DECIMAL(18, 2),
+                  NULLIF(
+                    REPLACE(o.FTD_Actual, ',', ''),
+                    ''
+                  )
+                ),
+                0
+              )
+            ) AS BanquetRevenue
+
+          FROM DailyRevenueReport.DailyRevenueReport_Tbl_Report_Entry_Master m
+
+          INNER JOIN DailyRevenueReport.DailyRevenueReport_Tbl_Report_Outlet_Entry o
+            ON m.EntryID = o.EntryID
+
+          WHERE m.IsDeleted = 0
+
+            AND (
+              @OrganizationID IS NULL
+              OR m.OrganizationID = @OrganizationID
+            )
+
+            AND m.EntryDate >= @FromDate
+            AND m.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+            AND UPPER(LTRIM(RTRIM(o.ItemType))) = 'BANQUET'
+            AND UPPER(LTRIM(RTRIM(o.Item))) = 'TOTAL'
+
+          GROUP BY m.OrganizationID
+        ),
+
+        -- ====================================================
+        -- HOTEL-WISE DATA
+        -- ====================================================
+
+        HotelData AS
+        (
+          SELECT
+            h.OrganizationID,
+            h.Hotel,
+
+            ISNULL(
+              b.BanquetRevenue,
+              0
+            ) AS BanquetRevenue
+
+          FROM Hotels h
+
+          LEFT JOIN BanquetData b
+            ON h.OrganizationID = b.OrganizationID
+        )
+
+        -- ====================================================
+        -- FINAL RESULT + TOTAL ROW
+        -- ====================================================
+
+        SELECT
+          OrganizationID,
+          Hotel,
+          BanquetRevenue
+
+        FROM
+        (
+          SELECT
+            0 AS SortOrder,
+            OrganizationID,
+            Hotel,
+            BanquetRevenue
+          FROM HotelData
+
+          UNION ALL
+
+          SELECT
+            1 AS SortOrder,
+            CAST(NULL AS BIGINT) AS OrganizationID,
+            'TOTAL' AS Hotel,
+
+            ISNULL(
+              SUM(BanquetRevenue),
+              0
+            ) AS BanquetRevenue
+
+          FROM HotelData
+
+        ) AS FinalResult
+
+        ORDER BY SortOrder, Hotel;
+      `);
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const rows = result.recordset || [];
+
+    const hotelDetails = rows
+      .filter((row) => row.Hotel !== "TOTAL")
+      .map((row, index) => ({
+        SrNo: index + 1,
+
+        OrganizationID: row.OrganizationID == null
+          ? null
+          : String(row.OrganizationID),
+
+        Hotel: row.Hotel ?? null,
+
+        BanquetRevenue: Number(
+          row.BanquetRevenue ?? 0
+        ),
+      }));
+
+    const totalRow = rows.find(
+      (row) => row.Hotel === "TOTAL"
+    );
+
+    const grandTotal = {
+      Hotel: "TOTAL",
+
+      BanquetRevenue: Number(
+        totalRow?.BanquetRevenue ?? 0
+      ),
+    };
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    return ok(
+      "CEO banquet revenue details fetched successfully.",
+      {
+        BanquetRevenueDetails: hotelDetails,
+        GrandTotal: grandTotal,
+      },
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: hotelDetails.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO banquet revenue details"
+    );
+  }
+};
+// 1.5============================================================CEO Revenue Summary Total Details
+// 1.6============================================================CEO Revenue Summary Adr and Other
+// 1.7============================================================CEO Revenue Summary Adr and Other
+
 // 2. ============================================================ Get CEO Occupancy
 const getCEOOccupancy = async (data) => {
   try {
@@ -541,7 +1757,6 @@ const getCEOOccupancy = async (data) => {
     );
   }
 };
-
 // 3. ============================================================ Critical Alerts
 // 3.1. ============================================Glitch
 const getCEOGlitchAlerts = async (data) => {
@@ -12870,6 +14085,10 @@ const getCEOOutOfOrderChart = async (data) => {
 // ============================================================
 module.exports = {
   getCEORevenueSummary,
+  getCEORevenuePerformance,
+  getCEOADRRevPARDetails,
+  getCEOOutletRevenueDetails,
+  getCEOBanquetRevenueDetails,
   getCEOOccupancy,
   getCEOGlitchAlerts,
   getCEOIncidentAlerts,

@@ -55,6 +55,277 @@ exports.getCEORevenueSummary = async (req, res) => {
     return handleError(error, res);
   }
 };
+// 1.1============================================================CEO Revenue Summary Adr and Other
+exports.getCEORevenuePerformance = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter)
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEORevenuePerformance({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 1.2============================================================CEO Revenue Summary Adr/Revpar Details
+exports.getCEOADRRevPARDetails = async (req, res) => {
+  try {
+    const { Filter = "yesterday", OrganizationID } = req.query;
+
+    // ========================================================
+    // Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOADRRevPARDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res.status(STATUS_CODES.SUCCESS).json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 1.3============================================================CEO Revenue Summary Oulet Details
+exports.getCEOOutletRevenueDetails = async (req, res) => {
+  try {
+    const { Filter = "yesterday", OrganizationID } = req.query;
+
+    // ========================================================
+    // Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOOutletRevenueDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res.status(STATUS_CODES.SUCCESS).json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 1.4============================================================CEO Revenue Summary banquet Details
+exports.getCEOBanquetRevenueDetails = async (req, res) => {
+  try {
+    const { Filter = "yesterday", OrganizationID } = req.query;
+
+    // ========================================================
+    // Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOBanquetRevenueDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res.status(STATUS_CODES.SUCCESS).json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
 // 2. ============================================================ Get CEO Occupancy
 exports.getCEOOccupancy = async (req, res) => {
   try {
@@ -128,7 +399,6 @@ exports.getCEOOccupancy = async (req, res) => {
     return handleError(error, res);
   }
 };
-
 // 3. ============================================================ Critical Alerts
 // 3.1. ============================================Glitch
 exports.getCEOGlitchAlerts = async (req, res) => {
@@ -1576,7 +1846,6 @@ exports.getCEOPPMChecklistDetails = async (req, res) => {
     return handleError(error, res);
   }
 };
-
 // 14. ============================================================ Training Hours Trend
 exports.getCEOTrainingHours = async (req, res) => {
   try {
