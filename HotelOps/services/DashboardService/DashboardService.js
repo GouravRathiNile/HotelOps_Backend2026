@@ -4687,7 +4687,7 @@ const getCEOTrainingHoursDetails = async (data) => {
       result.recordset[0]?.TotalCount ?? 0
     );
 
-    // If requested page is empty, fetch count separately
+    // Empty page count fallback
     if (!result.recordset.length) {
       const countResult = await mssqlPool
         .request()
@@ -4707,7 +4707,8 @@ const getCEOTrainingHoursDetails = async (data) => {
           dates.CurrentToDate
         )
         .query(`
-          SELECT COUNT(*) AS TotalCount
+          SELECT
+            COUNT(*) AS TotalCount
 
           FROM TrainingSchedule.TrainingSchedule_Tbl_TrainingSchedule_Entry_Master AS t
 
@@ -4738,6 +4739,8 @@ const getCEOTrainingHoursDetails = async (data) => {
 
     const excludedFields = new Set([
       "totalcount",
+
+      // Previously removed fields
       "modifiedby",
       "modifieddate",
       "deletedby",
@@ -4745,6 +4748,12 @@ const getCEOTrainingHoursDetails = async (data) => {
       "departmentid",
       "isdeleted",
       "createdby",
+
+      // Additional unwanted fields
+      "createddateutc",
+      "modifyby",
+      "modifydate",
+      "modifydateutc",
     ]);
 
     const trainingDetails = result.recordset.map(
@@ -4812,7 +4821,6 @@ const getCEOTrainingHoursDetails = async (data) => {
     );
   }
 };
-
 // 15. ============================================================ Restaurant Feedback Trend
 const getCEORestaurantFeedback = async (data) => {
   try {
@@ -4962,6 +4970,317 @@ const getCEORestaurantFeedback = async (data) => {
     );
   }
 };
+// 15.1 ============================================================ Restaurant Feedback Details
+const getCEORestaurantFeedbackDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Pagination Validation
+    // ========================================================
+
+    const page = Number(data.page ?? 1);
+    const pageSize = Number(data.PageSize ?? 10);
+
+    if (
+      !Number.isSafeInteger(page) ||
+      page <= 0 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    ) {
+      return fail(
+        "Invalid page or PageSize.",
+        400
+      );
+    }
+
+    const offset = (page - 1) * pageSize;
+
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset > 2147483647
+    ) {
+      return fail(
+        "Pagination offset is too large.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 4. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 5. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 6. MSSQL Query
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .input("Offset", sql.Int, offset)
+      .input("PageSize", sql.Int, pageSize)
+      .query(`
+        SELECT
+          a.ID AS VisitID,
+
+          a.OrganizationID,
+
+          a.OverallExperienceComments,
+
+          a.HearFrom,
+
+          a.FoodType,
+
+          CONVERT(
+            VARCHAR(11),
+            a.VisitDate,
+            106
+          ) AS VisitDate,
+
+          -- CATEGORY-WISE FEEDBACK ATTRIBUTES
+          JSON_QUERY(
+            (
+              SELECT
+                cm.Title AS Category,
+                b.Title AS Attribute,
+                AD.Answer AS Response
+
+              FROM dbo.RT_TBL_Contact_VisitInforamtion_Attribute_Details AS AD
+
+              INNER JOIN dbo.RT_Tbl_Feedback_Grid_Attribute_Master AS b
+                ON AD.AttributeID = b.AttributeID
+
+              INNER JOIN dbo.RT_Tbl_Feedback_Grid_Category_Master AS cm
+                ON cm.CategoryID = b.CategoryID
+
+              WHERE AD.VisitID = a.ID
+
+              FOR JSON PATH
+            )
+          ) AS FeedbackDetails,
+
+          COUNT(*) OVER() AS TotalCount
+
+        FROM dbo.RT_TBL_Contact_VisitInforamtion AS a
+
+        WHERE (
+          @OrganizationID IS NULL
+          OR a.OrganizationID = @OrganizationID
+        )
+
+          AND a.VisitDate >= @FromDate
+          AND a.VisitDate < DATEADD(DAY, 1, @ToDate)
+
+        ORDER BY
+          a.VisitDate DESC,
+          a.ID DESC
+
+        OFFSET @Offset ROWS
+        FETCH NEXT @PageSize ROWS ONLY;
+      `);
+
+    // ========================================================
+    // 7. Total Count
+    // ========================================================
+
+    let totalCount = Number(
+      result.recordset[0]?.TotalCount ?? 0
+    );
+
+    // Empty page count fallback
+    if (!result.recordset.length) {
+      const countResult = await mssqlPool
+        .request()
+        .input(
+          "OrganizationID",
+          sql.BigInt,
+          organizationID || null
+        )
+        .input(
+          "FromDate",
+          sql.Date,
+          dates.CurrentFromDate
+        )
+        .input(
+          "ToDate",
+          sql.Date,
+          dates.CurrentToDate
+        )
+        .query(`
+          SELECT COUNT(*) AS TotalCount
+
+          FROM dbo.RT_TBL_Contact_VisitInforamtion AS a
+
+          WHERE (
+            @OrganizationID IS NULL
+            OR a.OrganizationID = @OrganizationID
+          )
+
+            AND a.VisitDate >= @FromDate
+            AND a.VisitDate < DATEADD(DAY, 1, @ToDate);
+        `);
+
+      totalCount = Number(
+        countResult.recordset[0]?.TotalCount ?? 0
+      );
+    }
+
+    // ========================================================
+    // 8. Response Mapping
+    // ========================================================
+
+    const feedbackDetails = result.recordset.map(
+      (row, index) => {
+        let attributes = [];
+
+        try {
+          attributes = row.FeedbackDetails
+            ? JSON.parse(row.FeedbackDetails)
+            : [];
+        } catch {
+          attributes = [];
+        }
+
+        // Group attributes category-wise
+        const groupedFeedback = {};
+
+        for (const item of attributes) {
+          const category = item.Category || "Other";
+
+          if (!groupedFeedback[category]) {
+            groupedFeedback[category] = [];
+          }
+
+          groupedFeedback[category].push({
+            Attribute: item.Attribute ?? null,
+            Response: item.Response ?? null,
+          });
+        }
+
+        return {
+          SrNo: offset + index + 1,
+
+          VisitID: String(row.VisitID),
+
+          OrganizationID: String(row.OrganizationID),
+
+          OverallExperienceComments:
+            row.OverallExperienceComments ?? null,
+
+          HearFrom: row.HearFrom ?? null,
+
+          FoodType: row.FoodType ?? null,
+
+          VisitDate: row.VisitDate ?? null,
+
+          FeedbackDetails: Object.entries(
+            groupedFeedback
+          ).map(([Category, Attributes]) => ({
+            Category,
+            Attributes,
+          })),
+        };
+      }
+    );
+
+    // ========================================================
+    // 9. Response
+    // ========================================================
+
+    return ok(
+      "CEO restaurant feedback details fetched successfully.",
+      feedbackDetails,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalCount: totalCount,
+
+        page: page,
+
+        PageSize: pageSize,
+
+        TotalPages: Math.ceil(totalCount / pageSize),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO restaurant feedback details"
+    );
+  }
+};
 // 16. ============================================================ Consumption Trend
 const getCEOConsumption = async (data) => {
   try {
@@ -5107,6 +5426,383 @@ const getCEOConsumption = async (data) => {
     return databaseFailure(
       error,
       "Fetch CEO consumption"
+    );
+  }
+};
+// 16.1. ============================================================ Consumption Details
+const getCEOConsumptionDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. UserID Validation
+    // ========================================================
+
+    const rawUserID = data.UserID ?? 0;
+    const userID = String(rawUserID).trim();
+
+    if (
+      !/^(0|[1-9]\d*)$/.test(userID) ||
+      BigInt(userID) > 9223372036854775807n
+    ) {
+      return fail(
+        "UserID must be zero or a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 4. Pagination Validation
+    // ========================================================
+
+    const page = Number(data.page ?? 1);
+    const pageSize = Number(data.PageSize ?? 100);
+
+    if (
+      !Number.isSafeInteger(page) ||
+      page <= 0 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize <= 0 ||
+      pageSize > 100
+    ) {
+      return fail(
+        "Invalid page or PageSize.",
+        400
+      );
+    }
+
+    const offset = (page - 1) * pageSize;
+
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset > 2147483647 - pageSize
+    ) {
+      return fail(
+        "Pagination offset is too large.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 5. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 6. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 7. MSSQL Query
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input("UserID", sql.BigInt, userID)
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .input("Offset", sql.Int, offset)
+      .input("Limit", sql.Int, pageSize)
+      .query(`
+        ;WITH ConsumptionData AS
+        (
+          SELECT
+            e.OrganizationID,
+            c.Con_Date,
+            c.ItemCode,
+            c.Item,
+            c.Department,
+            c.Store,
+            c.Type,
+            c.Quantity,
+            c.Rate,
+            c.TotalAmount,
+            c.UOM
+
+          FROM FinanceDailyReport.FinanceDailyReport_Tbl_Entry_Master AS e
+
+          INNER JOIN FinanceDailyReport.FinanceDailyReport_Tbl_Consumption_Details AS c
+            ON e.EntryID = c.EntryID
+
+          WHERE e.IsDelete = 0
+            AND e.ReportType = 'Consumption'
+
+            AND (
+              @OrganizationID IS NULL
+              OR e.OrganizationID = @OrganizationID
+            )
+
+            AND c.Con_Date >= @FromDate
+            AND c.Con_Date < DATEADD(DAY, 1, @ToDate)
+
+            AND c.Con_Date IS NOT NULL
+            AND c.TotalAmount > 0
+
+            AND (
+              @UserID = 0
+              OR c.Department IN
+              (
+                SELECT Department
+                FROM InterviewAssessment.InterviewAssessment_Tbl_Position_User_RH_Department_Rights
+                WHERE UserID = @UserID
+              )
+            )
+        ),
+
+        NumberedData AS
+        (
+          SELECT
+            ROW_NUMBER() OVER (
+              ORDER BY Con_Date DESC, ItemCode
+            ) AS SrNo,
+
+            OrganizationID,
+            CONVERT(VARCHAR(11), Con_Date, 106) AS [Date],
+            ItemCode,
+            Item,
+            Department,
+            Store,
+            Quantity,
+            Rate,
+            TotalAmount,
+            Type,
+            UOM
+
+          FROM ConsumptionData
+        ),
+
+        PagedData AS
+        (
+          SELECT *
+          FROM NumberedData
+          WHERE SrNo > @Offset
+            AND SrNo <= @Offset + @Limit
+        ),
+
+        FinalResult AS
+        (
+          SELECT
+            0 AS SortOrder,
+            CAST(SrNo AS BIGINT) AS SrNo,
+            OrganizationID,
+            [Date],
+            CAST(ItemCode AS NVARCHAR(100)) AS ItemCode,
+            CAST(Item AS NVARCHAR(MAX)) AS Item,
+            CAST(Department AS NVARCHAR(MAX)) AS Department,
+            CAST(Store AS NVARCHAR(MAX)) AS Store,
+            Quantity,
+            Rate,
+            TotalAmount,
+            CAST(Type AS NVARCHAR(MAX)) AS Type,
+            CAST(UOM AS NVARCHAR(MAX)) AS UOM
+
+          FROM PagedData
+
+          UNION ALL
+
+          SELECT
+            1 AS SortOrder,
+            NULL AS SrNo,
+            NULL AS OrganizationID,
+            NULL AS [Date],
+            NULL AS ItemCode,
+            N'TOTAL' AS Item,
+            NULL AS Department,
+            NULL AS Store,
+            SUM(Quantity) AS Quantity,
+            NULL AS Rate,
+            SUM(TotalAmount) AS TotalAmount,
+            NULL AS Type,
+            NULL AS UOM
+
+          FROM ConsumptionData
+        )
+
+        SELECT
+          SortOrder,
+          SrNo,
+          OrganizationID,
+          [Date],
+          ItemCode,
+          Item,
+          Department,
+          Store,
+          Quantity,
+          Rate,
+          TotalAmount,
+          Type,
+          UOM
+
+        FROM FinalResult
+
+        ORDER BY SortOrder, SrNo;
+
+        -- Overall record count for pagination
+        SELECT COUNT(*) AS TotalCount
+        FROM FinanceDailyReport.FinanceDailyReport_Tbl_Entry_Master AS e
+
+        INNER JOIN FinanceDailyReport.FinanceDailyReport_Tbl_Consumption_Details AS c
+          ON e.EntryID = c.EntryID
+
+        WHERE e.IsDelete = 0
+          AND e.ReportType = 'Consumption'
+
+          AND (
+            @OrganizationID IS NULL
+            OR e.OrganizationID = @OrganizationID
+          )
+
+          AND c.Con_Date >= @FromDate
+          AND c.Con_Date < DATEADD(DAY, 1, @ToDate)
+
+          AND c.Con_Date IS NOT NULL
+          AND c.TotalAmount > 0
+
+          AND (
+            @UserID = 0
+            OR c.Department IN
+            (
+              SELECT Department
+              FROM InterviewAssessment.InterviewAssessment_Tbl_Position_User_RH_Department_Rights
+              WHERE UserID = @UserID
+            )
+          );
+      `);
+
+    // ========================================================
+    // 8. Pagination Count
+    // ========================================================
+
+    const totalCount = Number(
+      result.recordsets?.[1]?.[0]?.TotalCount ?? 0
+    );
+
+    // ========================================================
+    // 9. Response Mapping
+    // ========================================================
+
+    const rows = result.recordsets?.[0] ?? [];
+
+    const detailRows = rows.filter(
+      (row) => Number(row.SortOrder) === 0
+    );
+
+    const totalRow = rows.find(
+      (row) => Number(row.SortOrder) === 1
+    );
+
+    const consumptionDetails = detailRows.map((row) => ({
+      SrNo: Number(row.SrNo),
+      OrganizationID:
+        row.OrganizationID == null
+          ? null
+          : String(row.OrganizationID),
+      Date: row.Date ?? null,
+      ItemCode: row.ItemCode ?? null,
+      Item: row.Item ?? null,
+      Department: row.Department ?? null,
+      Store: row.Store ?? null,
+      Quantity: Number(row.Quantity ?? 0),
+      Rate: Number(row.Rate ?? 0),
+      TotalAmount: Number(row.TotalAmount ?? 0),
+      Type: row.Type ?? null,
+      UOM: row.UOM ?? null,
+    }));
+
+    const grandTotal = {
+      Item: "TOTAL",
+      Quantity: Number(totalRow?.Quantity ?? 0),
+      TotalAmount: Number(totalRow?.TotalAmount ?? 0),
+    };
+
+    // ========================================================
+    // 10. Response
+    // ========================================================
+
+    return ok(
+      "CEO consumption details fetched successfully.",
+      {
+        ConsumptionDetails: consumptionDetails,
+        GrandTotal: grandTotal,
+      },
+      {
+        Filter: filter,
+        OrganizationID: organizationID || null,
+        UserID: userID,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalCount: totalCount,
+        page: page,
+        PageSize: pageSize,
+        TotalPages: Math.ceil(totalCount / pageSize),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO consumption details"
     );
   }
 };
@@ -5307,10 +6003,22 @@ const getCEODiscard = async (data) => {
 
     const mssqlPool = await getMssqlPool();
 
+    // ========================================================
+    // 5. MSSQL Query - TOTAL DISCARD COST
+    // ========================================================
+
     const result = await mssqlPool
       .request()
-      .input("FromDate", sql.Date, dates.CurrentFromDate)
-      .input("ToDate", sql.Date, dates.CurrentToDate)
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
       .input(
         "OrganizationID",
         sql.BigInt,
@@ -5324,40 +6032,67 @@ const getCEODiscard = async (data) => {
             org.OrganizationID
           ) AS Hotel,
 
-          COUNT(d.DiscardID) AS Total
+          ISNULL(d.Total, 0) AS Total
 
         FROM dbo.htl_tbl_organization_master AS org
 
-        LEFT JOIN Discard.Discard_Tbl_Entry_Master AS d
-          ON d.OrganizationID = org.OrganizationID
-          AND d.DiscardDate >= @FromDate
-          AND d.DiscardDate < DATEADD(DAY, 1, @ToDate)
+        LEFT JOIN
+        (
+          SELECT
+            e.OrganizationID,
+
+            SUM(
+              ISNULL(c.TotalCost, 0)
+            ) AS Total
+
+          FROM Discard.Discard_Tbl_Entry_Master AS e
+
+          INNER JOIN Discard.Discard_Tbl_Entry_Item_Details AS c
+            ON e.DiscardID = c.DiscardID
+
+          WHERE e.DiscardDate >= @FromDate
+            AND e.DiscardDate < DATEADD(DAY, 1, @ToDate)
+
+          GROUP BY e.OrganizationID
+
+        ) AS d
+          ON org.OrganizationID = d.OrganizationID
 
         WHERE org.Activation_status = 1
           AND org.IsNileHotel = 1
+          AND org.OrganizationID <> 3
+
           AND (
             @OrganizationID IS NULL
             OR org.OrganizationID = @OrganizationID
           )
 
-        GROUP BY
-          org.OrganizationID
-
-        ORDER BY Hotel ASC;
+        ORDER BY Hotel;
       `);
 
     // ========================================================
-    // 5. Response Mapping
+    // 6. Response Mapping
     // ========================================================
 
     const chartData = result.recordset.map((row) => ({
       OrganizationID: Number(row.OrganizationID),
+
       Hotel: row.Hotel || null,
-      Total: Number(row.Total || 0),
+
+      Total: Number(row.Total ?? 0),
     }));
 
     // ========================================================
-    // 6. Response
+    // 7. Total Discard Cost
+    // ========================================================
+
+    const totalDiscardCost = chartData.reduce(
+      (sum, row) => sum + row.Total,
+      0
+    );
+
+    // ========================================================
+    // 8. Response
     // ========================================================
 
     return ok(
@@ -5365,6 +6100,7 @@ const getCEODiscard = async (data) => {
       chartData,
       {
         Filter: filter,
+
         OrganizationID: organizationID || null,
 
         DateRange: {
@@ -5374,10 +6110,7 @@ const getCEODiscard = async (data) => {
 
         TotalOrganizations: chartData.length,
 
-        TotalDiscard: chartData.reduce(
-          (sum, row) => sum + row.Total,
-          0
-        ),
+        TotalDiscardCost: totalDiscardCost,
       }
     );
 
@@ -5388,6 +6121,406 @@ const getCEODiscard = async (data) => {
     );
   }
 };
+// 18.1 ============================================================ Discards Details
+const getCEODiscardDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yearly")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Pagination Validation
+    // ========================================================
+
+    const page = Number(data.page ?? 1);
+    const pageSize = Number(data.PageSize ?? 10);
+
+    if (
+      !Number.isSafeInteger(page) ||
+      page <= 0 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    ) {
+      return fail(
+        "Invalid page or PageSize.",
+        400
+      );
+    }
+
+    const offset = (page - 1) * pageSize;
+
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset > 2147483647 - pageSize
+    ) {
+      return fail(
+        "Pagination offset is too large.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 4. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 5. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 6. MSSQL Dynamic Query
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .input("Offset", sql.Int, offset)
+      .input("Limit", sql.Int, pageSize)
+      .query(`
+        DECLARE @DetailColumns NVARCHAR(MAX);
+        DECLARE @TotalColumns NVARCHAR(MAX);
+        DECLARE @SQL NVARCHAR(MAX);
+
+        -- ====================================================
+        -- ALL ITEM DETAIL COLUMNS
+        -- ====================================================
+
+        SELECT
+          @DetailColumns = STRING_AGG(
+            CAST(
+              'c.' + QUOTENAME(name) +
+              CASE
+                WHEN name IN (
+                  'SrNo',
+                  'OrganizationID',
+                  'Hotel',
+                  'DiscardID',
+                  'DiscardDate'
+                )
+                THEN ' AS ' +
+                  QUOTENAME('Detail_' + name)
+                ELSE ''
+              END
+              AS NVARCHAR(MAX)
+            ),
+            ', '
+          ) WITHIN GROUP (ORDER BY column_id),
+
+          @TotalColumns = STRING_AGG(
+            CAST(
+              CASE
+                WHEN name = 'TotalCost'
+                THEN
+                  'SUM(ISNULL(' +
+                  QUOTENAME(name) +
+                  ', 0))'
+                ELSE 'NULL'
+              END
+              AS NVARCHAR(MAX)
+            ),
+            ', '
+          ) WITHIN GROUP (ORDER BY column_id)
+
+        FROM sys.columns
+
+        WHERE object_id = OBJECT_ID(
+          'Discard.Discard_Tbl_Entry_Item_Details'
+        );
+
+        IF @DetailColumns IS NULL
+        BEGIN
+          THROW 50001,
+            'Discard item details columns not found.',
+            1;
+        END;
+
+        -- ====================================================
+        -- DYNAMIC DETAILS + GRAND TOTAL
+        -- ====================================================
+
+        SET @SQL = N'
+          ;WITH DiscardData AS
+          (
+            SELECT
+              ROW_NUMBER() OVER (
+                ORDER BY
+                  e.DiscardDate DESC,
+                  e.DiscardID DESC
+              ) AS SrNo,
+
+              e.OrganizationID,
+
+              dbo.FN_Get_OrganizationShortName(
+                e.OrganizationID
+              ) AS Hotel,
+
+              e.DiscardID,
+
+              e.DiscardDate AS DiscardDate,
+
+              ' + @DetailColumns + ',
+
+              COUNT(*) OVER() AS __TotalCount
+
+            FROM Discard.Discard_Tbl_Entry_Master AS e
+
+            INNER JOIN Discard.Discard_Tbl_Entry_Item_Details AS c
+              ON e.DiscardID = c.DiscardID
+
+            INNER JOIN dbo.htl_tbl_organization_master AS org
+              ON e.OrganizationID = org.OrganizationID
+
+            WHERE org.Activation_status = 1
+              AND org.IsNileHotel = 1
+              AND org.OrganizationID <> 3
+
+              AND (
+                @OrganizationID IS NULL
+                OR e.OrganizationID = @OrganizationID
+              )
+
+              AND e.DiscardDate >= @FromDate
+              AND e.DiscardDate <
+                DATEADD(DAY, 1, @ToDate)
+          ),
+
+          -- ================================================
+          -- PAGINATED DETAILS
+          -- ================================================
+
+          PagedData AS
+          (
+            SELECT *
+            FROM DiscardData
+
+            WHERE SrNo > @Offset
+              AND SrNo <= @Offset + @Limit
+          ),
+
+          -- ================================================
+          -- DETAILS + GRAND TOTAL
+          -- ================================================
+
+          FinalResult AS
+          (
+            SELECT
+              0 AS SortOrder,
+              *
+            FROM PagedData
+
+            UNION ALL
+
+            SELECT
+              1 AS SortOrder,
+
+              NULL AS SrNo,
+              NULL AS OrganizationID,
+              ''TOTAL'' AS Hotel,
+              NULL AS DiscardID,
+              NULL AS DiscardDate,
+
+              ' + @TotalColumns + ',
+
+              COUNT(*) AS __TotalCount
+
+            FROM DiscardData
+          )
+
+          SELECT *
+          FROM FinalResult
+
+          ORDER BY
+            SortOrder,
+            SrNo;
+        ';
+
+        EXEC sys.sp_executesql
+          @SQL,
+          N'@OrganizationID BIGINT,
+            @FromDate DATE,
+            @ToDate DATE,
+            @Offset INT,
+            @Limit INT',
+          @OrganizationID = @OrganizationID,
+          @FromDate = @FromDate,
+          @ToDate = @ToDate,
+          @Offset = @Offset,
+          @Limit = @Limit;
+      `);
+
+    // ========================================================
+    // 7. Separate Detail and Total Rows
+    // ========================================================
+
+    const rows = result.recordset || [];
+
+    const detailRows = rows.filter(
+      (row) => Number(row.SortOrder) === 0
+    );
+
+    const totalRow = rows.find(
+      (row) => Number(row.SortOrder) === 1
+    );
+
+    // ========================================================
+    // 8. Total Count
+    // ========================================================
+
+    const totalCount = Number(
+      totalRow?.__TotalCount ?? 0
+    );
+
+    // ========================================================
+    // 9. Response Mapping
+    // ========================================================
+
+    const discardDetails = detailRows.map((row) => {
+      const {
+        SortOrder,
+        __TotalCount,
+        CreatedBy,
+        ModifyBy,
+        ModifyDateTime,
+        Detail_DiscardID,
+        Detail_OrganizationID,
+        Detail_SrNo,
+        Detail_Hotel,
+        Detail_DiscardDate,
+        ...details
+      } = row;
+
+      for (const key of Object.keys(details)) {
+        if (/date(time)?$/i.test(key)) {
+          details[key] = formatDate(details[key]);
+        }
+      }
+
+      return {
+        ...details,
+
+        SrNo: Number(row.SrNo),
+
+        OrganizationID:
+          row.OrganizationID == null
+            ? null
+            : String(row.OrganizationID),
+
+        TotalCost:
+          row.TotalCost == null
+            ? 0
+            : Number(row.TotalCost),
+      };
+    });
+
+    // ========================================================
+    // 10. Grand Total
+    // ========================================================
+
+    const grandTotal = {
+      Hotel: "TOTAL",
+
+      TotalCost: Number(
+        totalRow?.TotalCost ?? 0
+      ),
+    };
+
+    // ========================================================
+    // 11. Response
+    // ========================================================
+
+    return ok(
+      "CEO discard details fetched successfully.",
+      {
+        DiscardDetails: discardDetails,
+        GrandTotal: grandTotal,
+      },
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalCount: totalCount,
+
+        page: page,
+        PageSize: pageSize,
+
+        TotalPages: Math.ceil(
+          totalCount / pageSize
+        ),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO discard details"
+    );
+  }
+};
+
 // 19. ============================================================ Lost and Found Trend
 const getCEOLostAndFound = async (data) => {
   try {
@@ -5533,6 +6666,431 @@ const getCEOLostAndFound = async (data) => {
     return databaseFailure(
       error,
       "Fetch CEO lost and found"
+    );
+  }
+};
+// 19.1 ============================================================ Lost and Found Details
+const getCEOLostAndFoundDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Pagination Validation
+    // ========================================================
+
+    const page = Number(data.page ?? 1);
+    const pageSize = Number(data.PageSize ?? 10);
+
+    if (
+      !Number.isSafeInteger(page) ||
+      page <= 0 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    ) {
+      return fail("Invalid page or PageSize.", 400);
+    }
+
+    const offset = (page - 1) * pageSize;
+
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset > 2147483647
+    ) {
+      return fail(
+        "Pagination offset is too large.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 4. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 5. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 6. MSSQL Query
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .input("Offset", sql.Int, offset)
+      .input("PageSize", sql.Int, pageSize)
+      .query(`
+        ;WITH LostFoundData AS
+        (
+          SELECT
+            e.OrganizationID,
+
+            dbo.FN_Get_OrganizationShortName(
+              e.OrganizationID
+            ) AS Hotel,
+
+            e.Datefoundon,
+            e.RoomNumber,
+            e.GuestName,
+            e.MobileNo,
+            e.EmailID,
+            e.ArrivalDate,
+            e.DepartureDate,
+            e.ItemType,
+            e.ItemDescription,
+            e.Qty,
+            e.DisposedOn,
+            e.DisposedBy,
+            e.DrainedBy,
+            e.DrainedOn,
+            e.FoundBy,
+            e.GatepassNo,
+            e.Status,
+            e.HandedOverEmpName,
+            e.HandedOvertoGuest,
+            e.CourieredtoGuestName,
+            e.CourieredToGuestTrackingID,
+            e.CourieredToGuestOn,
+            e.Status_HandedEmployeeOn,
+            e.Status_HandedGuestOn,
+            e.IsSendSMStoGuest,
+            e.IsSendEmailtoGuest,
+            e.HOD_A_Status,
+            e.GM_A_Status,
+            e.Category
+
+          FROM LostNFound.LostNFound_Tbl_Entry_Master AS e
+
+          WHERE (
+            @OrganizationID IS NULL
+            OR e.OrganizationID = @OrganizationID
+          )
+
+            AND e.Datefoundon >= @FromDate
+            AND e.Datefoundon < DATEADD(DAY, 1, @ToDate)
+        ),
+
+        NumberedData AS
+        (
+          SELECT
+            ROW_NUMBER() OVER (
+              ORDER BY Datefoundon DESC, OrganizationID
+            ) AS SrNo,
+
+            *
+
+          FROM LostFoundData
+        ),
+
+        PagedData AS
+        (
+          SELECT *
+          FROM NumberedData
+
+          WHERE SrNo > @Offset
+            AND SrNo <= @Offset + @PageSize
+        )
+
+        -- ====================================================
+        -- RESULT SET 1: PAGINATED DETAILS
+        -- ====================================================
+
+        SELECT
+          SrNo,
+          OrganizationID,
+          Hotel,
+
+          CONVERT(
+            VARCHAR(11),
+            Datefoundon,
+            106
+          ) AS DateFound,
+
+          RoomNumber,
+          GuestName,
+          MobileNo,
+          EmailID,
+
+          CONVERT(
+            VARCHAR(11),
+            ArrivalDate,
+            106
+          ) AS ArrivalDate,
+
+          CONVERT(
+            VARCHAR(11),
+            DepartureDate,
+            106
+          ) AS DepartureDate,
+
+          ItemType,
+          ItemDescription,
+
+          ISNULL(
+            TRY_CAST(Qty AS DECIMAL(18, 2)),
+            0
+          ) AS Qty,
+
+          CONVERT(
+            VARCHAR(11),
+            DisposedOn,
+            106
+          ) AS DisposedOn,
+
+          DisposedBy,
+          DrainedBy,
+
+          CONVERT(
+            VARCHAR(11),
+            DrainedOn,
+            106
+          ) AS DrainedOn,
+
+          FoundBy,
+          GatepassNo,
+          Status,
+          HandedOverEmpName,
+          HandedOvertoGuest,
+          CourieredtoGuestName,
+          CourieredToGuestTrackingID,
+          CourieredToGuestOn,
+          Status_HandedEmployeeOn,
+          Status_HandedGuestOn,
+          IsSendSMStoGuest,
+          IsSendEmailtoGuest,
+          HOD_A_Status,
+          GM_A_Status,
+          Category
+
+        FROM PagedData
+
+        ORDER BY SrNo;
+
+        -- ====================================================
+        -- RESULT SET 2: TOTAL COUNT AND GRAND TOTAL
+        -- ====================================================
+
+        SELECT
+          COUNT(*) AS TotalCount,
+
+          SUM(
+            ISNULL(
+              TRY_CAST(e.Qty AS DECIMAL(18, 2)),
+              0
+            )
+          ) AS TotalQty
+
+        FROM LostNFound.LostNFound_Tbl_Entry_Master AS e
+
+        WHERE (
+          @OrganizationID IS NULL
+          OR e.OrganizationID = @OrganizationID
+        )
+
+          AND e.Datefoundon >= @FromDate
+          AND e.Datefoundon < DATEADD(DAY, 1, @ToDate);
+      `);
+
+    // ========================================================
+    // 7. Pagination And Grand Total
+    // ========================================================
+
+    const rows = result.recordsets?.[0] ?? [];
+
+    const summary = result.recordsets?.[1]?.[0] ?? {};
+
+    const totalCount = Number(
+      summary.TotalCount ?? 0
+    );
+
+    const grandTotalQty = Number(
+      summary.TotalQty ?? 0
+    );
+
+    // ========================================================
+    // 8. Response Mapping
+    // ========================================================
+
+    const lostAndFoundDetails = rows.map((row) => ({
+      SrNo: Number(row.SrNo),
+
+      OrganizationID:
+        row.OrganizationID == null
+          ? null
+          : String(row.OrganizationID),
+
+      Hotel: row.Hotel ?? null,
+
+      DateFound: row.DateFound ?? null,
+
+      RoomNumber: row.RoomNumber ?? null,
+
+      GuestName: row.GuestName ?? null,
+
+      MobileNo: row.MobileNo ?? null,
+
+      EmailID: row.EmailID ?? null,
+
+      ArrivalDate: row.ArrivalDate ?? null,
+
+      DepartureDate: row.DepartureDate ?? null,
+
+      ItemType: row.ItemType ?? null,
+
+      ItemDescription: row.ItemDescription ?? null,
+
+      Qty: Number(row.Qty ?? 0),
+
+      DisposedOn: row.DisposedOn ?? null,
+
+      DisposedBy: row.DisposedBy ?? null,
+
+      DrainedBy: row.DrainedBy ?? null,
+
+      DrainedOn: row.DrainedOn ?? null,
+
+      FoundBy: row.FoundBy ?? null,
+
+      GatepassNo: row.GatepassNo ?? null,
+
+      Status: row.Status ?? null,
+
+      HandedOverEmpName:
+        row.HandedOverEmpName ?? null,
+
+      HandedOvertoGuest:
+        row.HandedOvertoGuest ?? null,
+
+      CourieredtoGuestName:
+        row.CourieredtoGuestName ?? null,
+
+      CourieredToGuestTrackingID:
+        row.CourieredToGuestTrackingID ?? null,
+
+      CourieredToGuestOn:
+        row.CourieredToGuestOn ?? null,
+
+      Status_HandedEmployeeOn:
+        row.Status_HandedEmployeeOn ?? null,
+
+      Status_HandedGuestOn:
+        row.Status_HandedGuestOn ?? null,
+
+      IsSendSMStoGuest:
+        row.IsSendSMStoGuest ?? null,
+
+      IsSendEmailtoGuest:
+        row.IsSendEmailtoGuest ?? null,
+
+      HOD_A_Status:
+        row.HOD_A_Status ?? null,
+
+      GM_A_Status:
+        row.GM_A_Status ?? null,
+
+      Category: row.Category ?? null,
+    }));
+
+    // ========================================================
+    // 9. Response
+    // ========================================================
+
+    return ok(
+      "CEO lost and found details fetched successfully.",
+      {
+        LostAndFoundDetails: lostAndFoundDetails,
+
+        GrandTotal: {
+          GuestName: "TOTAL",
+          Qty: grandTotalQty,
+        },
+      },
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalCount: totalCount,
+
+        page: page,
+
+        PageSize: pageSize,
+
+        TotalPages: Math.ceil(
+          totalCount / pageSize
+        ),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO lost and found details"
     );
   }
 };
@@ -8648,7 +10206,1391 @@ const getCEOEngineeringBreakdownChart = async (data) => {
     );
   }
 };
+// 25. ============================================================ Daily Breakage Trend
+const getCEODailyBreakageChart = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
 
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. PostgreSQL Query
+    // ========================================================
+
+    const result = await pool.query(
+      `
+        WITH breakage_cost AS
+        (
+          SELECT
+            m.OrganizationID,
+
+            SUM(
+              COALESCE(d.TotalCost, 0)
+            ) AS TotalCost
+
+          FROM daily_breakage_entry_master m
+
+          INNER JOIN daily_breakage_entry_details d
+            ON m.DailyBreakageID = d.DailyBreakageID
+
+          WHERE m.IsDeleted = FALSE
+            AND d.IsDeleted = FALSE
+
+            AND (
+              $3::BIGINT IS NULL
+              OR m.OrganizationID = $3::BIGINT
+            )
+
+            AND m.EntryDate >= $1::DATE
+            AND m.EntryDate < ($2::DATE + INTERVAL '1 day')
+
+          GROUP BY m.OrganizationID
+        ),
+
+        organizations AS
+        (
+          SELECT
+            OrganizationID,
+            ShortName
+
+          FROM Organization_Master
+
+          WHERE (
+            $3::BIGINT IS NULL
+            OR OrganizationID = $3::BIGINT
+          )
+        )
+
+        SELECT
+          o.OrganizationID AS "OrganizationID",
+
+          o.ShortName AS "OrganizationShortName",
+
+          COALESCE(
+            bc.TotalCost,
+            0
+          ) AS "TotalCost"
+
+        FROM organizations o
+
+        LEFT JOIN breakage_cost bc
+          ON bc.OrganizationID = o.OrganizationID
+
+        ORDER BY o.OrganizationID;
+      `,
+      [
+        dates.CurrentFromDate,
+        dates.CurrentToDate,
+        organizationID || null,
+      ]
+    );
+
+    // ========================================================
+    // 5. Response Mapping
+    // ========================================================
+
+    const chartData = result.rows.map((row) => ({
+      OrganizationID: String(row.OrganizationID),
+
+      OrganizationShortName:
+        row.OrganizationShortName ?? null,
+
+      TotalCost: Number(row.TotalCost ?? 0),
+    }));
+
+    // ========================================================
+    // 6. Response
+    // ========================================================
+
+    return ok(
+      "CEO daily breakage chart fetched successfully.",
+      chartData,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: chartData.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO daily breakage chart"
+    );
+  }
+};
+// 25.1 ============================================================ Daily Breakage Details
+const getCEODailyBreakageDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Pagination Validation
+    // ========================================================
+
+    const page = Number(data.page ?? 1);
+    const pageSize = Number(data.PageSize ?? 10);
+
+    if (
+      !Number.isSafeInteger(page) ||
+      page <= 0 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    ) {
+      return fail(
+        "Invalid page or PageSize.",
+        400
+      );
+    }
+
+    const offset = (page - 1) * pageSize;
+
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset > 2147483647
+    ) {
+      return fail(
+        "Pagination offset is too large.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 4. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 5. PostgreSQL Query
+    // ========================================================
+
+    const result = await pool.query(
+      `
+        WITH breakage_details AS
+        (
+          SELECT
+            m.OrganizationID,
+            m.DailyBreakageID,
+            m.EntryDate,
+            m.Outlet,
+
+            d.DailyBreakageDetailID,
+            d.Item,
+            d.Nos,
+            d.TotalCost,
+            d.PersonResponsible
+
+          FROM daily_breakage_entry_master m
+
+          INNER JOIN daily_breakage_entry_details d
+            ON m.DailyBreakageID = d.DailyBreakageID
+
+          WHERE m.IsDeleted = FALSE
+            AND d.IsDeleted = FALSE
+
+            AND (
+              $3::BIGINT IS NULL
+              OR m.OrganizationID = $3::BIGINT
+            )
+
+            AND m.EntryDate >= $1::DATE
+            AND m.EntryDate < ($2::DATE + INTERVAL '1 day')
+        ),
+
+        numbered_details AS
+        (
+          SELECT
+            ROW_NUMBER() OVER (
+              ORDER BY
+                EntryDate DESC,
+                DailyBreakageDetailID
+            ) AS "SrNo",
+
+            OrganizationID AS "OrganizationID",
+
+            Item AS "Item",
+
+            Nos AS "Nos",
+
+            TotalCost AS "TotalCost",
+
+            PersonResponsible AS "PersonResponsible"
+
+          FROM breakage_details
+        )
+
+        SELECT
+          nd.*,
+          COUNT(*) OVER()::BIGINT AS "TotalCount"
+
+        FROM numbered_details nd
+
+        ORDER BY nd."SrNo"
+
+        LIMIT $4
+        OFFSET $5;
+      `,
+      [
+        dates.CurrentFromDate,
+        dates.CurrentToDate,
+        organizationID || null,
+        pageSize,
+        offset,
+      ]
+    );
+
+    // ========================================================
+    // 6. Total Count
+    // ========================================================
+
+    let totalCount = Number(
+      result.rows[0]?.TotalCount ?? 0
+    );
+
+    // Empty page count fallback
+    if (!result.rows.length) {
+      const countResult = await pool.query(
+        `
+          SELECT
+            COUNT(*)::BIGINT AS "TotalCount"
+
+          FROM daily_breakage_entry_master m
+
+          INNER JOIN daily_breakage_entry_details d
+            ON m.DailyBreakageID = d.DailyBreakageID
+
+          WHERE m.IsDeleted = FALSE
+            AND d.IsDeleted = FALSE
+
+            AND (
+              $3::BIGINT IS NULL
+              OR m.OrganizationID = $3::BIGINT
+            )
+
+            AND m.EntryDate >= $1::DATE
+            AND m.EntryDate < ($2::DATE + INTERVAL '1 day');
+        `,
+        [
+          dates.CurrentFromDate,
+          dates.CurrentToDate,
+          organizationID || null,
+        ]
+      );
+
+      totalCount = Number(
+        countResult.rows[0]?.TotalCount ?? 0
+      );
+    }
+
+    // ========================================================
+    // 7. Response Mapping
+    // ========================================================
+
+    const breakageDetails = result.rows.map((row) => ({
+      SrNo: Number(row.SrNo),
+
+      OrganizationID: String(row.OrganizationID),
+
+      Item: row.Item ?? null,
+
+      Nos: Number(row.Nos ?? 0),
+
+      TotalCost: Number(row.TotalCost ?? 0),
+
+      PersonResponsible: row.PersonResponsible ?? null,
+    }));
+
+    const totals = breakageDetails.reduce((sum, row) => ({
+      Nos: sum.Nos + row.Nos,
+      TotalCost: sum.TotalCost + row.TotalCost,
+    }), { Nos: 0, TotalCost: 0 });
+
+    breakageDetails.push({
+      SrNo: null,
+      OrganizationID: organizationID || null,
+      Item: "Total",
+      Nos: totals.Nos,
+      TotalCost: Number(totals.TotalCost.toFixed(2)),
+      PersonResponsible: null,
+      IsTotal: true,
+    });
+
+    // ========================================================
+    // 8. Response
+    // ========================================================
+
+    return ok(
+      "CEO daily breakage details fetched successfully.",
+      breakageDetails,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalCount: totalCount,
+
+        page: page,
+
+        PageSize: pageSize,
+
+        TotalPages: Math.ceil(totalCount / pageSize),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO daily breakage details"
+    );
+  }
+};
+// 26. ============================================================ HLP Report Trend
+const getCEOHLPReportChart = async (data) => {
+  try {
+    // ========================================================
+    // 1. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. EntryDate Validation
+    // ========================================================
+
+    const entryDate = String(data.EntryDate || "").trim();
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(entryDate)) {
+      return fail(
+        "EntryDate is required in YYYY-MM-DD format.",
+        400
+      );
+    }
+
+    const [year, month, day] = entryDate
+      .split("-")
+      .map(Number);
+
+    const parsedDate = new Date(
+      Date.UTC(year, month - 1, day)
+    );
+
+    if (
+      parsedDate.getUTCFullYear() !== year ||
+      parsedDate.getUTCMonth() !== month - 1 ||
+      parsedDate.getUTCDate() !== day
+    ) {
+      return fail(
+        "Invalid EntryDate.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. PostgreSQL Query
+    // ========================================================
+
+    const result = await pool.query(
+      `
+        WITH hlp_data AS
+        (
+          SELECT
+            m.id AS "EntryID",
+
+            m.organizationid AS "OrganizationID",
+
+            m.entrydate AS "EntryDate",
+
+            d.id AS "DetailID",
+
+            d.masterid AS "MasterListID",
+
+            COALESCE(
+              NULLIF(TRIM(d.title), ''),
+              l.title
+            ) AS "Label",
+
+            d.yod AS "YOD",
+
+            d.lyod AS "LYOD",
+
+            l.orderby AS "SortOrder"
+
+          FROM hlpreport_entry_master m
+
+          INNER JOIN hlpreport_entry_details d
+            ON d.entryid = m.id
+
+          LEFT JOIN hlpreport_master_list l
+            ON l.id = d.masterid
+            AND l.organizationid = m.organizationid
+
+          WHERE (
+            $1::BIGINT IS NULL
+            OR m.organizationid = $1::BIGINT
+          )
+
+          AND m.entrydate = $2::DATE
+        )
+
+        SELECT
+          "OrganizationID",
+
+          "EntryDate",
+
+          "EntryID",
+
+          "DetailID",
+
+          "MasterListID",
+
+          "Label",
+
+          COALESCE(
+            NULLIF(
+              REGEXP_REPLACE(
+                "YOD",
+                '[^0-9.-]',
+                '',
+                'g'
+              ),
+              ''
+            )::NUMERIC,
+            0
+          ) AS "Total",
+
+          COALESCE(
+            NULLIF(
+              REGEXP_REPLACE(
+                "LYOD",
+                '[^0-9.-]',
+                '',
+                'g'
+              ),
+              ''
+            )::NUMERIC,
+            0
+          ) AS "LastYearTotal"
+
+        FROM hlp_data
+
+        ORDER BY
+          "SortOrder" ASC NULLS LAST,
+          "DetailID" ASC;
+      `,
+      [
+        organizationID || null,
+        entryDate,
+      ]
+    );
+
+    // ========================================================
+    // 4. Response Mapping
+    // ========================================================
+
+    const chartData = result.rows.map((row) => ({
+      OrganizationID:
+        row.OrganizationID == null
+          ? null
+          : String(row.OrganizationID),
+
+      EntryDate: entryDate,
+
+      EntryID: Number(row.EntryID),
+
+      DetailID: Number(row.DetailID),
+
+      MasterListID:
+        row.MasterListID == null
+          ? null
+          : Number(row.MasterListID),
+
+      Label: row.Label ?? null,
+
+      Total: Number(row.Total ?? 0),
+
+      LastYearTotal: Number(
+        row.LastYearTotal ?? 0
+      ),
+    }));
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
+
+    return ok(
+      "CEO HLP report chart fetched successfully.",
+      chartData,
+      {
+        OrganizationID: organizationID || null,
+
+        EntryDate: entryDate,
+
+        TotalRecords: chartData.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO HLP report chart"
+    );
+  }
+};
+// 27. ============================================================ Catering Trend
+const getCEOCateringSalesChart = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .query(`
+        SELECT
+          org.OrganizationID,
+
+          dbo.FN_Get_OrganizationShortName(
+            org.OrganizationID
+          ) AS Hotel,
+
+          ISNULL(b.Total, 0) AS Total
+
+        FROM dbo.htl_tbl_organization_master AS org
+
+        LEFT JOIN
+        (
+          SELECT
+            a.OrganizationID,
+            COUNT(a.ID) AS Total
+
+          FROM BQ_Tbl_Booking_Master AS a
+
+          WHERE a.BookingStatus = 10
+
+            AND a.ArrivalDate >= @FromDate
+            AND a.ArrivalDate < DATEADD(DAY, 1, @ToDate)
+
+          GROUP BY a.OrganizationID
+
+        ) AS b
+          ON org.OrganizationID = b.OrganizationID
+
+        WHERE org.Activation_status = 1
+          AND org.IsNileHotel = 1
+          AND org.OrganizationID <> 3
+
+          AND (
+            @OrganizationID IS NULL
+            OR org.OrganizationID = @OrganizationID
+          )
+
+        ORDER BY Hotel;
+      `);
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const chartData = result.recordset.map((row) => ({
+      OrganizationID: String(row.OrganizationID),
+      Hotel: row.Hotel ?? null,
+      Total: Number(row.Total ?? 0),
+    }));
+
+    // ========================================================
+    // 7. Response
+    // ========================================================
+
+    return ok(
+      "CEO catering sales chart fetched successfully.",
+      chartData,
+      {
+        Filter: filter,
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: chartData.length,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO catering sales chart"
+    );
+  }
+};
+// 27.1. ====================================================== Catering Details
+const getCEOCateringSalesDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Pagination Validation
+    // ========================================================
+
+    const page = Number(data.page ?? 1);
+    const pageSize = Number(data.PageSize ?? 10);
+
+    if (
+      !Number.isSafeInteger(page) ||
+      page <= 0 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    ) {
+      return fail(
+        "Invalid page or PageSize.",
+        400
+      );
+    }
+
+    const offset = (page - 1) * pageSize;
+
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset > 2147483647 - pageSize
+    ) {
+      return fail(
+        "Pagination offset is too large.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 4. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 5. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 6. MSSQL Query
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .input("Offset", sql.Int, offset)
+      .input("PageSize", sql.Int, pageSize)
+      .query(`
+        ;WITH CateringData AS
+        (
+          SELECT
+            ROW_NUMBER() OVER (
+              ORDER BY
+                a.ArrivalDate DESC,
+                a.ID DESC
+            ) AS SrNo,
+
+            a.OrganizationID,
+
+            dbo.FN_Get_OrganizationShortName(
+              a.OrganizationID
+            ) AS Hotel,
+
+            a.ID AS BookingID,
+
+            a.FunctionName,
+
+            CONVERT(
+              VARCHAR(11),
+              a.ArrivalDate,
+              106
+            ) AS ArrivalDate,
+
+            CONVERT(
+              VARCHAR(11),
+              a.DepartureDate,
+              106
+            ) AS DepartureDate,
+
+            a.Attending,
+
+            am.CompanyName,
+
+            ISNULL(c.FirstName, '') + ' ' +
+            ISNULL(c.MiddleName, '') + ' ' +
+            ISNULL(c.LastName, '') AS ContactName
+
+          FROM BQ_Tbl_Booking_Master AS a
+
+          INNER JOIN BQ_Tbl_Account_Master AS am
+            ON a.AccountID = am.ID
+
+          INNER JOIN BQ_Tbl_CompanyContact AS c
+            ON a.ContactID = c.ID
+
+          INNER JOIN dbo.htl_tbl_organization_master AS org
+            ON a.OrganizationID = org.OrganizationID
+
+          WHERE a.BookingStatus = 10
+
+            AND org.Activation_status = 1
+            AND org.IsNileHotel = 1
+            AND org.OrganizationID <> 3
+
+            AND (
+              @OrganizationID IS NULL
+              OR a.OrganizationID = @OrganizationID
+            )
+
+            AND a.ArrivalDate >= @FromDate
+            AND a.ArrivalDate < DATEADD(DAY, 1, @ToDate)
+        )
+
+        -- ====================================================
+        -- RESULT SET 1: PAGINATED EVENT DETAILS
+        -- ====================================================
+
+        SELECT
+          SrNo,
+          OrganizationID,
+          Hotel,
+          BookingID,
+          FunctionName,
+          CompanyName,
+          ContactName,
+          Attending,
+          ArrivalDate,
+          DepartureDate
+
+        FROM CateringData
+
+        WHERE SrNo > @Offset
+          AND SrNo <= @Offset + @PageSize
+
+        ORDER BY SrNo;
+
+        -- ====================================================
+        -- RESULT SET 2: TOTAL COUNT
+        -- ====================================================
+
+        SELECT COUNT(*) AS TotalCount
+
+        FROM BQ_Tbl_Booking_Master AS a
+
+        INNER JOIN BQ_Tbl_Account_Master AS am
+          ON a.AccountID = am.ID
+
+        INNER JOIN BQ_Tbl_CompanyContact AS c
+          ON a.ContactID = c.ID
+
+        INNER JOIN dbo.htl_tbl_organization_master AS org
+          ON a.OrganizationID = org.OrganizationID
+
+        WHERE a.BookingStatus = 10
+
+          AND org.Activation_status = 1
+          AND org.IsNileHotel = 1
+          AND org.OrganizationID <> 3
+
+          AND (
+            @OrganizationID IS NULL
+            OR a.OrganizationID = @OrganizationID
+          )
+
+          AND a.ArrivalDate >= @FromDate
+          AND a.ArrivalDate < DATEADD(DAY, 1, @ToDate);
+      `);
+
+    // ========================================================
+    // 7. Total Count
+    // ========================================================
+
+    const totalCount = Number(
+      result.recordsets?.[1]?.[0]?.TotalCount ?? 0
+    );
+
+    // ========================================================
+    // 8. Response Mapping
+    // ========================================================
+
+    const eventDetails = (
+      result.recordsets?.[0] ?? []
+    ).map((row) => ({
+      SrNo: Number(row.SrNo),
+
+      OrganizationID:
+        row.OrganizationID == null
+          ? null
+          : String(row.OrganizationID),
+
+      Hotel: row.Hotel ?? null,
+
+      BookingID:
+        row.BookingID == null
+          ? null
+          : String(row.BookingID),
+
+      FunctionName: row.FunctionName ?? null,
+
+      CompanyName: row.CompanyName ?? null,
+
+      ContactName: row.ContactName?.trim() || null,
+
+      Attending:
+        row.Attending == null
+          ? null
+          : Number(row.Attending),
+
+      ArrivalDate: row.ArrivalDate ?? null,
+
+      DepartureDate: row.DepartureDate ?? null,
+    }));
+
+    // ========================================================
+    // 9. Response
+    // ========================================================
+
+    return ok(
+      "CEO catering sales details fetched successfully.",
+      eventDetails,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalCount: totalCount,
+        page: page,
+        PageSize: pageSize,
+        TotalPages: Math.ceil(totalCount / pageSize),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO catering sales details"
+    );
+  }
+};
+// 28. ============================================================ Sales Contracts Trend
+const getCEOSalesContractChart = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 4. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 5. MSSQL Query
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .query(`
+        ;WITH Hotels AS
+        (
+          SELECT
+            org.OrganizationID,
+
+            dbo.FN_Get_OrganizationShortName(
+              org.OrganizationID
+            ) AS Hotel
+
+          FROM dbo.htl_tbl_organization_master AS org
+
+          WHERE org.Activation_status = 1
+            AND org.IsNileHotel = 1
+
+            AND (
+              @OrganizationID IS NULL
+              OR org.OrganizationID = @OrganizationID
+            )
+        ),
+
+        -- ====================================================
+        -- LATEST CONTRACT OF EACH VENDOR
+        -- ====================================================
+
+        VendorContracts AS
+        (
+          SELECT
+            v.OrganizationID,
+            v.VendorID,
+
+            latest.ContractExists,
+            latest.FromDate,
+            latest.ToDate
+
+          FROM SalesContract.SalesContract_Tbl_VendorProfile_Master AS v
+
+          OUTER APPLY
+          (
+            SELECT TOP (1)
+              1 AS ContractExists,
+              c.FromDate,
+              c.ToDate
+
+            FROM SalesContract.SalesContract_Tbl_Vendor_ContractEntry_Master AS c
+
+            WHERE c.VendorID = v.VendorID
+
+            ORDER BY c.CreatedDatetime DESC
+
+          ) AS latest
+
+          WHERE v.VendorStatus <> 'Archive'
+        ),
+
+        -- ====================================================
+        -- DATE RANGE OVERLAP
+        -- ====================================================
+
+        FilteredContracts AS
+        (
+          SELECT *
+          FROM VendorContracts
+
+          WHERE ContractExists = 1
+
+            AND FromDate < DATEADD(DAY, 1, @ToDate)
+            AND ToDate >= @FromDate
+        ),
+
+        -- ====================================================
+        -- CONTRACT COUNTS
+        -- ====================================================
+
+        ContractCounts AS
+        (
+          SELECT
+            OrganizationID,
+
+            COUNT(*) AS Total,
+
+            SUM(
+              CASE
+                WHEN ToDate >= CAST(GETDATE() AS DATE)
+                THEN 1 ELSE 0
+              END
+            ) AS TotalActive,
+
+            SUM(
+              CASE
+                WHEN ToDate < CAST(GETDATE() AS DATE)
+                THEN 1 ELSE 0
+              END
+            ) AS TotalExpired
+
+          FROM FilteredContracts
+
+          GROUP BY OrganizationID
+        )
+
+        -- ====================================================
+        -- HOTEL WISE RESULT
+        -- ====================================================
+
+        SELECT
+          h.Hotel,
+          h.OrganizationID,
+
+          ISNULL(c.Total, 0) AS Total,
+
+          ISNULL(c.TotalActive, 0) AS TotalActive,
+
+          ISNULL(c.TotalExpired, 0) AS TotalExpired
+
+        FROM Hotels h
+
+        LEFT JOIN ContractCounts c
+          ON h.OrganizationID = c.OrganizationID
+
+        ORDER BY h.Hotel;
+      `);
+
+    // ========================================================
+    // 6. Response Mapping
+    // ========================================================
+
+    const chartData = result.recordset.map((row) => ({
+      OrganizationID:
+        row.OrganizationID == null
+          ? null
+          : String(row.OrganizationID),
+
+      Hotel: row.Hotel ?? null,
+
+      Total: Number(row.Total ?? 0),
+
+      TotalActive: Number(row.TotalActive ?? 0),
+
+      TotalExpired: Number(row.TotalExpired ?? 0),
+    }));
+
+    // ========================================================
+    // 7. Overall Totals
+    // ========================================================
+
+    const totals = chartData.reduce(
+      (acc, row) => {
+        acc.TotalContracts += row.Total;
+        acc.TotalActive += row.TotalActive;
+        acc.TotalExpired += row.TotalExpired;
+        return acc;
+      },
+      {
+        TotalContracts: 0,
+        TotalActive: 0,
+        TotalExpired: 0,
+      }
+    );
+
+    // ========================================================
+    // 8. Response
+    // ========================================================
+
+    return ok(
+      "CEO sales contract chart fetched successfully.",
+      chartData,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        TotalOrganizations: chartData.length,
+
+        ...totals,
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO sales contract chart"
+    );
+  }
+};
 
 
 
@@ -8681,10 +11623,14 @@ module.exports = {
   getCEOTrainingHours,
   getCEOTrainingHoursDetails,
   getCEORestaurantFeedback,
+  getCEORestaurantFeedbackDetails,
   getCEOConsumption,
+  getCEOConsumptionDetails,
   getCEOCheckList,
   getCEODiscard,
+  getCEODiscardDetails,
   getCEOLostAndFound,
+  getCEOLostAndFoundDetails,
   getCEOOperationalHealth,
   getCEOOperationalGlitchDetails,
   getCEOOperationalIncidentDetails,
@@ -8699,5 +11645,11 @@ module.exports = {
   getCEOEngineeringMaintenanceChart,
   getCEOCompletedMaintenanceDetails,
   getCEOEngineeringBreakdownChart,
+  getCEODailyBreakageChart,
+  getCEODailyBreakageDetails,
+  getCEOHLPReportChart,
+  getCEOCateringSalesChart,
+  getCEOCateringSalesDetails,
+  getCEOSalesContractChart,
 };
 

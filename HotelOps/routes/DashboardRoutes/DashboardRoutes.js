@@ -26,10 +26,14 @@ const {
   getCEOTrainingHours,
   getCEOTrainingHoursDetails,
   getCEORestaurantFeedback,
+  getCEORestaurantFeedbackDetails,
   getCEOConsumption,
+  getCEOConsumptionDetails,
   getCEOCheckList,
   getCEODiscard,
+  getCEODiscardDetails,
   getCEOLostAndFound,
+  getCEOLostAndFoundDetails,
   getCEOOperationalHealth,
   getCEOOperationalGlitchDetails,
   getCEOOperationalIncidentDetails,
@@ -44,6 +48,12 @@ const {
   getCEOEngineeringMaintenanceChart,
   getCEOCompletedMaintenanceDetails,
   getCEOEngineeringBreakdownChart,
+  getCEODailyBreakageChart,
+  getCEODailyBreakageDetails,
+  getCEOHLPReportChart,
+  getCEOCateringSalesChart,
+  getCEOCateringSalesDetails,
+  getCEOSalesContractChart,
 } = require(
   "../../controllers/DashboardController/DashboardController",
 )
@@ -101,14 +111,22 @@ router.get("/TrainingHoursTrend",authenticateToken,getCEOTrainingHours);
 router.get("/TrainingHoursDetails",authenticateToken,getCEOTrainingHoursDetails);
 // 15. ============================================================ Restaurant Feedback Trend
 router.get("/RestaurantFeedbackTrend",authenticateToken,getCEORestaurantFeedback);
+// 15.1 ============================================================ Restaurant Feedback Details
+router.get("/RestaurantFeedbackDetails",authenticateToken,getCEORestaurantFeedbackDetails);
 // 16. ============================================================ Consumption Trend
 router.get("/ConsumptionTrend",authenticateToken,getCEOConsumption);
+// 16.1 ============================================================ Consumption Details
+router.get("/ConsumptionDetails",authenticateToken,getCEOConsumptionDetails);
 // 17. ============================================================ CheckList Trend
 router.get("/CheckListTrend",authenticateToken,getCEOCheckList);
 // 18. ============================================================ Discards Trend
 router.get("/DiscardTrend",authenticateToken,getCEODiscard);
+// 18.1 ============================================================ Discards Details
+router.get("/DiscardDetails",authenticateToken,getCEODiscardDetails);
 // 19. ============================================================ Lost and Found Trend
 router.get("/LostAndFoundTrend",authenticateToken,getCEOLostAndFound);
+// 19.1 ============================================================ Lost and Found Details
+router.get("/LostAndFoundDetails",authenticateToken,getCEOLostAndFoundDetails);
 // 20. ============================================================ Operational Health
 router.get("/OperationalHealth",authenticateToken,getCEOOperationalHealth);
 // 20.1. ============================================================ Operational Health Gltch
@@ -137,4 +155,17 @@ router.get("/MaintenanceChart",authenticateToken,getCEOEngineeringMaintenanceCha
 router.get("/MaintenanceChartDetails",authenticateToken,getCEOCompletedMaintenanceDetails);
 // 24. ============================================================ Engineering Breakdown Trend
 router.get("/BreakdownChart",authenticateToken,getCEOEngineeringBreakdownChart);
+// 25. ============================================================ Daily Breakage Trend
+router.get("/DailyBreakageTrend",authenticateToken,getCEODailyBreakageChart);
+// 25.1 ============================================================ Daily Breakage Details
+router.get("/DailyBreakageDetails",authenticateToken,getCEODailyBreakageDetails);
+// 26. ============================================================ HLP Report Trend
+router.get("/HLPReportTrend",authenticateToken,getCEOHLPReportChart);
+// 27. ============================================================ Catering Trend
+router.get("/CateringSalesTrend",authenticateToken,getCEOCateringSalesChart);
+// 27.1. ========================================================== Catering Details
+router.get("/CateringSalesDetails",authenticateToken,getCEOCateringSalesDetails);
+// 28. ============================================================ Sales Contracts Trend
+router.get("/SalesContractTrend",authenticateToken,getCEOSalesContractChart);
+
 module.exports = router;

@@ -1676,6 +1676,101 @@ exports.getCEORestaurantFeedback = async (req, res) => {
     return handleError(error, res);
   }
 };
+// 15.1 ============================================================ Restaurant Feedback Details
+exports.getCEORestaurantFeedbackDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+      page = 1,
+      PageSize = 10,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Invalid date filter.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Pagination Validation
+    // ========================================================
+
+    if (
+      !Number.isSafeInteger(Number(page)) ||
+      Number(page) <= 0 ||
+      !Number.isSafeInteger(Number(PageSize)) ||
+      Number(PageSize) < 1 ||
+      Number(PageSize) > 100
+    ) {
+      throw new AppError(
+        "Invalid page or PageSize.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 5. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEORestaurantFeedbackDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+        page: Number(page),
+        PageSize: Number(PageSize),
+      });
+
+    // ========================================================
+    // 6. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
 // 16. ============================================================ Consumption Trend
 exports.getCEOConsumption = async (req, res) => {
   try {
@@ -1733,6 +1828,122 @@ exports.getCEOConsumption = async (req, res) => {
 
     // ========================================================
     // 5. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 16.1. ============================================================ Consumption Details
+exports.getCEOConsumptionDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+      UserID = 0,
+      page = 1,
+      PageSize = 100,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. UserID Validation
+    // ========================================================
+
+    const userID = String(UserID).trim();
+
+    if (
+      !/^(0|[1-9]\d*)$/.test(userID) ||
+      BigInt(userID) > 9223372036854775807n
+    ) {
+      throw new AppError(
+        "Invalid UserID.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 5. Pagination Validation
+    // ========================================================
+
+    const pageNumber = Number(page);
+    const pageSizeNumber = Number(PageSize);
+
+    if (
+      !Number.isSafeInteger(pageNumber) ||
+      pageNumber <= 0 ||
+      !Number.isSafeInteger(pageSizeNumber) ||
+      pageSizeNumber < 1 ||
+      pageSizeNumber > 100
+    ) {
+      throw new AppError(
+        "Invalid page or PageSize.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 6. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOConsumptionDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+        UserID: userID,
+        page: pageNumber,
+        PageSize: pageSizeNumber,
+      });
+
+    // ========================================================
+    // 7. Response
     // ========================================================
 
     if (!result.success) {
@@ -1890,6 +2101,109 @@ exports.getCEODiscard = async (req, res) => {
     return handleError(error, res);
   }
 };
+// 18.1 ============================================================ Discards Details
+exports.getCEODiscardDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yearly",
+      OrganizationID,
+      page = 1,
+      PageSize = 10,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter)
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Pagination Validation
+    // ========================================================
+
+    const pageNumber = Number(page);
+    const pageSizeNumber = Number(PageSize);
+
+    if (
+      !Number.isSafeInteger(pageNumber) ||
+      pageNumber <= 0 ||
+      !Number.isSafeInteger(pageSizeNumber) ||
+      pageSizeNumber < 1 ||
+      pageSizeNumber > 100 ||
+      (pageNumber - 1) * pageSizeNumber >
+        2147483647 - pageSizeNumber
+    ) {
+      throw new AppError(
+        "Invalid page or PageSize.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 5. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEODiscardDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+        page: pageNumber,
+        PageSize: pageSizeNumber,
+      });
+
+    // ========================================================
+    // 6. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+
 // 19. ============================================================ Lost and Found Trend
 exports.getCEOLostAndFound = async (req, res) => {
   try {
@@ -1944,6 +2258,107 @@ exports.getCEOLostAndFound = async (req, res) => {
         Filter: filter,
         OrganizationID: OrganizationID || null,
       });
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 19.1. ============================================================ Lost and Found Details
+exports.getCEOLostAndFoundDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+      page = 1,
+      PageSize = 10,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter)
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Pagination Validation
+    // ========================================================
+
+    const pageNumber = Number(page);
+    const pageSizeNumber = Number(PageSize);
+
+    if (
+      !Number.isSafeInteger(pageNumber) ||
+      pageNumber <= 0 ||
+      !Number.isSafeInteger(pageSizeNumber) ||
+      pageSizeNumber < 1 ||
+      pageSizeNumber > 100 ||
+      (pageNumber - 1) * pageSizeNumber > 2147483647
+    ) {
+      throw new AppError(
+        "Invalid page or PageSize.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 5. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOLostAndFoundDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+        page: pageNumber,
+        PageSize: pageSizeNumber,
+      });
+
+    // ========================================================
+    // 6. Response
+    // ========================================================
 
     if (!result.success) {
       throw new AppError(
@@ -3098,7 +3513,479 @@ exports.getCEOEngineeringBreakdownChart = async (req, res) => {
     return handleError(error, res);
   }
 };
+// 25. ============================================================ Daily Breakage Trend
+exports.getCEODailyBreakageChart = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+    } = req.query;
 
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Invalid date filter.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEODailyBreakageChart({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 25.1 ============================================================ Daily Breakage Details
+exports.getCEODailyBreakageDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+      page = 1,
+      PageSize = 10,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Invalid date filter.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Pagination Validation
+    // ========================================================
+
+    if (
+      !Number.isSafeInteger(Number(page)) ||
+      Number(page) <= 0 ||
+      !Number.isSafeInteger(Number(PageSize)) ||
+      Number(PageSize) < 1 ||
+      Number(PageSize) > 100
+    ) {
+      throw new AppError(
+        "Invalid page or PageSize.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 5. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEODailyBreakageDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+        page: Number(page),
+        PageSize: Number(PageSize),
+      });
+
+    // ========================================================
+    // 6. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 26. ============================================================ HLP Report Trend
+exports.getCEOHLPReportChart = async (req, res) => {
+  try {
+    const {
+      OrganizationID,
+      EntryDate,
+    } = req.query;
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. EntryDate Validation
+    // ========================================================
+
+    const entryDate = String(EntryDate || "").trim();
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(entryDate)) {
+      throw new AppError(
+        "EntryDate is required in YYYY-MM-DD format.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    const [year, month, day] = entryDate
+      .split("-")
+      .map(Number);
+
+    const parsedDate = new Date(
+      Date.UTC(year, month - 1, day)
+    );
+
+    if (
+      parsedDate.getUTCFullYear() !== year ||
+      parsedDate.getUTCMonth() !== month - 1 ||
+      parsedDate.getUTCDate() !== day
+    ) {
+      throw new AppError(
+        "Invalid EntryDate.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOHLPReportChart({
+        OrganizationID: orgID || null,
+        EntryDate: entryDate,
+      });
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 27. ============================================================ Catering Trend
+exports.getCEOCateringSalesChart = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+    } = req.query;
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Invalid date filter.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    const result =
+      await DashboardService.getCEOCateringSalesChart({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 27.1. ============================================================ Catering Sales Details
+exports.getCEOCateringSalesDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+      page = 1,
+      PageSize = 10,
+    } = req.query;
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Invalid date filter.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    const pageNumber = Number(page);
+    const pageSizeNumber = Number(PageSize);
+
+    if (
+      !Number.isSafeInteger(pageNumber) ||
+      pageNumber <= 0 ||
+      !Number.isSafeInteger(pageSizeNumber) ||
+      pageSizeNumber < 1 ||
+      pageSizeNumber > 100 ||
+      (pageNumber - 1) * pageSizeNumber >
+        2147483647 - pageSizeNumber
+    ) {
+      throw new AppError(
+        "Invalid page or PageSize.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    const result =
+      await DashboardService.getCEOCateringSalesDetails({
+        Filter: filter,
+        OrganizationID: orgID || null,
+        page: pageNumber,
+        PageSize: pageSizeNumber,
+      });
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// 28. ============================================================ Sales Contracts Trend
+exports.getCEOSalesContractChart = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+    } = req.query;
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter)
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"]
+        .includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Service Call
+    // ========================================================
+
+    const result =
+      await DashboardService.getCEOSalesContractChart({
+        Filter: filter,
+        OrganizationID: orgID || null,
+      });
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
 
 
 
