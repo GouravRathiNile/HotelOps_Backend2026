@@ -885,6 +885,7 @@ exports.getCapexSummaryReport = async (req, res) => {
     const response = await CapexService.getCapexSummaryReport({
       Filters: {
         OrganizationID: Number(req.query.OrganizationID),
+        ...reportDateFilters(req),
       },
       UserType,
       UserID: user.UserID,

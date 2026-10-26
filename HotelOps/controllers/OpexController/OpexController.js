@@ -849,12 +849,14 @@ exports.getOpexSummaryReport = async (req, res) => {
 
     const user = authenticatedUser(req);
     const UserType = user.UserType.toUpperCase();
-
+    const { FromDate, ToDate } = reportFilters(req);
 
     const response = await OpexService.getOpexSummaryReport({
       ...authenticatedUser(req),
       Filters: {
         OrganizationID: Number(req.query.OrganizationID),
+        FromDate,
+        ToDate,
       },
       UserID: user.UserID,
       UserType,
