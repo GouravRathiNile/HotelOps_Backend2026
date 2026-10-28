@@ -1270,6 +1270,106 @@ exports.getCEOTop20SRMSRequestDetails = async (req, res) => {
     return handleError(error, res);
   }
 };
+// 7.2. ============================================================ Top 20 SRMS Requests By Organizations
+exports.getCEOSRMSRequestByOrganization = async (req, res) => {
+  try {
+    const {
+      Filter,
+      OrganizationID,
+      Request: requestName,
+      Page = 1,
+      PageSize = 10,
+    } = req.query;
+
+    const allowedFilters = [
+      "yesterday",
+      "weekly",
+      "monthly",
+      "yearly",
+    ];
+
+    if (!allowedFilters.includes(Filter)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid Filter. Allowed values: yesterday, weekly, monthly, yearly.",
+      });
+    }
+
+    let organizationID = null;
+
+    if (
+      OrganizationID !== undefined &&
+      OrganizationID !== null &&
+      OrganizationID !== ""
+    ) {
+      if (!/^[1-9]\d*$/.test(String(OrganizationID))) {
+        return res.status(400).json({
+          success: false,
+          message: "OrganizationID must be a positive integer.",
+        });
+      }
+
+      organizationID = OrganizationID;
+    }
+
+    if (
+      requestName !== undefined &&
+      typeof requestName !== "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Request must be a string.",
+      });
+    }
+
+    if (
+      typeof requestName === "string" &&
+      requestName.length > 500
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Request cannot exceed 500 characters.",
+      });
+    }
+
+    const page = Number(Page);
+    const pageSize = Number(PageSize);
+
+    if (!Number.isInteger(page) || page < 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Page must be a positive integer.",
+      });
+    }
+
+    if (
+      !Number.isInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "PageSize must be between 1 and 100.",
+      });
+    }
+
+    // Keep the same CEO authorization check used by
+    // the existing CEO dashboard controller handlers.
+
+    const result = await DashboardService.getCEOSRMSRequestByOrganizations({
+      Filter,
+      OrganizationID: organizationID,
+      Request: requestName,
+      Page: page,
+      PageSize: pageSize,
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
 // 8. ============================================================ SRMS Requests Completion Duration in Minutes
 exports.getCEOSRMSCompletionDuration = async (req, res) => {
   try {
@@ -4943,7 +5043,117 @@ exports.getCEOCompRoomsSummary = async (req, res) => {
     return handleError(error, res);
   }
 };
+// 31.1. ============================================================ Comp Rooms Details
+exports.getCEOCompRoomDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+      Page = "1",
+      PageSize = "10",
+    } = req.query;
 
+    // ========================================================
+    // 1. CEO Validation
+    // ========================================================
+
+    if (
+      String(req.user?.UserType || "")
+        .trim()
+        .toUpperCase() !== "CEO"
+    ) {
+      throw new AppError(
+        "Only CEO can access this dashboard.",
+        403
+      );
+    }
+
+    // ========================================================
+    // 2. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 3. OrganizationID Validation
+    // ========================================================
+
+    const orgID = OrganizationID == null
+      ? ""
+      : String(OrganizationID).trim();
+
+    if (
+      orgID !== "" &&
+      (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      )
+    ) {
+      throw new AppError(
+        "OrganizationID must be a positive integer.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Pagination Validation
+    // ========================================================
+
+    const page = Number(Page);
+    const pageSize = Number(PageSize);
+
+    if (
+      !Number.isSafeInteger(page) ||
+      page < 1 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    ) {
+      throw new AppError(
+        "Page must be a positive integer and PageSize must be between 1 and 100.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 5. Service Call
+    // ========================================================
+
+    const result = await DashboardService.getCEOCompRoomDetails({
+      Filter: filter,
+      OrganizationID: orgID || null,
+      Page: page,
+      PageSize: pageSize,
+    });
+
+    // ========================================================
+    // 6. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
 
 
 

@@ -20,6 +20,7 @@ const {
   getCEOSRMSRequestDetails,
   getCEOTop20SRMSRequests,
   getCEOTop20SRMSRequestDetails,
+  getCEOSRMSRequestByOrganization,
   getCEOSRMSCompletionDuration,
   getCEOSRMSCompletionDurationDetails,
   getCEOGuestMetChart,
@@ -66,6 +67,7 @@ const {
   getCEOARRRevPARChart,
   getCEOOutOfOrderChart,
   getCEOCompRoomsSummary,
+  getCEOCompRoomDetails
 } = require(
   "../../controllers/DashboardController/DashboardController",
 )
@@ -111,6 +113,8 @@ router.get("/TotalSRMSRequestsDetails",authenticateToken,getCEOSRMSRequestDetail
 router.get("/Top20SRMSRequests",authenticateToken,getCEOTop20SRMSRequests);
 // 7.1. ============================================================ Top 20 SRMS Requests Details
 router.get("/Top20SRMSRequestDetails",authenticateToken,getCEOTop20SRMSRequestDetails);
+// 7.2. ============================================================ Top 20 SRMS Requests By Organizations
+router.get("/SRMSRequestByOrganization",authenticateToken,getCEOSRMSRequestByOrganization);
 // 8. ============================================================ SRMS Requests Completion Duration in Minutes
 router.get("/SRMSCompletionDuration",authenticateToken,getCEOSRMSCompletionDuration);
 // 8.1. ============================================================ SRMS Requests Completion Duration in Minutes Details
@@ -203,4 +207,6 @@ router.get("/ARRRevPARChart",authenticateToken,getCEOARRRevPARChart);
 router.get("/OutOfOrderTrend",authenticateToken,getCEOOutOfOrderChart);
 // 31. ============================================================ Comp Rooms Count
 router.get("/CompRoomsSummary",authenticateToken,getCEOCompRoomsSummary);
+// 31.1. ============================================================ Comp Rooms Details
+router.get("/CompRoomDetails",authenticateToken,getCEOCompRoomDetails);
 module.exports = router;

@@ -4327,6 +4327,121 @@ const getCEOTop20SRMSRequestDetails = async (data) => {
     );
   }
 };
+// 7.2. ============================================================ Top 20 SRMS Requests By Organizations
+const getCEOSRMSRequestByOrganizations = async (data) => {
+  try {
+    const pool = await getMssqlPool();
+
+    const {
+      Filter,
+      OrganizationID,
+      Request: rawRequest,
+      Page = 1,
+      PageSize = 10,
+    } = data;
+
+    const dates = getDateRange(Filter);
+
+    const requestName =
+      rawRequest == null || String(rawRequest).trim() === ""
+        ? null
+        : String(rawRequest).trim();
+
+    const page = Number(Page);
+    const pageSize = Number(PageSize);
+    const offset = (page - 1) * pageSize;
+
+    const result = await pool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        OrganizationID == null ? null : OrganizationID
+      )
+      .input("Request", sql.VarChar(500), requestName)
+      .input("FromDate", sql.Date, dates.CurrentFromDate)
+      .input("ToDate", sql.Date, dates.CurrentToDate)
+      .input("Offset", sql.Int, offset)
+      .input("PageSize", sql.Int, pageSize)
+      .query(`
+        SELECT
+          a.OrganizationID,
+          dbo.FN_Get_OrganizationShortName(a.OrganizationID) AS Hotel,
+          a.CallDescription AS Request,
+          COUNT_BIG(*) AS TotalRequest
+        INTO #RequestSummary
+        FROM SRMS.SRMS_Tbl_ServiceRequest_Master AS a
+        WHERE
+          (@OrganizationID IS NULL
+            OR a.OrganizationID = @OrganizationID)
+          AND (@Request IS NULL
+            OR a.CallDescription = @Request)
+          AND a.RequestDate >= @FromDate
+          AND a.RequestDate < DATEADD(DAY, 1, @ToDate)
+        GROUP BY
+          a.OrganizationID,
+          a.CallDescription;
+
+        -- Count of grouped rows, so pagination metadata
+        -- matches the rows returned by the details query.
+        SELECT COUNT_BIG(*) AS TotalRecords
+        FROM #RequestSummary;
+
+        -- Paginated organization-wise request summary.
+        SELECT
+          CAST(
+            ROW_NUMBER() OVER (
+              ORDER BY
+                TotalRequest DESC,
+                Hotel,
+                OrganizationID,
+                Request
+            ) + @Offset AS BIGINT
+          ) AS SrNo,
+          OrganizationID,
+          Hotel,
+          Request,
+          TotalRequest
+        FROM #RequestSummary
+        ORDER BY
+          TotalRequest DESC,
+          Hotel,
+          OrganizationID,
+          Request
+        OFFSET @Offset ROWS
+        FETCH NEXT @PageSize ROWS ONLY;
+
+        DROP TABLE #RequestSummary;
+      `);
+
+    const totalRecords = Number(
+      result.recordsets?.[0]?.[0]?.TotalRecords ?? 0
+    );
+
+    const records = result.recordsets?.[1] ?? [];
+
+    return ok({
+      Filter,
+      OrganizationID: OrganizationID ?? null,
+      Request: requestName,
+      DateRange: {
+        FromDate: dates.CurrentFromDate,
+        ToDate: dates.CurrentToDate,
+      },
+      Page: page,
+      PageSize: pageSize,
+      TotalRecords: totalRecords,
+      TotalPages: Math.ceil(totalRecords / pageSize),
+      Records: records,
+    });
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "getCEOSRMSRequestDetails"
+    );
+  }
+};
+
 // 8. ============================================================ SRMS Requests Completion Duration in Minutes
 const getCEOSRMSCompletionDuration = async (data) => {
   try {
@@ -14915,7 +15030,288 @@ const getCEOCompRoomsSummary = async (data) => {
     );
   }
 };
+// 31.1. ============================================================ Comp Rooms Details
+const getCEOCompRoomDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
 
+    const filter = String(data.Filter || "yesterday")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID = rawOrganizationID == null
+      ? ""
+      : String(rawOrganizationID).trim();
+
+    if (
+      organizationID !== "" &&
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      )
+    ) {
+      return fail(
+        "OrganizationID must be a positive integer.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 3. Pagination Validation
+    // ========================================================
+
+    const page = Number(data.Page ?? 1);
+    const pageSize = Number(data.PageSize ?? 10);
+
+    if (
+      !Number.isSafeInteger(page) ||
+      page < 1 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    ) {
+      return fail(
+        "Page must be a positive integer and PageSize must be between 1 and 100.",
+        400
+      );
+    }
+
+    const offset = (page - 1) * pageSize;
+
+    if (!Number.isSafeInteger(offset)) {
+      return fail("Invalid pagination offset.", 400);
+    }
+
+    // ========================================================
+    // 4. Date Range (Existing Helper)
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 5. MSSQL Connection
+    // ========================================================
+
+    const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 6. HotelOps Comp Room Details + Total Count
+    // ========================================================
+
+    const result = await mssqlPool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID || null
+      )
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
+      .input(
+        "Offset",
+        sql.Int,
+        offset
+      )
+      .input(
+        "PageSize",
+        sql.Int,
+        pageSize
+      )
+      .query(`
+        -- ====================================================
+        -- TOTAL RECORDS
+        -- ====================================================
+
+        SELECT
+          COUNT_BIG(1) AS TotalRecords
+
+        FROM CompRoom.CompRoom_Tbl_Entry_Master AS c
+
+        WHERE
+          (
+            @OrganizationID IS NULL
+            OR c.OrganizationID = @OrganizationID
+          )
+
+          AND c.ArrivalDate < DATEADD(DAY, 1, @ToDate)
+
+          AND c.DepartureDate > @FromDate;
+
+
+        -- ====================================================
+        -- PAGINATED DETAILS
+        -- ====================================================
+
+        SELECT
+          ROW_NUMBER() OVER (
+            ORDER BY
+              c.OrganizationID,
+              c.ArrivalDate,
+              c.CompID
+          ) + @Offset AS SrNo,
+
+          c.CompID,
+          c.OrganizationID,
+
+          dbo.FN_Get_OrganizationShortName(
+            c.OrganizationID
+          ) AS Hotel,
+
+          c.GuestName,
+          c.CompanyName,
+          c.NoRoom,
+          c.ArrivalDate,
+          c.DepartureDate,
+          c.TotalNights,
+          c.Total,
+          c.Reason,
+          c.BillingInst,
+          c.Remarks,
+          c.CompSerialNo,
+          c.CompRoomStatus,
+          c.CompRoomStatusRemark,
+          c.CreatedDateTime
+
+        FROM CompRoom.CompRoom_Tbl_Entry_Master AS c
+
+        WHERE
+          (
+            @OrganizationID IS NULL
+            OR c.OrganizationID = @OrganizationID
+          )
+
+          AND c.ArrivalDate < DATEADD(DAY, 1, @ToDate)
+
+          AND c.DepartureDate > @FromDate
+
+        ORDER BY
+          c.OrganizationID,
+          c.ArrivalDate,
+          c.CompID
+
+        OFFSET @Offset ROWS
+        FETCH NEXT @PageSize ROWS ONLY;
+      `);
+
+    // ========================================================
+    // 7. Total Count
+    // ========================================================
+
+    const totalRecords = Number(
+      result.recordsets?.[0]?.[0]?.TotalRecords ?? 0
+    );
+
+    // ========================================================
+    // 8. Response Mapping
+    // ========================================================
+
+  // ========================================================
+// 8. Response Mapping
+// ========================================================
+
+const details = (result.recordsets?.[1] || []).map((row) => ({
+  SrNo: Number(row.SrNo),
+
+  CompID: row.CompID,
+
+  OrganizationID: row.OrganizationID == null
+    ? null
+    : String(row.OrganizationID),
+
+  Hotel: row.Hotel ?? null,
+  GuestName: row.GuestName ?? null,
+  CompanyName: row.CompanyName ?? null,
+
+  NoRoom: row.NoRoom == null
+    ? null
+    : Number(row.NoRoom),
+
+  ArrivalDate: row.ArrivalDate
+    ? formatDate(row.ArrivalDate)
+    : null,
+
+  DepartureDate: row.DepartureDate
+    ? formatDate(row.DepartureDate)
+    : null,
+
+  TotalNights: row.TotalNights == null
+    ? null
+    : Number(row.TotalNights),
+
+  Total: row.Total == null
+    ? null
+    : Number(row.Total),
+
+  Reason: row.Reason ?? null,
+  BillingInst: row.BillingInst ?? null,
+  Remarks: row.Remarks ?? null,
+  CompSerialNo: row.CompSerialNo ?? null,
+  CompRoomStatus: row.CompRoomStatus ?? null,
+  CompRoomStatusRemark: row.CompRoomStatusRemark ?? null,
+
+  CreatedDateTime: row.CreatedDateTime
+    ? formatDate(row.CreatedDateTime)
+    : null,
+}));
+
+    // ========================================================
+    // 9. Response
+    // ========================================================
+
+    return ok(
+      "CEO HotelOps comp room details fetched successfully.",
+      details,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID || null,
+
+        DateRange: {
+          FromDate: dates.CurrentFromDate,
+          ToDate: dates.CurrentToDate,
+        },
+
+        Page: page,
+        PageSize: pageSize,
+        TotalRecords: totalRecords,
+        TotalPages: Math.ceil(totalRecords / pageSize),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO HotelOps comp room details"
+    );
+  }
+};
 
 
 
@@ -14944,6 +15340,7 @@ module.exports = {
   getCEOSRMSRequestDetails,
   getCEOTop20SRMSRequests,
   getCEOTop20SRMSRequestDetails,
+  getCEOSRMSRequestByOrganizations,
   getCEOSRMSCompletionDuration,
   getCEOSRMSCompletionDurationDetails,
   getCEOGuestMetChart,
@@ -14989,6 +15386,7 @@ module.exports = {
   getCEOSalesContractDetails,
   getCEOARRRevPARChart,
   getCEOOutOfOrderChart,
-  getCEOCompRoomsSummary
+  getCEOCompRoomsSummary,
+  getCEOCompRoomDetails
 };
 
