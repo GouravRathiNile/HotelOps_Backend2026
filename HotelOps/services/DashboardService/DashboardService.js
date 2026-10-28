@@ -5186,6 +5186,7 @@ const getCEOGuestMetDetails = async (data) => {
             d.Feedback,
             d.ActionTaken,
             d.MetBy,
+            u.fullname AS MetByName,
             d.MetOn,
             d.FeedbackType,
             d.GuestStatus,
@@ -5212,7 +5213,8 @@ const getCEOGuestMetDetails = async (data) => {
 
           LEFT JOIN Organization_Master o
             ON o.OrganizationID = d.OrganizationID
-
+LEFT JOIN user_master u
+  ON u.userid = d.MetBy
           WHERE d.IsDeleted = FALSE
             AND m.IsDeleted = FALSE
             AND d.OrganizationID = $1::BIGINT
@@ -5336,36 +5338,33 @@ const getCEOGuestMetDetails = async (data) => {
       RoomNo: row.roomno ?? null,
       BookingSource: row.bookingsource ?? null,
 
-      Arrival: row.arrival
-        ? row.arrival.toISOString().slice(0, 10)
-        : null,
+    
+         Arrival: row.arrival
+    ? formatDate(row.arrival)
+    : null,
 
-      Departure: row.departure
-        ? row.departure.toISOString().slice(0, 10)
-        : null,
+      
+        Departure: row.departure
+    ? formatDate(row.departure)
+    : null,
 
       Feedback: row.feedback ?? null,
       ActionTaken: row.actiontaken ?? null,
-      MetBy: row.metby == null ? null : Number(row.metby),
+      MetBy: row.metbyname ?? null,
       MetOn: row.meton ?? null,
       FeedbackType: row.feedbacktype ?? null,
       GuestStatus: row.gueststatus ?? null,
 
-      EntryDate: row.entrydate
-        ? row.entrydate.toISOString().slice(0, 10)
-        : null,
-
-      CreatedBy: row.createdby == null
-        ? null
-        : Number(row.createdby),
+     
+         EntryDate: row.entrydate
+    ? formatDate(row.entrydate)
+    : null,
 
       CreatedDate: row.createddate ?? null,
 
-      ModifiedBy: row.modifiedby == null
-        ? null
-        : Number(row.modifiedby),
-
-      ModifiedDate: row.modifieddate ?? null,
+       CreatedDate: row.createddate
+    ? formatDate(row.createddate)
+    : null,
     }));
 
     // ========================================================
@@ -8252,6 +8251,239 @@ const getCEOCheckList = async (data) => {
     return databaseFailure(
       error,
       "Fetch CEO checklist"
+    );
+  }
+};
+// 17.1 ============================================================ CheckList Detai;s
+const getCEOChecklistDetails = async (data) => {
+  try {
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(data.Filter || "yearly")
+      .trim()
+      .toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
+    ) {
+      return fail(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        400
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    const rawOrganizationID = data.OrganizationID;
+
+    const organizationID =
+      rawOrganizationID == null ||
+      String(rawOrganizationID).trim() === ""
+        ? null
+        : String(rawOrganizationID).trim();
+
+    if (organizationID !== null) {
+      if (
+        !/^[1-9]\d*$/.test(organizationID) ||
+        BigInt(organizationID) > 9223372036854775807n
+      ) {
+        return fail(
+          "OrganizationID must be a positive integer.",
+          400
+        );
+      }
+    }
+
+    // ========================================================
+    // 3. Pagination Validation
+    // ========================================================
+
+    const page = Number(data.page ?? 1);
+    const pageSize = Number(data.PageSize ?? 10);
+
+    if (
+      !Number.isSafeInteger(page) ||
+      page <= 0 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    ) {
+      return fail("Invalid page or PageSize.", 400);
+    }
+
+    const offset = (page - 1) * pageSize;
+
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset > 2147483647
+    ) {
+      return fail("Pagination offset is too large.", 400);
+    }
+
+    // ========================================================
+    // 4. Date Range
+    // ========================================================
+
+    const dates = getDateRange(filter);
+
+    // ========================================================
+    // 5. PostgreSQL Query
+    // ========================================================
+
+    const query = `
+      SELECT
+        ROW_NUMBER() OVER (
+          ORDER BY EM.EntryDate DESC, EM.ID
+        ) + $5::BIGINT AS "SrNo",
+
+        EM.ID AS "CheckListEntryID",
+        EM.OrganizationID AS "OrganizationID",
+        O.ShortName AS "Hotel",
+
+        GM.Title AS "Title",
+        GM.DepartmentID AS "DepartmentID",
+
+        EM.EntryDate AS "EntryDate",
+        EM.EntryBy AS "EntryBy",
+
+        COUNT(*) OVER()::BIGINT AS "TotalCount"
+
+      FROM checklist_entry_master EM
+
+      LEFT JOIN checklist_group_master GM
+        ON GM.ID = EM.GroupID
+
+      LEFT JOIN Organization_Master O
+        ON O.OrganizationID = EM.OrganizationID
+
+      WHERE
+        (
+          $1::BIGINT IS NULL
+          OR EM.OrganizationID = $1::BIGINT
+        )
+
+        AND EM.EntryDate >= $2::DATE
+        AND EM.EntryDate < ($3::DATE + INTERVAL '1 day')
+
+      ORDER BY
+        EM.EntryDate DESC,
+        EM.ID
+
+      LIMIT $4
+      OFFSET $5;
+    `;
+
+    const result = await pool.query(query, [
+      organizationID,
+      dates.CurrentFromDate,
+      dates.CurrentToDate,
+      pageSize,
+      offset,
+    ]);
+
+    // ========================================================
+    // 6. Total Count
+    // ========================================================
+
+    let totalCount = Number(
+      result.rows[0]?.TotalCount ?? 0
+    );
+
+    // Empty page: fetch count separately
+    if (result.rows.length === 0) {
+      const countResult = await pool.query(
+        `
+          SELECT COUNT(*)::BIGINT AS "TotalCount"
+
+          FROM checklist_entry_master EM
+
+          LEFT JOIN checklist_group_master GM
+            ON GM.ID = EM.GroupID
+
+          WHERE
+            (
+              $1::BIGINT IS NULL
+              OR EM.OrganizationID = $1::BIGINT
+            )
+
+            AND EM.EntryDate >= $2::DATE
+            AND EM.EntryDate < ($3::DATE + INTERVAL '1 day');
+        `,
+        [
+          organizationID,
+          dates.CurrentFromDate,
+          dates.CurrentToDate,
+        ]
+      );
+
+      totalCount = Number(
+        countResult.rows[0]?.TotalCount ?? 0
+      );
+    }
+
+    // ========================================================
+    // 7. Response Mapping
+    // ========================================================
+
+    const checklistDetails = result.rows.map((row, index) => ({
+      SrNo: offset + index + 1,
+
+      CheckListEntryID: Number(row.CheckListEntryID),
+
+      OrganizationID: Number(row.OrganizationID),
+
+      Hotel: row.Hotel ?? null,
+
+      Title: row.Title ?? null,
+
+      DepartmentID:
+        row.DepartmentID == null
+          ? null
+          : Number(row.DepartmentID),
+
+      EntryDate: formatDate(row.EntryDate),
+
+      EntryBy:
+        row.EntryBy == null
+          ? null
+          : Number(row.EntryBy),
+    }));
+
+    // ========================================================
+    // 8. Response
+    // ========================================================
+
+    return ok(
+      "CEO checklist details fetched successfully.",
+      checklistDetails,
+      {
+        Filter: filter,
+
+        OrganizationID: organizationID,
+
+        DateRange: {
+          FromDate: formatDate(dates.CurrentFromDate),
+          ToDate: formatDate(dates.CurrentToDate),
+        },
+
+        TotalCount: totalCount,
+
+        page,
+
+        PageSize: pageSize,
+
+        TotalPages: Math.ceil(totalCount / pageSize),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO checklist details"
     );
   }
 };
@@ -12222,7 +12454,7 @@ const getCEOCompletedMaintenanceDetails = async (data) => {
 
         WHERE m.IsDeleted = FALSE
 
-          AND LOWER(TRIM(m.Status)) = 'completed'
+          AND LOWER(TRIM(m.Status)) IN ('completed', 'pending')
 
           AND (
             $3::BIGINT IS NULL
@@ -12267,7 +12499,7 @@ const getCEOCompletedMaintenanceDetails = async (data) => {
 
           WHERE m.IsDeleted = FALSE
 
-            AND LOWER(TRIM(m.Status)) = 'pending'
+            AND LOWER(TRIM(m.Status)) IN ('completed', 'pending')
 
             AND (
               $3::BIGINT IS NULL
@@ -15359,6 +15591,7 @@ module.exports = {
   getCEOConsumption,
   getCEOConsumptionDetails,
   getCEOCheckList,
+  getCEOChecklistDetails,
   getCEODiscard,
   getCEODiscardDetails,
   getCEOLostAndFound,

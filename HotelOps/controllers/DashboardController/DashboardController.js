@@ -2740,6 +2740,104 @@ exports.getCEOCheckList = async (req, res) => {
     return handleError(error, res);
   }
 };
+// 17.1 ============================================================ CheckList Detai;s
+exports.getCEOCheckListDetails = async (req, res) => {
+  try {
+    const {
+      Filter = "yearly",
+      OrganizationID,
+      page = 1,
+      PageSize = 10,
+    } = req.query;
+
+    // ========================================================
+    // 1. Filter Validation
+    // ========================================================
+
+    const filter = String(Filter).trim().toLowerCase();
+
+    if (
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
+    ) {
+      throw new AppError(
+        "Filter must be yesterday, weekly, monthly or yearly.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 2. OrganizationID Validation
+    // ========================================================
+
+    let orgID = null;
+
+    if (
+      OrganizationID !== undefined &&
+      String(OrganizationID).trim() !== ""
+    ) {
+      orgID = String(OrganizationID).trim();
+
+      if (
+        !/^[1-9]\d*$/.test(orgID) ||
+        BigInt(orgID) > 9223372036854775807n
+      ) {
+        throw new AppError(
+          "OrganizationID must be a positive integer.",
+          STATUS_CODES.BAD_REQUEST
+        );
+      }
+    }
+
+    // ========================================================
+    // 3. Pagination Validation
+    // ========================================================
+
+    const pageNumber = Number(page);
+    const pageSizeNumber = Number(PageSize);
+
+    if (
+      !Number.isSafeInteger(pageNumber) ||
+      pageNumber <= 0 ||
+      !Number.isSafeInteger(pageSizeNumber) ||
+      pageSizeNumber < 1 ||
+      pageSizeNumber > 100
+    ) {
+      throw new AppError(
+        "Invalid page or PageSize.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // ========================================================
+    // 4. Service Call
+    // ========================================================
+
+    const result = await DashboardService.getCEOChecklistDetails({
+      Filter: filter,
+      OrganizationID: orgID,
+      page: pageNumber,
+      PageSize: pageSizeNumber,
+    });
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
+
+    if (!result.success) {
+      throw new AppError(
+        result.message,
+        result.statusCode || STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(result);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
 // 18. ============================================================ Discards Trend
 exports.getCEODiscard = async (req, res) => {
   try {

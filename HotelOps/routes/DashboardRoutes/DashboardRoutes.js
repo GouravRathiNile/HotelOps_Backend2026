@@ -151,6 +151,8 @@ router.get("/ConsumptionTrend",authenticateToken,getCEOConsumption);
 router.get("/ConsumptionDetails",authenticateToken,getCEOConsumptionDetails);
 // 17. ============================================================ CheckList Trend
 router.get("/CheckListTrend",authenticateToken,getCEOCheckList);
+// 17.1 ============================================================ CheckList Detai;s
+
 // 18. ============================================================ Discards Trend
 router.get("/DiscardTrend",authenticateToken,getCEODiscard);
 // 18.1 ============================================================ Discards Details
