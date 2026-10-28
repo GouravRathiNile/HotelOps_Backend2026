@@ -8461,9 +8461,7 @@ const getCEOChecklistDetails = async (data) => {
         EntryDate: formatDate(row.EntryDate),
 
         EntryBy:
-          row.EntryBy == null
-            ? null
-            : Number(row.EntryBy),
+          row.EntryBy || ''
       })
     );
 
