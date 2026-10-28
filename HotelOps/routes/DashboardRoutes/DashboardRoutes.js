@@ -39,6 +39,7 @@ const {
   getCEOConsumption,
   getCEOConsumptionDetails,
   getCEOCheckList,
+  getCEOCheckListDetails,
   getCEODiscard,
   getCEODiscardDetails,
   getCEOLostAndFound,
@@ -152,7 +153,7 @@ router.get("/ConsumptionDetails",authenticateToken,getCEOConsumptionDetails);
 // 17. ============================================================ CheckList Trend
 router.get("/CheckListTrend",authenticateToken,getCEOCheckList);
 // 17.1 ============================================================ CheckList Detai;s
-
+router.get("/CheckListDetails",authenticateToken,getCEOCheckListDetails);
 // 18. ============================================================ Discards Trend
 router.get("/DiscardTrend",authenticateToken,getCEODiscard);
 // 18.1 ============================================================ Discards Details

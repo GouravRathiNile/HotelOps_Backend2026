@@ -8265,9 +8265,7 @@ const getCEOChecklistDetails = async (data) => {
       .trim()
       .toLowerCase();
 
-    if (
-      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
-    ) {
+    if (!["yesterday", "weekly", "monthly", "yearly"].includes(filter)) {
       return fail(
         "Filter must be yesterday, weekly, monthly or yearly.",
         400
@@ -8291,10 +8289,7 @@ const getCEOChecklistDetails = async (data) => {
         !/^[1-9]\d*$/.test(organizationID) ||
         BigInt(organizationID) > 9223372036854775807n
       ) {
-        return fail(
-          "OrganizationID must be a positive integer.",
-          400
-        );
+        return fail("OrganizationID must be a positive integer.", 400);
       }
     }
 
@@ -8317,10 +8312,7 @@ const getCEOChecklistDetails = async (data) => {
 
     const offset = (page - 1) * pageSize;
 
-    if (
-      !Number.isSafeInteger(offset) ||
-      offset > 2147483647
-    ) {
+    if (!Number.isSafeInteger(offset) || offset > 2147483647) {
       return fail("Pagination offset is too large.", 400);
     }
 
@@ -8331,130 +8323,152 @@ const getCEOChecklistDetails = async (data) => {
     const dates = getDateRange(filter);
 
     // ========================================================
-    // 5. PostgreSQL Query
+    // 5. MSSQL Connection
     // ========================================================
 
-    const query = `
-      SELECT
-        ROW_NUMBER() OVER (
-          ORDER BY EM.EntryDate DESC, EM.ID
-        ) + $5::BIGINT AS "SrNo",
-
-        EM.ID AS "CheckListEntryID",
-        EM.OrganizationID AS "OrganizationID",
-        O.ShortName AS "Hotel",
-
-        GM.Title AS "Title",
-        GM.DepartmentID AS "DepartmentID",
-
-        EM.EntryDate AS "EntryDate",
-        EM.EntryBy AS "EntryBy",
-
-        COUNT(*) OVER()::BIGINT AS "TotalCount"
-
-      FROM checklist_entry_master EM
-
-      LEFT JOIN checklist_group_master GM
-        ON GM.ID = EM.GroupID
-
-      LEFT JOIN Organization_Master O
-        ON O.OrganizationID = EM.OrganizationID
-
-      WHERE
-        (
-          $1::BIGINT IS NULL
-          OR EM.OrganizationID = $1::BIGINT
-        )
-
-        AND EM.EntryDate >= $2::DATE
-        AND EM.EntryDate < ($3::DATE + INTERVAL '1 day')
-
-      ORDER BY
-        EM.EntryDate DESC,
-        EM.ID
-
-      LIMIT $4
-      OFFSET $5;
-    `;
-
-    const result = await pool.query(query, [
-      organizationID,
-      dates.CurrentFromDate,
-      dates.CurrentToDate,
-      pageSize,
-      offset,
-    ]);
+    const pool = await getMssqlPool();
 
     // ========================================================
-    // 6. Total Count
+    // 6. Checklist Details Query
+    // ========================================================
+
+    const result = await pool
+      .request()
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        organizationID === null ? null : organizationID
+      )
+      .input("FromDate", sql.Date, dates.CurrentFromDate)
+      .input("ToDate", sql.Date, dates.CurrentToDate)
+      .input("Offset", sql.Int, offset)
+      .input("PageSize", sql.Int, pageSize)
+      .query(`
+        SELECT
+          ROW_NUMBER() OVER (
+            ORDER BY EM.EntryDate DESC, EM.ID
+          ) + @Offset AS SrNo,
+
+          EM.ID AS CheckListEntryID,
+          EM.OrganizationID,
+
+          dbo.FN_Get_OrganizationShortName(
+            EM.OrganizationID
+          ) AS Hotel,
+
+          GM.Title,
+          GM.DepartmentID,
+          D.Department,
+
+          EM.EntryDate,
+          EM.EntryBy,
+
+          COUNT_BIG(*) OVER() AS TotalCount
+
+        FROM CheckList.Chk_Tbl_CheckList_Entry_Master AS EM
+
+        LEFT JOIN CheckList.Chk_Tbl_GroupMaster AS GM
+          ON GM.ID = EM.GroupID
+
+        LEFT JOIN dbo.htl_tbl_department_master AS D
+          ON D.DepartmentID = GM.DepartmentID
+
+        WHERE
+          (
+            @OrganizationID IS NULL
+            OR EM.OrganizationID = @OrganizationID
+          )
+
+          AND EM.EntryDate >= @FromDate
+          AND EM.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+        ORDER BY
+          EM.EntryDate DESC,
+          EM.ID
+
+        OFFSET @Offset ROWS
+        FETCH NEXT @PageSize ROWS ONLY;
+      `);
+
+    // ========================================================
+    // 7. Total Count
     // ========================================================
 
     let totalCount = Number(
-      result.rows[0]?.TotalCount ?? 0
+      result.recordset[0]?.TotalCount ?? 0
     );
 
-    // Empty page: fetch count separately
-    if (result.rows.length === 0) {
-      const countResult = await pool.query(
-        `
-          SELECT COUNT(*)::BIGINT AS "TotalCount"
+    // Empty page: fetch total count separately
+    if (result.recordset.length === 0) {
+      const countResult = await pool
+        .request()
+        .input(
+          "OrganizationID",
+          sql.BigInt,
+          organizationID === null ? null : organizationID
+        )
+        .input("FromDate", sql.Date, dates.CurrentFromDate)
+        .input("ToDate", sql.Date, dates.CurrentToDate)
+        .query(`
+          SELECT COUNT_BIG(*) AS TotalCount
 
-          FROM checklist_entry_master EM
+          FROM CheckList.Chk_Tbl_CheckList_Entry_Master AS EM
 
-          LEFT JOIN checklist_group_master GM
+          LEFT JOIN CheckList.Chk_Tbl_GroupMaster AS GM
             ON GM.ID = EM.GroupID
+
+          LEFT JOIN dbo.htl_tbl_department_master AS D
+            ON D.DepartmentID = GM.DepartmentID
 
           WHERE
             (
-              $1::BIGINT IS NULL
-              OR EM.OrganizationID = $1::BIGINT
+              @OrganizationID IS NULL
+              OR EM.OrganizationID = @OrganizationID
             )
 
-            AND EM.EntryDate >= $2::DATE
-            AND EM.EntryDate < ($3::DATE + INTERVAL '1 day');
-        `,
-        [
-          organizationID,
-          dates.CurrentFromDate,
-          dates.CurrentToDate,
-        ]
-      );
+            AND EM.EntryDate >= @FromDate
+            AND EM.EntryDate < DATEADD(DAY, 1, @ToDate);
+        `);
 
       totalCount = Number(
-        countResult.rows[0]?.TotalCount ?? 0
+        countResult.recordset[0]?.TotalCount ?? 0
       );
     }
 
     // ========================================================
-    // 7. Response Mapping
+    // 8. Response Mapping
     // ========================================================
 
-    const checklistDetails = result.rows.map((row, index) => ({
-      SrNo: offset + index + 1,
+    const checklistDetails = result.recordset.map(
+      (row, index) => ({
+        SrNo: offset + index + 1,
 
-      CheckListEntryID: Number(row.CheckListEntryID),
+        CheckListEntryID: Number(row.CheckListEntryID),
 
-      OrganizationID: Number(row.OrganizationID),
+        OrganizationID: Number(row.OrganizationID),
 
-      Hotel: row.Hotel ?? null,
+        Hotel: row.Hotel ?? null,
 
-      Title: row.Title ?? null,
+        Title: row.Title ?? null,
 
-      DepartmentID:
-        row.DepartmentID == null
-          ? null
-          : Number(row.DepartmentID),
+        DepartmentID:
+          row.DepartmentID == null
+            ? null
+            : Number(row.DepartmentID),
 
-      EntryDate: formatDate(row.EntryDate),
+        Department: row.Department ?? null,
 
-      EntryBy:
-        row.EntryBy == null
-          ? null
-          : Number(row.EntryBy),
-    }));
+        EntryDate: formatDate(row.EntryDate),
+
+        EntryBy:
+          row.EntryBy == null
+            ? null
+            : Number(row.EntryBy),
+      })
+    );
 
     // ========================================================
-    // 8. Response
+    // 9. Response
     // ========================================================
 
     return ok(
@@ -8479,7 +8493,6 @@ const getCEOChecklistDetails = async (data) => {
         TotalPages: Math.ceil(totalCount / pageSize),
       }
     );
-
   } catch (error) {
     return databaseFailure(
       error,
