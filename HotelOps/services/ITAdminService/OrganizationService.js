@@ -519,7 +519,12 @@ const updateOrganization = async (data) => {
     } = data;
 
     // ================= Organization Update =================
-
+    // console.log({
+    //   OrganizationID,
+    //   BrandID,
+    //   ParentOrganizationID,
+    //   FinancialYearStart,
+    // });
     const organizationQuery = `
       UPDATE Organization_Master
       SET
@@ -566,7 +571,7 @@ const updateOrganization = async (data) => {
         BrandID = $26,
 
         ModifiedBy = $27,
-        ModifiedDateTime = NOW()
+        ModifiedDateTime = NOW(),
 
         ParentOrganizationID = $28
 
@@ -575,7 +580,14 @@ const updateOrganization = async (data) => {
 
       RETURNING *;
     `;
+    const normalizedFinancialYearStart =
+      FinancialYearStart === "" ||
+        FinancialYearStart === undefined ||
+        FinancialYearStart === null
+        ? null
+        : Number(FinancialYearStart);
 
+    
     const values = [
       OrganizationName,
       OrganizationCode,
@@ -600,7 +612,7 @@ const updateOrganization = async (data) => {
 
       PolicyDetails,
 
-      FinancialYearStart,
+      normalizedFinancialYearStart,
 
       FinanceModule,
 
