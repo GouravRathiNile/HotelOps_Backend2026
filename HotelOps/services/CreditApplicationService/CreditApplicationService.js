@@ -1,3 +1,4 @@
+const { isLegacyCreditApprover, creditApproverAssignmentSql } = require("../../utils/creditApplicationApprover");
 const { pool } = require("../../db");
 const {retryableDatabaseResponse,} = require("../../utils/retryableDatabaseError");
 const { formatDate } = require("../../utils/dateFormatter");
@@ -1068,6 +1069,8 @@ const isCreditApplicationApprovalStepAssignedToUser = (
   }
 
 
+  if (isLegacyCreditApprover(approvalStep, userContext)) return true;
+
   // ============================================================
   // USER / REGIONAL APPROVER
   //
@@ -2012,127 +2015,14 @@ const getCreditApplicationList = async (data) => {
 
     const approverCheckResult =
       await pool.query(
-        `
-          SELECT EXISTS
-          (
-            SELECT 1
-
-            FROM Credit_Application_Approval caa
-
-            INNER JOIN Credit_Application_Entry_Master ca_check
-              ON ca_check.CreditApplicationID =
-                 caa.CreditApplicationID
-
-            WHERE ca_check.OrganizationID = $1
-
-              AND ca_check.IsDeleted = FALSE
-              AND caa.IsDeleted = FALSE
-
-              AND
-              (
-                UPPER(
-                  TRIM(
-                    COALESCE(
-                      caa.ApprovalRole,
-                      ''
-                    )
-                  )
-                ) <> 'FC'
-
-                OR
-
-                UPPER(
-                  TRIM(
-                    ($5)::text
-                  )
-                ) = 'FINANCE'
-              )
-
-              AND
-              (
-                (
-                  UPPER(
-  TRIM(
-    COALESCE(
-      caa.ApproverType,
-      ''
-    )
-  )
-) IN
-(
-  'USER',
-  'REGIONAL'
-)
-
-                  AND
-                  (
-                    TRIM(
-                      COALESCE(
-                        caa.ApproverValue,
-                        ''
-                      )
-                    ) =
-                    TRIM(
-                      ($2)::text
-                    )
-
-                    OR
-
-                    UPPER(
-                      TRIM(
-                        COALESCE(
-                          caa.ApproverValue,
-                          ''
-                        )
-                      )
-                    ) =
-                    UPPER(
-                      TRIM(
-                        ($3)::text
-                      )
-                    )
-                  )
-                )
-
-                OR
-
-                (
-                  UPPER(
-                    TRIM(
-                      COALESCE(
-                        caa.ApproverType,
-                        ''
-                      )
-                    )
-                  ) = 'ROLE'
-
-                  AND
-
-                  UPPER(
-                    TRIM(
-                      COALESCE(
-                        caa.ApproverValue,
-                        ''
-                      )
-                    )
-                  ) IN
-                  (
-                    UPPER(
-                      TRIM(
-                        ($4)::text
-                      )
-                    ),
-
-                    UPPER(
-                      TRIM(
-                        ($5)::text
-                      )
-                    )
-                  )
-                )
-              )
-          ) AS IsApprover;
-        `,
+        `SELECT EXISTS (
+          SELECT 1 FROM Credit_Application_Approval caa
+          INNER JOIN Credit_Application_Entry_Master ca_check
+            ON ca_check.CreditApplicationID = caa.CreditApplicationID
+          WHERE ca_check.OrganizationID = $1
+            AND ca_check.IsDeleted = FALSE AND caa.IsDeleted = FALSE
+            AND ${creditApproverAssignmentSql("caa", "$2", "$3", "$4", "$5")}
+        ) AS IsApprover;`,
         [
           OrganizationID,
           userID,
@@ -2163,11 +2053,14 @@ const getCreditApplicationList = async (data) => {
         departmentName,
       );
 
+    const isCEOViewer = userType === "CEO";
+
     const salesViewer =
       !isApprover &&
       isSalesDepartment;
 
     const frontOfficeViewer =
+      !isCEOViewer &&
       !isApprover &&
       (
         departmentName ===
@@ -2178,10 +2071,12 @@ const getCreditApplicationList = async (data) => {
       );
 
     const completedOnlyViewer =
+      !isCEOViewer &&
       !isApprover &&
       !salesViewer;
 
     const canFilter =
+      isCEOViewer ||
       isSalesDepartment ||
       isApprover;
 
@@ -2280,7 +2175,7 @@ const getCreditApplicationList = async (data) => {
     let assignedCurrentStageSql =
       null;
 
-    if (isApprover) {
+    if (isApprover && !isCEOViewer) {
       params.push(
         userID,
       );
@@ -2314,117 +2209,13 @@ const getCreditApplicationList = async (data) => {
       // Reusable Approval Assignment SQL
       // ==========================================================
 
-      const getAssignedApprovalSql = (
+      const getAssignedApprovalSql = (alias) => creditApproverAssignmentSql(
         alias,
-      ) => `
-        (
-          (
-            UPPER(
-              TRIM(
-                COALESCE(
-                  ${alias}.ApprovalRole,
-                  ''
-                )
-              )
-            ) <> 'FC'
-
-            OR
-
-            UPPER(
-              TRIM(
-                ($${departmentIndex})::text
-              )
-            ) = 'FINANCE'
-          )
-
-          AND
-
-          (
-            (
-             UPPER(
-  TRIM(
-    COALESCE(
-      ${alias}.ApproverType,
-      ''
-    )
-  )
-) IN
-(
-  'USER',
-  'REGIONAL'
-)
-
-              AND
-
-              (
-                TRIM(
-                  COALESCE(
-                    ${alias}.ApproverValue,
-                    ''
-                  )
-                ) =
-                TRIM(
-                  ($${userIDIndex})::text
-                )
-
-                OR
-
-                UPPER(
-                  TRIM(
-                    COALESCE(
-                      ${alias}.ApproverValue,
-                      ''
-                    )
-                  )
-                ) =
-                UPPER(
-                  TRIM(
-                    ($${usernameIndex})::text
-                  )
-                )
-              )
-            )
-
-            OR
-
-            (
-              UPPER(
-                TRIM(
-                  COALESCE(
-                    ${alias}.ApproverType,
-                    ''
-                  )
-                )
-              ) = 'ROLE'
-
-              AND
-
-              UPPER(
-                TRIM(
-                  COALESCE(
-                    ${alias}.ApproverValue,
-                    ''
-                  )
-                )
-              ) IN
-              (
-                UPPER(
-                  TRIM(
-                    ($${userTypeIndex})::text
-                  )
-                ),
-
-                UPPER(
-                  TRIM(
-                    ($${departmentIndex})::text
-                  )
-                )
-              )
-            )
-          )
-        )
-      `;
-
+        `$${userIDIndex}`,
+        `$${usernameIndex}`,
+        `$${userTypeIndex}`,
+        `$${departmentIndex}`,
+      );
 
       assignedApprovalSql =
         getAssignedApprovalSql(
@@ -2813,7 +2604,7 @@ const getCreditApplicationList = async (data) => {
     // ============================================================
     // Completed-Only Viewer
     //
-    // Front Office / CEO / Other non-approver users
+    // Front Office / Other non-approver users (CEO has read visibility)
     // ============================================================
 
     else if (completedOnlyViewer) {
@@ -3599,6 +3390,8 @@ const getCreditApplicationById = async (data) => {
     // Sales
     // ============================================================
 
+    const isCEOViewer = userType === "CEO";
+
     const isSalesDepartment =
       [
         "SALES",
@@ -3697,6 +3490,7 @@ const getCreditApplicationById = async (data) => {
     // ============================================================
 
     const completedOnlyViewer =
+      !isCEOViewer &&
       !isApprover &&
       !isSalesDepartment;
 
@@ -3772,7 +3566,7 @@ const getCreditApplicationById = async (data) => {
     // Approver View Access
     // ============================================================
 
-    if (isApprover) {
+    if (isApprover && !isCEOViewer) {
       // ==========================================================
       // Is Current Stage Assigned To Logged-In User?
       // ==========================================================

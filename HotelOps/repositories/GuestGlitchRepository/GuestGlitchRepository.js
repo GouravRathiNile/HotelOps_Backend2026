@@ -416,6 +416,7 @@ const list = async (data, organizationID) => {
 
       gg.roomnumber,
       gg.guestname,
+      gg.department,
       gg.departmentids,
       gg.receivedbyids,
       gg.informedtoids,
@@ -629,6 +630,25 @@ const findReportByID = async (client, id, organizationID, lock = false) => {
 // };
 
 const resolveSelections = async (client, organizationID, rows = []) => {
+  const legacyDepartmentNames = (row) => String(row.department || "")
+    .split(",").map((name) => name.trim()).filter(Boolean);
+  const needsLegacyDepartments = (row) => !(row.departmentids || []).length;
+  const legacyNames = [...new Set(rows.filter(needsLegacyDepartments)
+    .flatMap(legacyDepartmentNames).map((name) => name.toLowerCase()))];
+  const legacyDepartments = legacyNames.length ? (await client.query(
+    `SELECT departmentid, departmentname
+     FROM department_master
+     WHERE organizationid = $1 AND isdeleted = FALSE
+       AND LOWER(TRIM(departmentname)) = ANY($2::text[])
+     ORDER BY departmentid;`,
+    [organizationID, legacyNames]
+  )).rows : [];
+  const legacyDepartmentMap = new Map();
+  for (const department of legacyDepartments) {
+    const key = department.departmentname.trim().toLowerCase();
+    if (!legacyDepartmentMap.has(key)) legacyDepartmentMap.set(key, department);
+  }
+
   const unique = (field) =>
     [
       ...new Set(
@@ -691,7 +711,16 @@ const resolveSelections = async (client, organizationID, rows = []) => {
   });
 
   return rows.map((row) => ({
-    departments: (row.departmentids || [])
+    departments: needsLegacyDepartments(row)
+      ? [...new Set(legacyDepartmentNames(row).map((name) => name.toLowerCase()))]
+        .map((key) => {
+          const department = legacyDepartmentMap.get(key);
+          return {
+            ID: department ? Number(department.departmentid) : null,
+            Name: department?.departmentname || legacyDepartmentNames(row).find((name) => name.toLowerCase() === key),
+          };
+        })
+      : (row.departmentids || [])
       .map(Number)
       .map((id) => ({
         ID: id,

@@ -13,7 +13,7 @@ const { normalizeAMCApprovalStage } = require("./AMCApprovalStage");
 const { generatePdf, loadLogo } = require("../../utils/pdfHelper");
 const PdfPrinter = require("pdfmake");
 const path = require("path");
-const  EQUIPMENT_DETAIL_PDF_FONTS = {
+const EQUIPMENT_DETAIL_PDF_FONTS = {
   Roboto: {
     normal: path.join(process.cwd(), "fonts/Roboto-Regular.ttf"),
     bold: path.join(process.cwd(), "fonts/Roboto-Medium.ttf"),
@@ -135,8 +135,10 @@ const processWarrantyStatusUpdates = async ({ businessDate, poolOverride = pool 
       }
     }
     console.error("Engineering Warranty Status Update Failed:", error.message);
-    return { businessDate: today, candidates: 0, updated: 0,
-      alreadyExpired: 0, skipped: 0, failed: 1 };
+    return {
+      businessDate: today, candidates: 0, updated: 0,
+      alreadyExpired: 0, skipped: 0, failed: 1
+    };
   } finally {
     client.release();
   }
@@ -455,40 +457,40 @@ const getAllEquipment = async (data) => {
     // ========================================================
 
     // ========================================================
-// Other Filters
-// ========================================================
+    // Other Filters
+    // ========================================================
 
-for (const [parameter, column, operator] of [
-  ["WarrantyStatus", "WarrantyStatus", "="],
-  ["AMCStatus", "AMCStatus", "="],
-  ["SerialNo", "SerialNumber", "ILIKE"],
-  ["Area", "Area", "ILIKE"],
-  ["Equipment", "Description", "ILIKE"],
-]) {
-  const value = String(data[parameter] ?? "").trim();
+    for (const [parameter, column, operator] of [
+      ["WarrantyStatus", "WarrantyStatus", "="],
+      ["AMCStatus", "AMCStatus", "="],
+      ["SerialNo", "SerialNumber", "ILIKE"],
+      ["Area", "Area", "ILIKE"],
+      ["Equipment", "Description", "ILIKE"],
+    ]) {
+      const value = String(data[parameter] ?? "").trim();
 
-  if (!value) continue;
+      if (!value) continue;
 
-  values.push(
-    operator === "ILIKE"
-      ? `%${value}%`
-      : value
-  );
+      values.push(
+        operator === "ILIKE"
+          ? `%${value}%`
+          : value
+      );
 
-  // Status filters
-  if (operator === "=") {
-    conditions.push(
-      `LOWER(TRIM(e.${column})) = LOWER(TRIM($${values.length}))`
-    );
-  }
+      // Status filters
+      if (operator === "=") {
+        conditions.push(
+          `LOWER(TRIM(e.${column})) = LOWER(TRIM($${values.length}))`
+        );
+      }
 
-  // Text filters
-  else {
-    conditions.push(
-      `TRIM(e.${column}) ILIKE $${values.length}`
-    );
-  }
-}
+      // Text filters
+      else {
+        conditions.push(
+          `TRIM(e.${column}) ILIKE $${values.length}`
+        );
+      }
+    }
 
     // ========================================================
     // Search
@@ -2135,8 +2137,8 @@ const generateBreakdownDetailPdf = async (data) => {
 
     const displayValue = (value) =>
       value === null ||
-      value === undefined ||
-      String(value).trim() === ""
+        value === undefined ||
+        String(value).trim() === ""
         ? "-"
         : String(value);
 
@@ -2318,7 +2320,7 @@ const generateBreakdownDetailPdf = async (data) => {
         ]) {
           if (
             typeof scaledShape[
-              coordinate
+            coordinate
             ] === "number"
           ) {
             scaledShape[
@@ -2595,31 +2597,31 @@ const generateBreakdownDetailPdf = async (data) => {
               [
                 logo
                   ? {
-                      image:
-                        logo,
+                    image:
+                      logo,
 
-                      fit: [
-                        88,
-                        50,
-                      ],
+                    fit: [
+                      88,
+                      50,
+                    ],
 
-                      border: [
-                        false,
-                        false,
-                        false,
-                        false,
-                      ],
-                    }
+                    border: [
+                      false,
+                      false,
+                      false,
+                      false,
+                    ],
+                  }
                   : {
-                      text: "",
+                    text: "",
 
-                      border: [
-                        false,
-                        false,
-                        false,
-                        false,
-                      ],
-                    },
+                    border: [
+                      false,
+                      false,
+                      false,
+                      false,
+                    ],
+                  },
 
                 {
                   text:
@@ -2712,7 +2714,7 @@ const generateBreakdownDetailPdf = async (data) => {
 
                 valueCell(
                   detail.OrganizationShortName ||
-                    detail.OrganizationName,
+                  detail.OrganizationName,
                 ),
 
                 labelCell(
@@ -3826,13 +3828,13 @@ const mapMaintenance = (row) => ({
   Status: row.status || null,
 
   CreatedDate: formatDate(row.createddate),
-UpdatedById:
-  row.modifiedby == null
-    ? null
-    : Number(row.modifiedby),
+  UpdatedById:
+    row.modifiedby == null
+      ? null
+      : Number(row.modifiedby),
 
-UpdatedBy:
-  row.modifiedbyname || null,
+  UpdatedBy:
+    row.modifiedbyname || null,
   Checklists: Array.isArray(row.checklists)
     ? row.checklists.map((item) => ({
       ChecklistID: Number(item.ChecklistID),
@@ -5431,7 +5433,7 @@ const getDailyMaintenanceReports = async (data) => {
 
     const equipmentID =
       data.EquipmentID &&
-      String(data.EquipmentID).trim()
+        String(data.EquipmentID).trim()
         ? Number(data.EquipmentID)
         : null;
 
@@ -6332,8 +6334,8 @@ const getDailyMaintenanceReports = async (data) => {
             ServicedBy:
               row.servicedby
                 ? Number(
-                    row.servicedby,
-                  )
+                  row.servicedby,
+                )
                 : null,
 
             ServicedByName:
@@ -6343,8 +6345,8 @@ const getDailyMaintenanceReports = async (data) => {
             EngineerAssigned:
               row.engineerassigned
                 ? Number(
-                    row.engineerassigned,
-                  )
+                  row.engineerassigned,
+                )
                 : null,
 
             EngineerAssignedName:
@@ -6358,8 +6360,8 @@ const getDailyMaintenanceReports = async (data) => {
             CreatedBy:
               row.createdby
                 ? Number(
-                    row.createdby,
-                  )
+                  row.createdby,
+                )
                 : null,
 
             CreatedDate:
@@ -6370,8 +6372,8 @@ const getDailyMaintenanceReports = async (data) => {
             ModifiedBy:
               row.modifiedby
                 ? Number(
-                    row.modifiedby,
-                  )
+                  row.modifiedby,
+                )
                 : null,
 
             ModifiedByName:
@@ -6381,8 +6383,8 @@ const getDailyMaintenanceReports = async (data) => {
             ModifiedDate:
               row.modifieddate
                 ? formatDate(
-                    row.modifieddate,
-                  )
+                  row.modifieddate,
+                )
                 : null,
 
             Description:
@@ -8221,8 +8223,8 @@ const generateTotalEquipmentReportsPdf = async (data) => {
     // ============================================================
 
     const pdfBuffer = await generatePdf({
-     title:
-  String(data.Title || "EQUIPMENT REPORT").trim(),
+      title:
+        String(data.Title || "EQUIPMENT REPORT").trim(),
 
       reportName:
         "Equipment Report",
@@ -10897,27 +10899,27 @@ const generateMonthlyMaintenanceReportPdf = async (data) => {
           "center",
       },
 
-     {
-  header: "Warranty Period",
+      {
+        header: "Warranty Period",
 
-  value: (row) => {
-    if (
-      !row.WarrantyStartDate &&
-      !row.WarrantyEndDate
-    ) {
-      return "-";
-    }
+        value: (row) => {
+          if (
+            !row.WarrantyStartDate &&
+            !row.WarrantyEndDate
+          ) {
+            return "-";
+          }
 
-    return [
-      row.WarrantyStartDate || "-",
-      "To",
-      row.WarrantyEndDate || "-",
-    ].join("\n");
-  },
+          return [
+            row.WarrantyStartDate || "-",
+            "To",
+            row.WarrantyEndDate || "-",
+          ].join("\n");
+        },
 
-  width: 60,
-  align: "center",
-},
+        width: 60,
+        align: "center",
+      },
 
       {
         header:
@@ -10930,27 +10932,27 @@ const generateMonthlyMaintenanceReportPdf = async (data) => {
           60,
       },
 
-     {
-  header: "AMC Period",
+      {
+        header: "AMC Period",
 
-  value: (row) => {
-    if (
-      !row.AMCStartDate &&
-      !row.AMCEndDate
-    ) {
-      return "-";
-    }
+        value: (row) => {
+          if (
+            !row.AMCStartDate &&
+            !row.AMCEndDate
+          ) {
+            return "-";
+          }
 
-    return [
-      row.AMCStartDate || "-",
-      "To",
-      row.AMCEndDate || "-",
-    ].join("\n");
-  },
+          return [
+            row.AMCStartDate || "-",
+            "To",
+            row.AMCEndDate || "-",
+          ].join("\n");
+        },
 
-  width: 50,
-  align: "center",
-},
+        width: 50,
+        align: "center",
+      },
 
       {
         header:
@@ -11519,27 +11521,27 @@ const generateScheduledMissingReportPdf = async (data) => {
           "center",
       },
 
-     {
-  header: "Warranty Period",
+      {
+        header: "Warranty Period",
 
-  value: (row) => {
-    if (
-      !row.WarrantyStartDate &&
-      !row.WarrantyEndDate
-    ) {
-      return "-";
-    }
+        value: (row) => {
+          if (
+            !row.WarrantyStartDate &&
+            !row.WarrantyEndDate
+          ) {
+            return "-";
+          }
 
-    return [
-      row.WarrantyStartDate || "-",
-      "To",
-      row.WarrantyEndDate || "-",
-    ].join("\n");
-  },
+          return [
+            row.WarrantyStartDate || "-",
+            "To",
+            row.WarrantyEndDate || "-",
+          ].join("\n");
+        },
 
-  width: 70,
-  align: "center",
-},
+        width: 70,
+        align: "center",
+      },
 
       {
         header:
@@ -11552,27 +11554,27 @@ const generateScheduledMissingReportPdf = async (data) => {
           65,
       },
 
-     {
-  header: "AMC Period",
+      {
+        header: "AMC Period",
 
-  value: (row) => {
-    if (
-      !row.AMCStartDate &&
-      !row.AMCEndDate
-    ) {
-      return "-";
-    }
+        value: (row) => {
+          if (
+            !row.AMCStartDate &&
+            !row.AMCEndDate
+          ) {
+            return "-";
+          }
 
-    return [
-      row.AMCStartDate || "-",
-      "To",
-      row.AMCEndDate || "-",
-    ].join("\n");
-  },
+          return [
+            row.AMCStartDate || "-",
+            "To",
+            row.AMCEndDate || "-",
+          ].join("\n");
+        },
 
-  width: 70,
-  align: "center",
-},
+        width: 70,
+        align: "center",
+      },
 
       {
         header:
@@ -11985,8 +11987,10 @@ const createAMC = async (data) => {
     // 7. Commit
     // ============================================================
 
-    const workflowRecord = { amcid: AMCID, organizationid: data.OrganizationID,
-      createdby: data.UserID, departmentid: equipmentResult.rows[0].departmentid };
+    const workflowRecord = {
+      amcid: AMCID, organizationid: data.OrganizationID,
+      createdby: data.UserID, departmentid: equipmentResult.rows[0].departmentid
+    };
     const workflowSteps = await AMCWorkflow.snapshot(client, workflowRecord);
     const firstStep = AMCWorkflow.currentStep(workflowSteps);
     const recipients = await AMCWorkflow.recipientIds(client, workflowRecord, firstStep);
@@ -12137,7 +12141,7 @@ const resolveAMCAccess = async ({ UserID, UserType, DepartmentName,
   }
 
   if (isCentralRD && requireSelectedMapping &&
-      selectedOrganizationID !== AMC_RD_ORGANIZATION_ID) {
+    selectedOrganizationID !== AMC_RD_ORGANIZATION_ID) {
     const mappingResult = await db.query(`
       SELECT 1
       FROM user_org_mapping uom
@@ -12575,22 +12579,7 @@ const getAllAMC = async (data) => {
   try {
     const snapshotResult = await AMCWorkflowRead.list(data, mapAMC);
     if (snapshotResult) return ok("AMC records fetched successfully.", snapshotResult);
-    // ============================================================
-    // Organization
-    // ============================================================
 
-    const OrganizationID =
-      Number(data.OrganizationID);
-
-    if (
-      !Number.isSafeInteger(OrganizationID) ||
-      OrganizationID <= 0
-    ) {
-      return fail(
-        "OrganizationID is required.",
-        400,
-      );
-    }
 
     // ============================================================
     // Pagination
@@ -12657,11 +12646,11 @@ const getAllAMC = async (data) => {
 
     const Status =
       data.Status !== undefined &&
-      data.Status !== null &&
-      String(data.Status).trim() !== ""
+        data.Status !== null &&
+        String(data.Status).trim() !== ""
         ? String(data.Status)
-            .trim()
-            .toUpperCase()
+          .trim()
+          .toUpperCase()
         : null;
 
     const validStatuses = [
@@ -12687,12 +12676,12 @@ const getAllAMC = async (data) => {
 
     const ApprovalFlow =
       data.ApprovalFlow !== undefined &&
-      data.ApprovalFlow !== null &&
-      String(data.ApprovalFlow).trim() !== ""
+        data.ApprovalFlow !== null &&
+        String(data.ApprovalFlow).trim() !== ""
         ? String(data.ApprovalFlow)
-            .trim()
-            .toUpperCase()
-            .replace(/^RD-FC$/, "RD")
+          .trim()
+          .toUpperCase()
+          .replace(/^RD-FC$/, "RD")
         : null;
 
     const validApprovalFlows = [
@@ -12720,10 +12709,32 @@ const getAllAMC = async (data) => {
 
     const Search =
       data.Search !== undefined &&
-      data.Search !== null &&
-      String(data.Search).trim() !== ""
+        data.Search !== null &&
+        String(data.Search).trim() !== ""
         ? String(data.Search).trim()
         : null;
+
+
+
+    // Organization filter: optional for All Organizations
+    const rawOrganizationID = data.OrganizationID;
+
+    let OrganizationID = null;
+
+    if (
+      rawOrganizationID !== undefined &&
+      rawOrganizationID !== null &&
+      String(rawOrganizationID).trim() !== ""
+    ) {
+      OrganizationID = Number(rawOrganizationID);
+
+      if (
+        !Number.isSafeInteger(OrganizationID) ||
+        OrganizationID <= 0
+      ) {
+        return fail("OrganizationID must be a positive integer.", 400);
+      }
+    }
 
     // ============================================================
     // Logged-In User Approval Role
@@ -12911,18 +12922,25 @@ const getAllAMC = async (data) => {
 
     // Organization 10 is the central RD's explicit global-view selection.
 
-    if (access.globalView) {
+    // No OrganizationID means All Organizations.
+    // Apply organization filtering only when a specific ID is supplied.
+
+    const hasOrganizationId =
+      OrganizationID !== undefined &&
+      OrganizationID !== null &&
+      String(OrganizationID).trim() !== "";
+
+    if (access.globalView || !hasOrganizationId) {
       whereClause += `
-        AND om.IsActive = TRUE
-        AND om.ActivationStatus = TRUE
-      `;
+    AND om.IsActive = TRUE
+    AND om.ActivationStatus = TRUE
+  `;
     } else {
       params.push(OrganizationID);
 
       whereClause += `
-        AND am.OrganizationID =
-            $${params.length}
-      `;
+    AND am.OrganizationID = $${params.length}
+  `;
     }
 
     // ============================================================
@@ -13575,7 +13593,7 @@ const getAllAMC = async (data) => {
             approvalRow.finalstatus,
           ) !== "APPROVED" &&
           currentStage?.ApprovalRole ===
-            approvalRole &&
+          approvalRole &&
           normalizeApprovalStatus(
             currentStage.Status,
           ) === "PENDING",
@@ -13620,8 +13638,8 @@ const getAllAMC = async (data) => {
     const TotalPages =
       TotalCount > 0
         ? Math.ceil(
-            TotalCount / PageSize,
-          )
+          TotalCount / PageSize,
+        )
         : 0;
 
     // ============================================================
@@ -15139,11 +15157,13 @@ const processAMCApproval = async (data) => {
     const dynamicAction = await AMCWorkflow.applyAction(client, AMC, data);
     if (dynamicAction) {
       await client.query("COMMIT");
-      notifyCommittedAMCApproval({ organizationID: OrganizationID, amcID: AMCID,
+      notifyCommittedAMCApproval({
+        organizationID: OrganizationID, amcID: AMCID,
         equipmentName: AMC.equipmentname, directUserIds: dynamicAction.recipients, roles: [],
         excludeUserID: ["REJECT", "RETURN"].includes(dynamicAction.action) ? UserID : null,
         actorUserID: UserID, kind: dynamicAction.kind,
-        approverRole: dynamicAction.step.approvaltype, action: dynamicAction.status.toUpperCase() });
+        approverRole: dynamicAction.step.approvaltype, action: dynamicAction.status.toUpperCase()
+      });
       return ok(`AMC ${dynamicAction.status.toLowerCase()} successfully.`);
     }
 
@@ -15627,23 +15647,29 @@ const processAMCApproval = async (data) => {
 
     const nextApprovalRole = approvalFlow[currentIndex + 1]?.ApprovalRole;
     if (Action === "APPROVE" && isFinalStage) {
-      notifyCommittedAMCApproval({ organizationID: OrganizationID, amcID: AMCID,
+      notifyCommittedAMCApproval({
+        organizationID: OrganizationID, amcID: AMCID,
         equipmentName: AMC.equipmentname, directUserIds: [AMC.createdby],
         actorUserID: UserID, kind: "FINAL_APPROVE", approverRole: approvalRole,
-        action: "APPROVED" });
+        action: "APPROVED"
+      });
     } else if (Action === "APPROVE") {
-      notifyCommittedAMCApproval({ organizationID: OrganizationID, amcID: AMCID,
+      notifyCommittedAMCApproval({
+        organizationID: OrganizationID, amcID: AMCID,
         equipmentName: AMC.equipmentname, roles: [nextApprovalRole],
         excludeUserID: UserID,
         actorUserID: UserID, kind: "APPROVE", approverRole: approvalRole,
-        nextRole: nextApprovalRole, action: "APPROVED" });
+        nextRole: nextApprovalRole, action: "APPROVED"
+      });
     } else {
       // RETURN/REJECT are creator-only events; exclude the actor if both IDs match.
-      notifyCommittedAMCApproval({ organizationID: OrganizationID, amcID: AMCID,
+      notifyCommittedAMCApproval({
+        organizationID: OrganizationID, amcID: AMCID,
         equipmentName: AMC.equipmentname, directUserIds: [AMC.createdby],
         excludeUserID: UserID,
         actorUserID: UserID, kind: Action, approverRole: approvalRole,
-        action: Action === "RETURN" ? "RETURNED" : "REJECTED" });
+        action: Action === "RETURN" ? "RETURNED" : "REJECTED"
+      });
     }
 
     return ok(
@@ -16640,8 +16666,8 @@ const generateAMCDetailPdf = async (data) => {
 
     const displayValue = (value) =>
       value === null ||
-      value === undefined ||
-      String(value).trim() === ""
+        value === undefined ||
+        String(value).trim() === ""
         ? "-"
         : String(value);
 
@@ -16842,7 +16868,7 @@ const generateAMCDetailPdf = async (data) => {
           ]) {
             if (
               typeof scaledShape[
-                coordinate
+              coordinate
               ] === "number"
             ) {
               scaledShape[
@@ -17084,31 +17110,31 @@ const generateAMCDetailPdf = async (data) => {
               [
                 logo
                   ? {
-                      image:
-                        logo,
+                    image:
+                      logo,
 
-                      fit: [
-                        88,
-                        50,
-                      ],
+                    fit: [
+                      88,
+                      50,
+                    ],
 
-                      border: [
-                        false,
-                        false,
-                        false,
-                        false,
-                      ],
-                    }
+                    border: [
+                      false,
+                      false,
+                      false,
+                      false,
+                    ],
+                  }
                   : {
-                      text: "",
+                    text: "",
 
-                      border: [
-                        false,
-                        false,
-                        false,
-                        false,
-                      ],
-                    },
+                    border: [
+                      false,
+                      false,
+                      false,
+                      false,
+                    ],
+                  },
 
                 {
                   text:
@@ -17201,7 +17227,7 @@ const generateAMCDetailPdf = async (data) => {
 
                 valueCell(
                   detail.OrganizationShortName ||
-                    detail.OrganizationName,
+                  detail.OrganizationName,
                 ),
 
                 labelCell(
@@ -20687,110 +20713,110 @@ const processEquipmentWarrantyNotifications = async ({
           ? `${countLabel} Warranty ${count === 1 ? "Expires" : "Expire"} Today.`
           : `${countLabel} ${count === 1 ? "Warranty has" : "Warranties have"} Expired and Require Action.`;
 
-    // Keep detailed equipment information only for small batches.
-    // For larger batches, the notification remains summary-only
-    // so it stays short and readable.
-    let finalMessage = message;
+      // Keep detailed equipment information only for small batches.
+      // For larger batches, the notification remains summary-only
+      // so it stays short and readable.
+      let finalMessage = message;
 
-    if (group.items.length <= 3) {
-      const equipmentDetails = group.items.map(
-        (row) => {
-          const details = [
-            String(
-              row.description ||
-              "Equipment",
-            ).trim(),
-          ];
+      if (group.items.length <= 3) {
+        const equipmentDetails = group.items.map(
+          (row) => {
+            const details = [
+              String(
+                row.description ||
+                "Equipment",
+              ).trim(),
+            ];
 
-          if (
-            String(
-              row.serialnumber || "",
-            ).trim()
-          ) {
+            if (
+              String(
+                row.serialnumber || "",
+              ).trim()
+            ) {
+              details.push(
+                `Serial: ${String(
+                  row.serialnumber,
+                ).trim()}`,
+              );
+            }
+
+            if (
+              String(
+                row.area || "",
+              ).trim()
+            ) {
+              details.push(
+                `Area: ${String(
+                  row.area,
+                ).trim()}`,
+              );
+            }
+
             details.push(
-              `Serial: ${String(
-                row.serialnumber,
-              ).trim()}`,
+              `Warranty End Date: ${dateOnly(
+                row.warrantyenddate,
+              )}`,
             );
-          }
 
-          if (
-            String(
-              row.area || "",
-            ).trim()
-          ) {
-            details.push(
-              `Area: ${String(
-                row.area,
-              ).trim()}`,
-            );
-          }
-
-          details.push(
-            `Warranty End Date: ${dateOnly(
-              row.warrantyenddate,
-            )}`,
-          );
-
-          return `• ${details.join(" | ")}`;
-        },
-      );
-
-      finalMessage = [
-        message,
-        "",
-        "Affected Equipment:",
-        ...equipmentDetails,
-      ].join("\n");
-    }
-
-    try {
-      const response = await send({
-        // organizationId,
-        organizationId: Number(organizationID),
-        title:
-          "Equipment Warranty Summary",
-
-        message: finalMessage,
-
-        type: "info",
-
-        moduleName:
-          ENGINEERING_NOTIFICATION_MODULE,
-
-        entityType:
-          "EquipmentWarrantySummary",
-
-        entityId: today,
-
-        action: event.action,
-
-        priority: "normal",
-
-        userIds,
-      });
-
-      if (
-        !response ||
-        response.success !== true
-      ) {
-        throw new Error(
-          response?.message ||
-          "No Response from Notification Service",
+            return `• ${details.join(" | ")}`;
+          },
         );
+
+        finalMessage = [
+          message,
+          "",
+          "Affected Equipment:",
+          ...equipmentDetails,
+        ].join("\n");
       }
 
-      existingEvents.add(eventKey);
+      try {
+        const response = await send({
+          // organizationId,
+          organizationId: Number(organizationID),
+          title:
+            "Equipment Warranty Summary",
 
-      summary.sent += 1;
-    } catch (error) {
-      summary.failed += 1;
+          message: finalMessage,
 
-      console.error(
-        `Engineering Warranty Summary Notification Failed for Organization ${organizationID} (${group.type}):`,
-        error.message,
-      );
-    }
+          type: "info",
+
+          moduleName:
+            ENGINEERING_NOTIFICATION_MODULE,
+
+          entityType:
+            "EquipmentWarrantySummary",
+
+          entityId: today,
+
+          action: event.action,
+
+          priority: "normal",
+
+          userIds,
+        });
+
+        if (
+          !response ||
+          response.success !== true
+        ) {
+          throw new Error(
+            response?.message ||
+            "No Response from Notification Service",
+          );
+        }
+
+        existingEvents.add(eventKey);
+
+        summary.sent += 1;
+      } catch (error) {
+        summary.failed += 1;
+
+        console.error(
+          `Engineering Warranty Summary Notification Failed for Organization ${organizationID} (${group.type}):`,
+          error.message,
+        );
+      }
     }
   }
 
@@ -20858,5 +20884,5 @@ module.exports = {
   processEquipmentWarrantyNotifications,
   generateAllEquipmentQRCodes,
   getEngineeringUpcomingMaintenance,
-getEngineeringRecentlyExpired,
+  getEngineeringRecentlyExpired,
 };
