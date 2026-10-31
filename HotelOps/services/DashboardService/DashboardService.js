@@ -3490,13 +3490,27 @@ const getCEOSRMSRequests = async (data) => {
     }
 
     // ========================================================
-    // 3. Date Range
+    // 3. Department Filter
+    // ========================================================
+
+    const department = data.Department == null
+      ? ""
+      : String(data.Department).trim();
+
+    // Front Office means no department filtering
+    const departmentFilter =
+      department.toUpperCase() === "FRONT OFFICE"
+        ? null
+        : department || null;
+
+    // ========================================================
+    // 4. Date Range
     // ========================================================
 
     const dates = getDateRange(filter);
 
     // ========================================================
-    // 4. MSSQL Connection
+    // 5. MSSQL Connection
     // ========================================================
 
     const mssqlPool = await getMssqlPool();
@@ -3504,7 +3518,12 @@ const getCEOSRMSRequests = async (data) => {
     const request = mssqlPool
       .request()
       .input("FromDate", sql.Date, dates.CurrentFromDate)
-      .input("ToDate", sql.Date, dates.CurrentToDate);
+      .input("ToDate", sql.Date, dates.CurrentToDate)
+      .input(
+        "Department",
+        sql.NVarChar(255),
+        departmentFilter
+      );
 
     if (organizationID) {
       request.input(
@@ -3515,7 +3534,7 @@ const getCEOSRMSRequests = async (data) => {
     }
 
     // ========================================================
-    // 5. Dynamic Organization Filter
+    // 6. Dynamic Organization Filter
     // ========================================================
 
     const orgFilter = organizationID
@@ -3527,7 +3546,7 @@ const getCEOSRMSRequests = async (data) => {
       : "";
 
     // ========================================================
-    // 6. MSSQL Query
+    // 7. MSSQL Query
     // ========================================================
 
     const result = await request.query(`
@@ -3551,7 +3570,13 @@ const getCEOSRMSRequests = async (data) => {
 
         WHERE RequestDate >= @FromDate
           AND RequestDate < DATEADD(DAY, 1, @ToDate)
+
           ${orgFilter}
+
+          AND (
+            @Department IS NULL
+            OR Department LIKE '%' + @Department + '%'
+          )
 
         GROUP BY OrganizationID
       ) a
@@ -3565,21 +3590,25 @@ const getCEOSRMSRequests = async (data) => {
     `);
 
     // ========================================================
-    // 7. Response Mapping
+    // 8. Response Mapping
     // ========================================================
 
     const chartData = result.recordset.map((row) => ({
       OrganizationID: Number(row.OrganizationID),
       Hotel: row.Hotel || null,
       Total: Number(row.Total || 0),
-      Balancelaeb: Math.abs(Number(row.Total || 0)) >= 1000 &&
+
+      Balancelaeb:
+        Math.abs(Number(row.Total || 0)) >= 1000 &&
         Math.abs(Number(row.Total || 0)) < 100000
-        ? `${Number((Number(row.Total) / 1000).toFixed(1))}K`
-        : formatARBalanceLabel(row.Total),
+          ? `${Number(
+              (Number(row.Total) / 1000).toFixed(1)
+            )}K`
+          : formatARBalanceLabel(row.Total),
     }));
 
     // ========================================================
-    // 8. Response
+    // 9. Response
     // ========================================================
 
     return ok(
@@ -3589,6 +3618,8 @@ const getCEOSRMSRequests = async (data) => {
         Filter: filter,
 
         OrganizationID: organizationID || null,
+
+        Department: department || null,
 
         DateRange: {
           FromDate: dates.CurrentFromDate,
@@ -3623,8 +3654,7 @@ const getCEOSRMSRequestDetails = async (data) => {
       .toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       return fail(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -3658,7 +3688,21 @@ const getCEOSRMSRequestDetails = async (data) => {
     }
 
     // ========================================================
-    // 3. Pagination Validation
+    // 3. Department Filter
+    // ========================================================
+
+    const department = data.Department == null
+      ? ""
+      : String(data.Department).trim();
+
+    // Front Office means no department filtering
+    const departmentFilter =
+      department.toUpperCase() === "FRONT OFFICE"
+        ? null
+        : department || null;
+
+    // ========================================================
+    // 4. Pagination Validation
     // ========================================================
 
     const page = Number(data.page ?? 1);
@@ -3692,19 +3736,19 @@ const getCEOSRMSRequestDetails = async (data) => {
     }
 
     // ========================================================
-    // 4. Date Range
+    // 5. Date Range
     // ========================================================
 
     const dates = getDateRange(filter);
 
     // ========================================================
-    // 5. MSSQL Connection
+    // 6. MSSQL Connection
     // ========================================================
 
     const mssqlPool = await getMssqlPool();
 
     // ========================================================
-    // 6. MSSQL Query
+    // 7. MSSQL Query
     // ========================================================
 
     const result = await mssqlPool
@@ -3716,6 +3760,11 @@ const getCEOSRMSRequestDetails = async (data) => {
       )
       .input("FromDate", sql.Date, dates.CurrentFromDate)
       .input("ToDate", sql.Date, dates.CurrentToDate)
+      .input(
+        "Department",
+        sql.NVarChar(255),
+        departmentFilter
+      )
       .input("Offset", sql.Int, offset)
       .input("PageSize", sql.Int, pageSize)
       .query(`
@@ -3740,7 +3789,12 @@ const getCEOSRMSRequestDetails = async (data) => {
           )
 
           AND sr.RequestDate >= @FromDate
-          AND sr.RequestDate < DATEADD(DAY, 1, @ToDate);
+          AND sr.RequestDate < DATEADD(DAY, 1, @ToDate)
+
+          AND (
+            @Department IS NULL
+            OR sr.Department LIKE '%' + @Department + '%'
+          );
 
 
         -- ============================================
@@ -3818,6 +3872,11 @@ const getCEOSRMSRequestDetails = async (data) => {
           AND sr.RequestDate >= @FromDate
           AND sr.RequestDate < DATEADD(DAY, 1, @ToDate)
 
+          AND (
+            @Department IS NULL
+            OR sr.Department LIKE '%' + @Department + '%'
+          )
+
         ORDER BY
           sr.RequestDateTime DESC,
           sr.ServiceRequestID DESC
@@ -3827,7 +3886,7 @@ const getCEOSRMSRequestDetails = async (data) => {
       `);
 
     // ========================================================
-    // 7. Count
+    // 8. Count
     // ========================================================
 
     const totalCount = Number(
@@ -3835,7 +3894,7 @@ const getCEOSRMSRequestDetails = async (data) => {
     );
 
     // ========================================================
-    // 8. Response Mapping
+    // 9. Response Mapping
     // ========================================================
 
     const requestDetails = result.recordsets[1].map(
@@ -3852,16 +3911,30 @@ const getCEOSRMSRequestDetails = async (data) => {
 
         RequestDate: formatDate(row.RequestDate),
 
-        RequestDateTime: formatDate(row.RequestDateTime, "DD MMM YYYY hh:mm:ss A"),
-        RequestOn: formatDate(row.RequestDateTime, "DD MMM YYYY hh:mm A"),
+        RequestDateTime: formatDate(
+          row.RequestDateTime,
+          "DD MMM YYYY hh:mm:ss A"
+        ),
+
+        RequestOn: formatDate(
+          row.RequestDateTime,
+          "DD MMM YYYY hh:mm A"
+        ),
 
         StatusCode: row.StatusCode,
         Status: row.Status,
 
         AssignedUserName: row.AssignedUserName ?? null,
 
-        CompleteDateTime: formatDate(row.CompleteDateTime, "DD MMM YYYY hh:mm:ss A"),
-        CompletedOn: formatDate(row.CompleteDateTime, "DD MMM YYYY hh:mm A") ?? "",
+        CompleteDateTime: formatDate(
+          row.CompleteDateTime,
+          "DD MMM YYYY hh:mm:ss A"
+        ),
+
+        CompletedOn: formatDate(
+          row.CompleteDateTime,
+          "DD MMM YYYY hh:mm A"
+        ) ?? "",
 
         CompleteDurestion: row.CompleteDurestion ?? "",
 
@@ -3870,7 +3943,7 @@ const getCEOSRMSRequestDetails = async (data) => {
     );
 
     // ========================================================
-    // 9. Response
+    // 10. Response
     // ========================================================
 
     return ok(
@@ -3878,7 +3951,10 @@ const getCEOSRMSRequestDetails = async (data) => {
       requestDetails,
       {
         Filter: filter,
+
         OrganizationID: organizationID || null,
+
+        Department: department || null,
 
         DateRange: {
           FromDate: dates.CurrentFromDate,
@@ -3886,8 +3962,11 @@ const getCEOSRMSRequestDetails = async (data) => {
         },
 
         TotalCount: totalCount,
-        page: page,
+
+        page,
+
         PageSize: pageSize,
+
         TotalPages: Math.ceil(totalCount / pageSize),
       }
     );
@@ -3911,8 +3990,7 @@ const getCEOTop20SRMSRequests = async (data) => {
       .toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       return fail("Invalid SRMS filter.", 400);
     }
@@ -3943,31 +4021,36 @@ const getCEOTop20SRMSRequests = async (data) => {
     }
 
     // ========================================================
-    // 3. Date Range
+    // 3. Department Filter
+    // ========================================================
+
+    const department = data.Department == null
+      ? ""
+      : String(data.Department).trim();
+
+    const departmentFilter =
+      department.toUpperCase() === "FRONT OFFICE"
+        ? null
+        : department || null;
+
+    // ========================================================
+    // 4. Date Range
     // ========================================================
 
     const dates = getDateRange(filter);
 
     // ========================================================
-    // 4. MSSQL Connection
+    // 5. MSSQL Connection
     // ========================================================
 
     const mssqlPool = await getMssqlPool();
 
     const request = mssqlPool
       .request()
-      .input(
-        "FromDate",
-        sql.Date,
-        dates.CurrentFromDate
-      )
-      .input(
-        "ToDate",
-        sql.Date,
-        dates.CurrentToDate
-      );
-
-    request.input("OrganizationID", sql.BigInt, organizationID || null);
+      .input("FromDate", sql.Date, dates.CurrentFromDate)
+      .input("ToDate", sql.Date, dates.CurrentToDate)
+      .input("OrganizationID", sql.BigInt, organizationID || null)
+      .input("Department", sql.NVarChar(255), departmentFilter);
 
     // ========================================================
     // 6. MSSQL Query
@@ -3980,11 +4063,21 @@ const getCEOTop20SRMSRequests = async (data) => {
 
       FROM SRMS.SRMS_Tbl_ServiceRequest_Master a
 
-      WHERE (@OrganizationID IS NULL OR a.OrganizationID = @OrganizationID)
+      WHERE
+        (@OrganizationID IS NULL
+          OR a.OrganizationID = @OrganizationID)
+
+        AND (
+          @Department IS NULL
+          OR a.Department LIKE '%' + @Department + '%'
+        )
+
         AND a.RequestDate >= @FromDate
+
         AND a.RequestDate < DATEADD(DAY, 1, @ToDate)
 
-      GROUP BY a.CallDescription
+      GROUP BY
+        a.CallDescription
 
       ORDER BY
         TotalRequest DESC,
@@ -4009,8 +4102,8 @@ const getCEOTop20SRMSRequests = async (data) => {
       chartData,
       {
         Filter: filter,
-
         OrganizationID: organizationID || null,
+        Department: department || null,
 
         DateRange: {
           FromDate: dates.CurrentFromDate,
@@ -4336,6 +4429,7 @@ const getCEOSRMSRequestByOrganizations = async (data) => {
       Filter,
       OrganizationID,
       Request: rawRequest,
+      Department: rawDepartment,
       Page = 1,
       PageSize = 10,
     } = data;
@@ -4346,6 +4440,19 @@ const getCEOSRMSRequestByOrganizations = async (data) => {
       rawRequest == null || String(rawRequest).trim() === ""
         ? null
         : String(rawRequest).trim();
+
+    // ========================================================
+    // Department Filter
+    // ========================================================
+
+    const department = rawDepartment == null
+      ? ""
+      : String(rawDepartment).trim();
+
+    const departmentFilter =
+      department.toUpperCase() === "FRONT OFFICE"
+        ? null
+        : department || null;
 
     const page = Number(Page);
     const pageSize = Number(PageSize);
@@ -4359,6 +4466,7 @@ const getCEOSRMSRequestByOrganizations = async (data) => {
         OrganizationID == null ? null : OrganizationID
       )
       .input("Request", sql.VarChar(500), requestName)
+      .input("Department", sql.NVarChar(255), departmentFilter)
       .input("FromDate", sql.Date, dates.CurrentFromDate)
       .input("ToDate", sql.Date, dates.CurrentToDate)
       .input("Offset", sql.Int, offset)
@@ -4369,25 +4477,36 @@ const getCEOSRMSRequestByOrganizations = async (data) => {
           dbo.FN_Get_OrganizationShortName(a.OrganizationID) AS Hotel,
           a.CallDescription AS Request,
           COUNT_BIG(*) AS TotalRequest
+
         INTO #RequestSummary
+
         FROM SRMS.SRMS_Tbl_ServiceRequest_Master AS a
+
         WHERE
           (@OrganizationID IS NULL
             OR a.OrganizationID = @OrganizationID)
+
           AND (@Request IS NULL
             OR a.CallDescription = @Request)
+
+          AND (
+            @Department IS NULL
+            OR a.Department LIKE '%' + @Department + '%'
+          )
+
           AND a.RequestDate >= @FromDate
+
           AND a.RequestDate < DATEADD(DAY, 1, @ToDate)
+
         GROUP BY
           a.OrganizationID,
           a.CallDescription;
 
-        -- Count of grouped rows, so pagination metadata
-        -- matches the rows returned by the details query.
+        -- Count of grouped rows
         SELECT COUNT_BIG(*) AS TotalRecords
         FROM #RequestSummary;
 
-        -- Paginated organization-wise request summary.
+        -- Paginated organization-wise request summary
         SELECT
           CAST(
             ROW_NUMBER() OVER (
@@ -4398,16 +4517,20 @@ const getCEOSRMSRequestByOrganizations = async (data) => {
                 Request
             ) + @Offset AS BIGINT
           ) AS SrNo,
+
           OrganizationID,
           Hotel,
           Request,
           TotalRequest
+
         FROM #RequestSummary
+
         ORDER BY
           TotalRequest DESC,
           Hotel,
           OrganizationID,
           Request
+
         OFFSET @Offset ROWS
         FETCH NEXT @PageSize ROWS ONLY;
 
@@ -4424,37 +4547,44 @@ const getCEOSRMSRequestByOrganizations = async (data) => {
       Filter,
       OrganizationID: OrganizationID ?? null,
       Request: requestName,
+      Department: department || null,
+
       DateRange: {
         FromDate: dates.CurrentFromDate,
         ToDate: dates.CurrentToDate,
       },
+
       Page: page,
       PageSize: pageSize,
       TotalRecords: totalRecords,
       TotalPages: Math.ceil(totalRecords / pageSize),
       Records: records,
     });
+
   } catch (error) {
     return databaseFailure(
       error,
-      "getCEOSRMSRequestDetails"
+      "getCEOSRMSRequestByOrganizations"
     );
   }
 };
-
 // 8. ============================================================ SRMS Requests Completion Duration in Minutes
 const getCEOSRMSCompletionDuration = async (data) => {
   try {
     const rawOrganizationID = data.OrganizationID;
+
     const organizationID = rawOrganizationID == null
       ? ""
       : String(rawOrganizationID).trim();
 
     if (
       organizationID !== "" &&
-      ((typeof rawOrganizationID !== "string" && typeof rawOrganizationID !== "number") ||
+      (
+        (typeof rawOrganizationID !== "string" &&
+          typeof rawOrganizationID !== "number") ||
         !/^[1-9]\d*$/.test(organizationID) ||
-        BigInt(organizationID) > 9223372036854775807n)
+        BigInt(organizationID) > 9223372036854775807n
+      )
     ) {
       return fail("OrganizationID must be a positive integer.", 400);
     }
@@ -4468,8 +4598,7 @@ const getCEOSRMSCompletionDuration = async (data) => {
       .toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       return fail(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -4478,34 +4607,40 @@ const getCEOSRMSCompletionDuration = async (data) => {
     }
 
     // ========================================================
-    // 2. Date Range
+    // 2. Department Filter
+    // ========================================================
+
+    const department = data.Department == null
+      ? ""
+      : String(data.Department).trim();
+
+    const departmentFilter =
+      department.toUpperCase() === "FRONT OFFICE"
+        ? null
+        : department || null;
+
+    // ========================================================
+    // 3. Date Range
     // ========================================================
 
     const dates = getDateRange(filter);
 
     // ========================================================
-    // 3. MSSQL Connection
+    // 4. MSSQL Connection
     // ========================================================
 
     const mssqlPool = await getMssqlPool();
 
     // ========================================================
-    // 4. MSSQL Query
+    // 5. MSSQL Query
     // ========================================================
 
     const result = await mssqlPool
       .request()
-      .input(
-        "FromDate",
-        sql.Date,
-        dates.CurrentFromDate
-      )
-      .input(
-        "ToDate",
-        sql.Date,
-        dates.CurrentToDate
-      )
+      .input("FromDate", sql.Date, dates.CurrentFromDate)
+      .input("ToDate", sql.Date, dates.CurrentToDate)
       .input("OrganizationID", sql.BigInt, organizationID || null)
+      .input("Department", sql.NVarChar(255), departmentFilter)
       .query(`
         SELECT
           fns.CompleteDurestion,
@@ -4558,8 +4693,17 @@ const getCEOSRMSCompletionDuration = async (data) => {
 
             FROM SRMS.SRMS_Tbl_ServiceRequest_Stg_master_report a
 
-            WHERE (@OrganizationID IS NULL OR a.OrganizationID = @OrganizationID)
+            WHERE
+              (@OrganizationID IS NULL
+                OR a.OrganizationID = @OrganizationID)
+
+              AND (
+                @Department IS NULL
+                OR a.Department LIKE '%' + @Department + '%'
+              )
+
               AND a.RequestDate >= @FromDate
+
               AND a.RequestDate < DATEADD(
                 DAY, 1, @ToDate
               )
@@ -4579,7 +4723,7 @@ const getCEOSRMSCompletionDuration = async (data) => {
       `);
 
     // ========================================================
-    // 5. Response Mapping
+    // 6. Response Mapping
     // ========================================================
 
     const chartData = result.recordset.map((row) => ({
@@ -4588,7 +4732,7 @@ const getCEOSRMSCompletionDuration = async (data) => {
     }));
 
     // ========================================================
-    // 6. Response
+    // 7. Response
     // ========================================================
 
     return ok(
@@ -4596,6 +4740,7 @@ const getCEOSRMSCompletionDuration = async (data) => {
       chartData,
       {
         Filter: filter,
+        Department: department || null,
 
         DateRange: {
           FromDate: dates.CurrentFromDate,
@@ -4622,6 +4767,7 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
     // ========================================================
     // 1. Filter Validation
     // ========================================================
+
     const filter = String(data.Filter || "yesterday")
       .trim()
       .toLowerCase();
@@ -4638,6 +4784,7 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
     // ========================================================
     // 2. CD Validation
     // ========================================================
+
     const cd = Number(data.CD);
 
     if (
@@ -4653,6 +4800,7 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
     // ========================================================
     // 3. OrganizationID Validation
     // ========================================================
+
     const rawOrganizationID = data.OrganizationID;
 
     const organizationID = rawOrganizationID == null
@@ -4675,8 +4823,23 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
     }
 
     // ========================================================
-    // 4. Pagination Validation
+    // 4. Department Filter
     // ========================================================
+
+    const department = data.Department == null
+      ? ""
+      : String(data.Department).trim();
+
+    // Front Office means all departments
+    const departmentFilter =
+      department.toUpperCase() === "FRONT OFFICE"
+        ? null
+        : department || null;
+
+    // ========================================================
+    // 5. Pagination Validation
+    // ========================================================
+
     const page = Number(data.page ?? 1);
     const pageSize = Number(data.PageSize ?? 10);
 
@@ -4700,30 +4863,35 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
     }
 
     // ========================================================
-    // 5. Date Range (Existing Helper)
+    // 6. Date Range
     // ========================================================
+
     const dates = getDateRange(filter);
 
     // ========================================================
-    // 6. MSSQL Connection
+    // 7. MSSQL Connection
     // ========================================================
+
     const mssqlPool = await getMssqlPool();
 
     // ========================================================
-    // 7. MSSQL Query
+    // 8. MSSQL Query
     // ========================================================
+
     const result = await mssqlPool
       .request()
       .input("OrganizationID", sql.BigInt, organizationID || null)
       .input("CD", sql.Int, cd)
       .input("FromDate", sql.Date, dates.CurrentFromDate)
       .input("ToDate", sql.Date, dates.CurrentToDate)
+      .input("Department", sql.NVarChar(255), departmentFilter)
       .input("Offset", sql.Int, offset)
       .input("PageSize", sql.Int, pageSize)
       .query(`
         -- ============================================
         -- TOTAL COUNT
         -- ============================================
+
         SELECT
           COUNT_BIG(*) AS TotalCount
 
@@ -4739,6 +4907,11 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
           AND a.RequestDate < DATEADD(DAY, 1, @ToDate)
 
           AND a.Status = 200
+
+          AND (
+            @Department IS NULL
+            OR a.Department LIKE '%' + @Department + '%'
+          )
 
           AND (
             (@CD = 1 AND ISNULL(a.CompleteDurestion, 0) < 1)
@@ -4764,9 +4937,11 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
             (@CD = 8 AND a.CompleteDurestion > 18)
           );
 
+
         -- ============================================
         -- COMPLETION DURATION DETAILS
         -- ============================================
+
         SELECT
           a.OrganizationID,
 
@@ -4817,6 +4992,11 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
           AND a.Status = 200
 
           AND (
+            @Department IS NULL
+            OR a.Department LIKE '%' + @Department + '%'
+          )
+
+          AND (
             (@CD = 1 AND ISNULL(a.CompleteDurestion, 0) < 1)
             OR
             (@CD = 2 AND a.CompleteDurestion > 1
@@ -4850,15 +5030,17 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
       `);
 
     // ========================================================
-    // 8. Total Count
+    // 9. Total Count
     // ========================================================
+
     const totalCount = Number(
       result.recordsets[0][0]?.TotalCount ?? 0
     );
 
     // ========================================================
-    // 9. Response Mapping
+    // 10. Response Mapping
     // ========================================================
+
     const details = result.recordsets[1].map((row, index) => ({
       SrNo: offset + index + 1,
 
@@ -4886,8 +5068,9 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
     }));
 
     // ========================================================
-    // 10. Response
+    // 11. Response
     // ========================================================
+
     return ok(
       "CEO SRMS completion duration details fetched successfully.",
       details,
@@ -4895,6 +5078,7 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
         Filter: filter,
         CD: cd,
         OrganizationID: organizationID || null,
+        Department: department || null,
 
         DateRange: {
           FromDate: dates.CurrentFromDate,
@@ -4902,7 +5086,7 @@ const getCEOSRMSCompletionDurationDetails = async (data) => {
         },
 
         TotalCount: totalCount,
-        page: page,
+        page,
         PageSize: pageSize,
         TotalPages: Math.ceil(totalCount / pageSize),
       }
@@ -5591,47 +5775,72 @@ const getCEOARCollectionDetails = async (data) => {
         organizationID || null
       )
       .query(`
+        ;WITH ARData AS
+        (
+          SELECT
+            b.Account,
+            b.Day91,
+            b.TotalPending,
+            b.CreatedDateTime
+          FROM FinanceDailyReport.FinanceDailyReport_Tbl_Entry_Master AS a
+
+          INNER JOIN FinanceDailyReport.FinanceDailyReport_Tbl_Entry_Details AS b
+            ON a.EntryID = b.EntryID
+
+          INNER JOIN dbo.htl_tbl_organization_master AS org
+            ON a.OrganizationID = org.OrganizationID
+
+          WHERE a.IsDelete = 0
+            AND a.ReportType = 'Aging Report'
+            AND b.Account NOT LIKE '%zzz%'
+            AND b.Day91 > 0
+
+            AND org.Activation_Status = 1
+            AND org.IsNileHotel = 1
+
+            AND (
+              @OrganizationID IS NULL
+              OR org.OrganizationID = @OrganizationID
+            )
+        ),
+        ARLastUpdated AS
+        (
+          SELECT
+            MAX(CreatedDateTime) AS LastUpdatedDate
+          FROM ARData
+        ),
+        ARSummary AS
+        (
+          SELECT
+            CASE
+              WHEN GROUPING(Account) = 1
+                THEN 'TOTAL'
+              ELSE Account
+            END AS Account,
+
+            SUM(ISNULL(Day91, 0)) AS [91 Days and Above],
+
+            SUM(ISNULL(TotalPending, 0)) AS [Total Pending],
+
+            GROUPING(Account) AS IsTotalRow
+
+          FROM ARData
+
+          GROUP BY ROLLUP(Account)
+        )
         SELECT
-          CASE
-            WHEN GROUPING(b.Account) = 1
-              THEN 'TOTAL'
-            ELSE b.Account
-          END AS Account,
+          s.Account,
+          s.[91 Days and Above],
+          s.[Total Pending],
+          s.IsTotalRow,
+          u.LastUpdatedDate
 
-          SUM(ISNULL(b.Day91, 0))
-            AS [91 Days and Above],
-
-          SUM(ISNULL(b.TotalPending, 0))
-            AS [Total Pending],
-
-          GROUPING(b.Account) AS IsTotalRow
-
-        FROM FinanceDailyReport.FinanceDailyReport_Tbl_Entry_Master AS a
-
-        INNER JOIN FinanceDailyReport.FinanceDailyReport_Tbl_Entry_Details AS b
-          ON a.EntryID = b.EntryID
-
-        INNER JOIN dbo.htl_tbl_organization_master AS org
-          ON a.OrganizationID = org.OrganizationID
-
-        WHERE a.IsDelete = 0
-          AND a.ReportType = 'Aging Report'
-          AND b.Account NOT LIKE '%zzz%'
-          AND b.Day91 > 0
-
-          AND org.Activation_Status = 1
-          AND org.IsNileHotel = 1
-
-          AND (
-            @OrganizationID IS NULL
-            OR org.OrganizationID = @OrganizationID
-          )
-
-        GROUP BY ROLLUP(b.Account)
+        FROM ARSummary AS s
+        CROSS JOIN ARLastUpdated AS u
 
         ORDER BY
-          GROUPING(b.Account) ASC,
-          b.Account ASC;
+          s.IsTotalRow ASC,
+          s.Account ASC;
       `);
 
     // ========================================================
@@ -5645,6 +5854,9 @@ const getCEOARCollectionDetails = async (data) => {
         Account: row.Account ?? null,
         Day91AndAbove: Number(row["91 Days and Above"] ?? 0),
         TotalPending: Number(row["Total Pending"] ?? 0),
+        LastUpdatedOn: row.LastUpdatedDate
+  ? formatDate(row.LastUpdatedDate)
+  : null,
       }));
 
     // ========================================================
@@ -5663,6 +5875,9 @@ const getCEOARCollectionDetails = async (data) => {
       TotalPending: Number(
         totalRow?.["Total Pending"] ?? 0
       ),
+      LastUpdatedOn: totalRow?.LastUpdatedDate
+  ? formatDate(totalRow.LastUpdatedDate)
+  : null,
     };
 
     // ========================================================
@@ -6701,8 +6916,7 @@ const getCEOTrainingHours = async (data) => {
       .toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       return fail(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -6736,25 +6950,50 @@ const getCEOTrainingHours = async (data) => {
     }
 
     // ========================================================
-    // 3. Date Range (Existing Helper)
+    // 3. Department Filter
+    // ========================================================
+
+    const department = data.Department == null
+      ? ""
+      : String(data.Department).trim();
+
+    // ========================================================
+    // 4. Date Range
     // ========================================================
 
     const dates = getDateRange(filter);
 
     // ========================================================
-    // 4. MSSQL Query
+    // 5. MSSQL Connection
     // ========================================================
 
     const mssqlPool = await getMssqlPool();
 
+    // ========================================================
+    // 6. MSSQL Query
+    // ========================================================
+
     const result = await mssqlPool
       .request()
-      .input("FromDate", sql.Date, dates.CurrentFromDate)
-      .input("ToDate", sql.Date, dates.CurrentToDate)
+      .input(
+        "FromDate",
+        sql.Date,
+        dates.CurrentFromDate
+      )
+      .input(
+        "ToDate",
+        sql.Date,
+        dates.CurrentToDate
+      )
       .input(
         "OrganizationID",
         sql.BigInt,
         organizationID || null
+      )
+      .input(
+        "Department",
+        sql.NVarChar(255),
+        department || null
       )
       .query(`
         SELECT
@@ -6775,9 +7014,15 @@ const getCEOTrainingHours = async (data) => {
           AND training.[Date] >= @FromDate
           AND training.[Date] < DATEADD(DAY, 1, @ToDate)
 
+          AND (
+            @Department IS NULL
+            OR training.Department LIKE '%' + @Department + '%'
+          )
+
         WHERE org.Activation_status = 1
           AND org.IsNileHotel = 1
           AND org.OrganizationID <> 3
+
           AND (
             @OrganizationID IS NULL
             OR org.OrganizationID = @OrganizationID
@@ -6789,7 +7034,7 @@ const getCEOTrainingHours = async (data) => {
       `);
 
     // ========================================================
-    // 5. Response Mapping
+    // 7. Response Mapping
     // ========================================================
 
     const chartData = result.recordset.map((row) => ({
@@ -6799,7 +7044,7 @@ const getCEOTrainingHours = async (data) => {
     }));
 
     // ========================================================
-    // 6. Response
+    // 8. Response
     // ========================================================
 
     return ok(
@@ -6807,7 +7052,10 @@ const getCEOTrainingHours = async (data) => {
       chartData,
       {
         Filter: filter,
+
         OrganizationID: organizationID || null,
+
+        Department: department || null,
 
         DateRange: {
           FromDate: dates.CurrentFromDate,
@@ -6932,6 +7180,11 @@ const getCEOTrainingHoursDetails = async (data) => {
         organizationID || null
       )
       .input(
+    "Department",
+    sql.NVarChar(255),
+    data.Department?.trim() || null
+  )
+      .input(
         "FromDate",
         sql.Date,
         dates.CurrentFromDate
@@ -6971,7 +7224,10 @@ const getCEOTrainingHoursDetails = async (data) => {
               @OrganizationID IS NULL
               OR t.OrganizationID = @OrganizationID
             )
-
+            AND (
+  @Department IS NULL
+  OR t.Department LIKE '%' + @Department + '%'
+)
             AND t.[Date] >= @FromDate
             AND t.[Date] < DATEADD(DAY, 1, @ToDate)
         )
@@ -7006,6 +7262,11 @@ const getCEOTrainingHoursDetails = async (data) => {
           organizationID || null
         )
         .input(
+  "Department",
+  sql.NVarChar(255),
+  data.Department?.trim() || null
+)
+        .input(
           "FromDate",
           sql.Date,
           dates.CurrentFromDate
@@ -7032,6 +7293,10 @@ const getCEOTrainingHoursDetails = async (data) => {
               @OrganizationID IS NULL
               OR t.OrganizationID = @OrganizationID
             )
+              AND (
+  @Department IS NULL
+  OR t.Department LIKE '%' + @Department + '%'
+) 
 
             AND t.[Date] >= @FromDate
             AND t.[Date] < DATEADD(DAY, 1, @ToDate);
@@ -8127,8 +8392,7 @@ const getCEOCheckList = async (data) => {
       .toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       return fail(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -8162,16 +8426,28 @@ const getCEOCheckList = async (data) => {
     }
 
     // ========================================================
-    // 3. Date Range (Existing Helper)
+    // 3. Department Filter
+    // ========================================================
+
+    const department = data.Department == null
+      ? ""
+      : String(data.Department).trim();
+
+    // ========================================================
+    // 4. Date Range
     // ========================================================
 
     const dates = getDateRange(filter);
 
     // ========================================================
-    // 4. MSSQL Query
+    // 5. MSSQL Connection
     // ========================================================
 
     const mssqlPool = await getMssqlPool();
+
+    // ========================================================
+    // 6. MSSQL Query
+    // ========================================================
 
     const result = await mssqlPool
       .request()
@@ -8181,6 +8457,11 @@ const getCEOCheckList = async (data) => {
         "OrganizationID",
         sql.BigInt,
         organizationID || null
+      )
+      .input(
+        "Department",
+        sql.NVarChar(255),
+        department || null
       )
       .query(`
         SELECT
@@ -8199,6 +8480,12 @@ const getCEOCheckList = async (data) => {
           AND EM.EntryDate >= @FromDate
           AND EM.EntryDate < DATEADD(DAY, 1, @ToDate)
 
+        LEFT JOIN CheckList.Chk_Tbl_GroupMaster AS GM
+          ON GM.ID = EM.GroupID
+
+        LEFT JOIN dbo.htl_tbl_department_master AS D
+          ON D.DepartmentID = GM.DepartmentID
+
         WHERE org.Activation_status = 1
           AND org.IsNileHotel = 1
 
@@ -8207,13 +8494,18 @@ const getCEOCheckList = async (data) => {
             OR org.OrganizationID = @OrganizationID
           )
 
+          AND (
+            @Department IS NULL
+            OR D.Department LIKE '%' + @Department + '%'
+          )
+
         GROUP BY org.OrganizationID
 
         ORDER BY Hotel;
       `);
 
     // ========================================================
-    // 5. Response Mapping
+    // 7. Response Mapping
     // ========================================================
 
     const chartData = result.recordset.map((row) => ({
@@ -8223,7 +8515,7 @@ const getCEOCheckList = async (data) => {
     }));
 
     // ========================================================
-    // 6. Response
+    // 8. Response
     // ========================================================
 
     return ok(
@@ -8231,7 +8523,10 @@ const getCEOCheckList = async (data) => {
       chartData,
       {
         Filter: filter,
+
         OrganizationID: organizationID || null,
+
+        Department: department || null,
 
         DateRange: {
           FromDate: dates.CurrentFromDate,
@@ -8294,7 +8589,15 @@ const getCEOChecklistDetails = async (data) => {
     }
 
     // ========================================================
-    // 3. Pagination Validation
+    // 3. Department Filter
+    // ========================================================
+
+    const department = data.Department == null
+      ? ""
+      : String(data.Department).trim();
+
+    // ========================================================
+    // 4. Pagination Validation
     // ========================================================
 
     const page = Number(data.page ?? 1);
@@ -8317,19 +8620,19 @@ const getCEOChecklistDetails = async (data) => {
     }
 
     // ========================================================
-    // 4. Date Range
+    // 5. Date Range
     // ========================================================
 
     const dates = getDateRange(filter);
 
     // ========================================================
-    // 5. MSSQL Connection
+    // 6. MSSQL Connection
     // ========================================================
 
     const pool = await getMssqlPool();
 
     // ========================================================
-    // 6. Checklist Details Query
+    // 7. Checklist Details Query
     // ========================================================
 
     const result = await pool
@@ -8341,6 +8644,11 @@ const getCEOChecklistDetails = async (data) => {
       )
       .input("FromDate", sql.Date, dates.CurrentFromDate)
       .input("ToDate", sql.Date, dates.CurrentToDate)
+      .input(
+        "Department",
+        sql.NVarChar(255),
+        department || null
+      )
       .input("Offset", sql.Int, offset)
       .input("PageSize", sql.Int, pageSize)
       .query(`
@@ -8382,6 +8690,11 @@ const getCEOChecklistDetails = async (data) => {
           AND EM.EntryDate >= @FromDate
           AND EM.EntryDate < DATEADD(DAY, 1, @ToDate)
 
+          AND (
+            @Department IS NULL
+            OR D.Department LIKE '%' + @Department + '%'
+          )
+
         ORDER BY
           EM.EntryDate DESC,
           EM.ID
@@ -8391,7 +8704,7 @@ const getCEOChecklistDetails = async (data) => {
       `);
 
     // ========================================================
-    // 7. Total Count
+    // 8. Total Count
     // ========================================================
 
     let totalCount = Number(
@@ -8409,6 +8722,11 @@ const getCEOChecklistDetails = async (data) => {
         )
         .input("FromDate", sql.Date, dates.CurrentFromDate)
         .input("ToDate", sql.Date, dates.CurrentToDate)
+        .input(
+          "Department",
+          sql.NVarChar(255),
+          department || null
+        )
         .query(`
           SELECT COUNT_BIG(*) AS TotalCount
 
@@ -8427,7 +8745,12 @@ const getCEOChecklistDetails = async (data) => {
             )
 
             AND EM.EntryDate >= @FromDate
-            AND EM.EntryDate < DATEADD(DAY, 1, @ToDate);
+            AND EM.EntryDate < DATEADD(DAY, 1, @ToDate)
+
+            AND (
+              @Department IS NULL
+              OR D.Department LIKE '%' + @Department + '%'
+            );
         `);
 
       totalCount = Number(
@@ -8436,7 +8759,7 @@ const getCEOChecklistDetails = async (data) => {
     }
 
     // ========================================================
-    // 8. Response Mapping
+    // 9. Response Mapping
     // ========================================================
 
     const checklistDetails = result.recordset.map(
@@ -8460,13 +8783,12 @@ const getCEOChecklistDetails = async (data) => {
 
         EntryDate: formatDate(row.EntryDate),
 
-        EntryBy:
-          row.EntryBy || ''
+        EntryBy: row.EntryBy || ""
       })
     );
 
     // ========================================================
-    // 9. Response
+    // 10. Response
     // ========================================================
 
     return ok(
@@ -8476,6 +8798,8 @@ const getCEOChecklistDetails = async (data) => {
         Filter: filter,
 
         OrganizationID: organizationID,
+
+        Department: department || null,
 
         DateRange: {
           FromDate: formatDate(dates.CurrentFromDate),
@@ -8491,6 +8815,7 @@ const getCEOChecklistDetails = async (data) => {
         TotalPages: Math.ceil(totalCount / pageSize),
       }
     );
+
   } catch (error) {
     return databaseFailure(
       error,
@@ -15557,7 +15882,676 @@ const details = (result.recordsets?.[1] || []).map((row) => ({
 };
 
 
+// ==============================================================================================Dashboard Access
+// ============================================================Create
+const createDashboardComponentAccess = async (data) => {
+  let client;
 
+  try {
+    const Department = String(data.Department || "").trim();
+    const UserType = String(data.UserType || "").trim();
+    const CreatedBy = data.CreatedBy ?? null;
+
+    const rawComponents = Array.isArray(data.Components)
+      ? data.Components
+      : [data.Component];
+
+    const Components = [
+      ...new Set(
+        rawComponents
+          .filter((component) => typeof component === "string")
+          .map((component) => component.trim())
+          .filter(Boolean)
+      ),
+    ];
+
+    if (!Department || !UserType) {
+      return fail("Department and UserType are required.", 400);
+    }
+
+    if (Components.length === 0) {
+      return fail(
+        "Provide a valid Component or a non-empty Components array.",
+        400
+      );
+    }
+
+    client = await pool.connect();
+
+    await client.query("BEGIN");
+
+    // 1. Check existing active Department + UserType combination
+    const existingResult = await client.query(
+      `
+      SELECT dashboardaccessid
+      FROM public.dashboard_component_access
+      WHERE LOWER(TRIM(department)) = LOWER(TRIM($1))
+        AND LOWER(TRIM(usertype)) = LOWER(TRIM($2))
+        AND isdeleted = FALSE
+      LIMIT 1
+      FOR UPDATE;
+      `,
+      [Department, UserType]
+    );
+
+    if (existingResult.rows.length > 0) {
+      await client.query("ROLLBACK");
+
+      return fail(
+        `Dashboard access already exists for Department: ${Department} and UserType: ${UserType}. Please use the update API.`,
+        409
+      );
+    }
+
+    // 2. Insert components
+    const createdRecords = [];
+
+    for (const Component of Components) {
+      const result = await client.query(
+        `
+        INSERT INTO public.dashboard_component_access
+        (
+          department,
+          usertype,
+          component,
+          createdby,
+          createddate,
+          isdeleted
+        )
+        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, FALSE)
+        RETURNING
+          dashboardaccessid AS "DashboardAccessID",
+          department AS "Department",
+          usertype AS "UserType",
+          component AS "Component",
+          isdeleted AS "IsDeleted",
+          createdby AS "CreatedBy",
+          createddate AS "CreatedDate";
+        `,
+        [Department, UserType, Component, CreatedBy]
+      );
+
+      createdRecords.push(result.rows[0]);
+    }
+
+    await client.query("COMMIT");
+
+    return ok(
+      "Dashboard component access created successfully."
+    );
+
+  } catch (error) {
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "Dashboard transaction rollback failed:",
+          rollbackError.message
+        );
+      }
+    }
+
+    return databaseFailure(
+      error,
+      "Create dashboard component access"
+    );
+
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+};
+// ============================================================ Get All
+const getDashboardComponentAccess = async (filters = {}) => {
+  try {
+    const { Department, UserType, Component } = filters;
+
+    const conditions = ["isdeleted = FALSE"];
+    const values = [];
+
+    // Department partial search
+    if (Department && String(Department).trim()) {
+      values.push(String(Department).trim());
+
+      conditions.push(`
+        department ILIKE '%' || $${values.length} || '%'
+      `);
+    }
+
+    // UserType search
+    if (UserType && String(UserType).trim()) {
+      values.push(String(UserType).trim());
+
+      conditions.push(`
+        usertype ILIKE '%' || $${values.length} || '%'
+      `);
+    }
+
+    // Component partial search
+    if (Component && String(Component).trim()) {
+      values.push(String(Component).trim());
+
+      conditions.push(`
+        EXISTS (
+          SELECT 1
+          FROM public.dashboard_component_access AS filter_access
+          WHERE LOWER(TRIM(filter_access.department)) =
+                LOWER(TRIM(dashboard_component_access.department))
+            AND LOWER(TRIM(filter_access.usertype)) =
+                LOWER(TRIM(dashboard_component_access.usertype))
+            AND filter_access.isdeleted = FALSE
+            AND filter_access.component ILIKE '%' || $${values.length} || '%'
+        )
+      `);
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        MIN(dashboardaccessid) AS dashboardaccessid,
+        department,
+        usertype,
+        MAX(createddate) AS createddate,
+        ARRAY_AGG(component ORDER BY dashboardaccessid) AS components
+      FROM public.dashboard_component_access
+      WHERE ${conditions.join(" AND ")}
+      GROUP BY
+        department,
+        usertype
+      ORDER BY
+        MAX(createddate) DESC,
+        department,
+        usertype;
+      `,
+      values
+    );
+
+    const formattedData = result.rows.map((row) => ({
+      ...row,
+      createddate: row.createddate
+        ? formatDate(row.createddate)
+        : null,
+    }));
+
+    return ok(
+      "Dashboard component access fetched successfully.",
+      formattedData
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch dashboard component access"
+    );
+  }
+};
+// ============================================================Update
+const updateDashboardComponentAccess = async (data) => {
+  let client;
+
+  try {
+    const Department = String(data.Department || "").trim();
+    const UserType = String(data.UserType || "").trim();
+
+    const Components = Array.isArray(data.Components)
+      ? [
+          ...new Set(
+            data.Components
+              .filter((item) => typeof item === "string")
+              .map((item) => item.trim())
+              .filter(Boolean)
+          ),
+        ]
+      : [];
+
+    const ModifiedBy = data.ModifiedBy ?? null;
+
+    if (!Department || !UserType) {
+      return fail("Department and UserType are required.", 400);
+    }
+
+    if (Components.length === 0) {
+      return fail("At least one valid Component is required.", 400);
+    }
+
+    client = await pool.connect();
+
+    await client.query("BEGIN");
+
+    // 1. Lock this Department + UserType group.
+    // Prevents concurrent updates from creating duplicate components.
+    await client.query(
+      `
+      SELECT pg_advisory_xact_lock(
+        hashtext($1),
+        hashtext($2)
+      );
+      `,
+      [Department.toLowerCase(), UserType.toLowerCase()]
+    );
+
+    // 2. Fetch existing active records.
+    const existingResult = await client.query(
+      `
+      SELECT dashboardaccessid, component
+      FROM public.dashboard_component_access
+      WHERE LOWER(TRIM(department)) = LOWER(TRIM($1))
+        AND LOWER(TRIM(usertype)) = LOWER(TRIM($2))
+        AND isdeleted = FALSE
+      FOR UPDATE;
+      `,
+      [Department, UserType]
+    );
+
+    const existingComponents = existingResult.rows.map(
+      (row) => row.component
+    );
+
+    // 3. Soft-delete components removed from request.
+    const componentsToDelete = existingComponents.filter(
+      (component) => !Components.includes(component)
+    );
+
+    if (componentsToDelete.length > 0) {
+      await client.query(
+        `
+        UPDATE public.dashboard_component_access
+        SET
+          isdeleted = TRUE,
+          deletedby = $3,
+          deleteddate = CURRENT_TIMESTAMP,
+          modifiedby = $3,
+          modifieddate = CURRENT_TIMESTAMP
+        WHERE LOWER(TRIM(department)) = LOWER(TRIM($1))
+          AND LOWER(TRIM(usertype)) = LOWER(TRIM($2))
+          AND component = ANY($4::varchar[])
+          AND isdeleted = FALSE;
+        `,
+        [
+          Department,
+          UserType,
+          ModifiedBy,
+          componentsToDelete,
+        ]
+      );
+    }
+
+    // 4. Update existing, restore deleted, or insert new components.
+    const updatedRecords = [];
+
+    for (const Component of Components) {
+      // Check and update active component.
+      let result = await client.query(
+        `
+        UPDATE public.dashboard_component_access
+        SET
+          modifiedby = $3,
+          modifieddate = CURRENT_TIMESTAMP
+        WHERE LOWER(TRIM(department)) = LOWER(TRIM($1))
+          AND LOWER(TRIM(usertype)) = LOWER(TRIM($2))
+          AND component = $4
+          AND isdeleted = FALSE
+        RETURNING
+          dashboardaccessid AS "DashboardAccessID",
+          department AS "Department",
+          usertype AS "UserType",
+          component AS "Component",
+          isdeleted AS "IsDeleted",
+          createddate AS "CreatedDate",
+          modifiedby AS "ModifiedBy",
+          modifieddate AS "ModifiedDate";
+        `,
+        [Department, UserType, ModifiedBy, Component]
+      );
+
+      // If active record does not exist, restore latest deleted record.
+      if (result.rows.length === 0) {
+        result = await client.query(
+          `
+          UPDATE public.dashboard_component_access
+          SET
+            isdeleted = FALSE,
+            deletedby = NULL,
+            deleteddate = NULL,
+            modifiedby = $3,
+            modifieddate = CURRENT_TIMESTAMP
+          WHERE dashboardaccessid = (
+            SELECT dashboardaccessid
+            FROM public.dashboard_component_access
+            WHERE LOWER(TRIM(department)) = LOWER(TRIM($1))
+              AND LOWER(TRIM(usertype)) = LOWER(TRIM($2))
+              AND component = $4
+              AND isdeleted = TRUE
+            ORDER BY dashboardaccessid DESC
+            LIMIT 1
+            FOR UPDATE
+          )
+          RETURNING
+            dashboardaccessid AS "DashboardAccessID",
+            department AS "Department",
+            usertype AS "UserType",
+            component AS "Component",
+            isdeleted AS "IsDeleted",
+            createddate AS "CreatedDate",
+            modifiedby AS "ModifiedBy",
+            modifieddate AS "ModifiedDate";
+          `,
+          [Department, UserType, ModifiedBy, Component]
+        );
+      }
+
+      // If neither active nor deleted record exists, insert it.
+      if (result.rows.length === 0) {
+        result = await client.query(
+          `
+          INSERT INTO public.dashboard_component_access
+          (
+            department,
+            usertype,
+            component,
+            createdby,
+            createddate,
+            isdeleted
+          )
+          VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, FALSE)
+          RETURNING
+            dashboardaccessid AS "DashboardAccessID",
+            department AS "Department",
+            usertype AS "UserType",
+            component AS "Component",
+            isdeleted AS "IsDeleted",
+            createdby AS "CreatedBy",
+            createddate AS "CreatedDate";
+          `,
+          [Department, UserType, Component, ModifiedBy]
+        );
+      }
+
+      updatedRecords.push(...result.rows);
+    }
+
+    await client.query("COMMIT");
+
+    return ok(
+      "Dashboard component access updated successfully."
+    );
+
+  } catch (error) {
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "Dashboard rollback failed:",
+          rollbackError.message
+        );
+      }
+    }
+
+    return databaseFailure(
+      error,
+      "Update dashboard component access"
+    );
+
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+};
+// ============================================================Delete
+const deleteDashboardComponentAccess = async (data) => {
+  try {
+    const DashboardAccessID = Number(data.DashboardAccessID);
+    const DeletedBy = data.DeletedBy ?? null;
+
+    if (
+      !Number.isSafeInteger(DashboardAccessID) ||
+      DashboardAccessID <= 0
+    ) {
+      return fail("A valid DashboardAccessID is required.", 400);
+    }
+
+    const result = await pool.query(
+      `
+      UPDATE public.dashboard_component_access
+      SET
+        isdeleted = TRUE,
+        deletedby = $1,
+        deleteddate = CURRENT_TIMESTAMP,
+        modifiedby = $1,
+        modifieddate = CURRENT_TIMESTAMP
+      WHERE dashboardaccessid = $2
+        AND isdeleted = FALSE
+      RETURNING
+        dashboardaccessid AS "DashboardAccessID",
+        department AS "Department",
+        usertype AS "UserType",
+        component AS "Component",
+        isdeleted AS "IsDeleted",
+        deletedby AS "DeletedBy",
+        deleteddate AS "DeletedDate";
+      `,
+      [DeletedBy, DashboardAccessID]
+    );
+
+    if (result.rows.length === 0) {
+      return fail(
+        "Dashboard component access not found.",
+        404
+      );
+    }
+
+    return ok(
+      "Dashboard component access deleted successfully."    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Delete dashboard component access"
+    );
+  }
+};
+
+// ==============================================================================================GM Dashboard 
+const getRGPOverdueDetails = async (data) => {
+  try {
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const page = Math.max(Number(data.page) || 1, 1);
+
+    const pageSize = Math.min(
+      Math.max(Number(data.PageSize) || 10, 1),
+      100
+    );
+
+    const offset = (page - 1) * pageSize;
+
+    const values = [];
+
+    const conditions = [
+      "m.IsDeleted = FALSE",
+
+      // ==========================================================
+      // All RGP Overdue Condition
+      // ==========================================================
+
+      "m.ExpectedReturnDate::DATE < CURRENT_DATE",
+
+      `UPPER(
+        TRIM(
+          COALESCE(m.Status, '')
+        )
+      ) = 'CHECKED OUT'`,
+
+      // ==========================================================
+      // Item Condition
+      // ==========================================================
+
+      "i.IsDeleted = FALSE",
+    ];
+
+    // ============================================================
+    // Organization Filter
+    // ============================================================
+
+    if (data.OrganizationID) {
+      values.push(data.OrganizationID);
+
+      conditions.push(
+        `m.OrganizationID = $${values.length}`
+      );
+    }
+
+    // ============================================================
+    // Department Filter
+    // ============================================================
+
+    if (data.DepartmentID) {
+      values.push(data.DepartmentID);
+
+      conditions.push(
+        `m.DepartmentID = $${values.length}`
+      );
+    }
+
+    const whereClause = `WHERE ${conditions.join(" AND ")}`;
+
+    // ============================================================
+    // Total Count - Item Wise
+    // ============================================================
+
+    const countResult = await pool.query(
+      `
+        SELECT
+          COUNT(*)::BIGINT AS TotalCount
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        INNER JOIN Gatepass_RGP_Entry_Item_Details i
+          ON i.RGPID = m.RGPID
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID = m.DepartmentID
+
+        ${whereClause};
+      `,
+      values
+    );
+
+    const totalCount = Number(
+      countResult.rows[0]?.totalcount || 0
+    );
+
+    // ============================================================
+    // Pagination Parameters
+    // ============================================================
+
+    const listValues = [...values];
+
+    listValues.push(pageSize);
+    const limitIndex = listValues.length;
+
+    listValues.push(offset);
+    const offsetIndex = listValues.length;
+
+    // ============================================================
+    // Overdue Details
+    // One Row Per Item
+    // ============================================================
+
+    const result = await pool.query(
+      `
+        SELECT
+          m.RGPID,
+          m.RGPNumber,
+
+          i.RGPItemID,
+          i.ItemName,
+          i.Quantity,
+
+          d.DepartmentName,
+
+          m.VendorName,
+          m.Company,
+
+          m.CreatedDate AS OutDate,
+          m.ExpectedReturnDate,
+
+          m.TakenBy
+
+        FROM Gatepass_RGP_Entry_Master m
+
+        INNER JOIN Gatepass_RGP_Entry_Item_Details i
+          ON i.RGPID = m.RGPID
+
+        LEFT JOIN department_master d
+          ON d.DepartmentID = m.DepartmentID
+
+        ${whereClause}
+
+        ORDER BY
+          m.CreatedDate DESC,
+          m.RGPID DESC,
+          i.RGPItemID ASC
+
+        LIMIT $${limitIndex}
+        OFFSET $${offsetIndex};
+      `,
+      listValues
+    );
+
+    // ============================================================
+    // Response Mapping
+    // ============================================================
+
+    const reportData = result.rows.map((row) => ({
+      RGPID: row.rgpid,
+      RGPNo: row.rgpnumber,
+
+      RGPItemID: row.rgpitemid,
+      Item: row.itemname,
+      Quantity: row.quantity,
+
+      Department: row.departmentname,
+
+      Vendor: row.vendorname,
+      Company: row.company,
+
+      OutDate: formatDate(row.outdate),
+      ExpectedReturnDate: formatDate(
+        row.expectedreturndate
+      ),
+
+      TakenBy: row.takenby,
+    }));
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return ok(
+      "Gatepass overdue details fetched successfully.",
+      reportData,
+      {
+        TotalCount: totalCount,
+        Page: page,
+        PageSize: pageSize,
+        TotalPages: Math.ceil(totalCount / pageSize),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch Gatepass overdue details"
+    );
+  }
+};
 
 
 // ============================================================
@@ -15631,6 +16625,13 @@ module.exports = {
   getCEOARRRevPARChart,
   getCEOOutOfOrderChart,
   getCEOCompRoomsSummary,
-  getCEOCompRoomDetails
+  getCEOCompRoomDetails,
+
+  createDashboardComponentAccess,
+  getDashboardComponentAccess,
+  updateDashboardComponentAccess,
+  deleteDashboardComponentAccess,
+
+  getRGPOverdueDetails,
 };
 

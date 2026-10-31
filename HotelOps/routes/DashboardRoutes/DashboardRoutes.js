@@ -68,7 +68,14 @@ const {
   getCEOARRRevPARChart,
   getCEOOutOfOrderChart,
   getCEOCompRoomsSummary,
-  getCEOCompRoomDetails
+  getCEOCompRoomDetails,
+
+  createDashboardComponentAccess,
+  getDashboardComponentAccess,
+  updateDashboardComponentAccess,
+  deleteDashboardComponentAccess,
+
+  getRGPOverdueDetails,
 } = require(
   "../../controllers/DashboardController/DashboardController",
 )
@@ -212,4 +219,15 @@ router.get("/OutOfOrderTrend",authenticateToken,getCEOOutOfOrderChart);
 router.get("/CompRoomsSummary",authenticateToken,getCEOCompRoomsSummary);
 // 31.1. ============================================================ Comp Rooms Details
 router.get("/CompRoomDetails",authenticateToken,getCEOCompRoomDetails);
+
+
+// ==============================================================================================Dashboard Access
+router.post("/CreateAccess",authenticateToken,createDashboardComponentAccess);
+router.get("/AccessList",authenticateToken,getDashboardComponentAccess);
+router.put("/UpdateAccess",authenticateToken,updateDashboardComponentAccess);
+router.delete("/DeleteAccess",authenticateToken,deleteDashboardComponentAccess);
+
+// ==============================================================================================GM Dashboard 
+router.get("/GatepassOverdueDetails",authenticateToken,getRGPOverdueDetails);
+
 module.exports = router;

@@ -966,9 +966,15 @@ exports.getCEODSRVisitDetails = async (req, res) => {
 // 6. ============================================================ Total SRMS Requests
 exports.getCEOSRMSRequests = async (req, res) => {
   try {
+    const {
+      Department,
+      ...query
+    } = req.query;
+
     const result =
       await DashboardService.getCEOSRMSRequests({
-        ...req.query,
+        ...query,
+        Department: Department?.trim() || null,
       });
 
     return res
@@ -997,19 +1003,19 @@ exports.getCEOSRMSRequestDetails = async (req, res) => {
     const {
       OrganizationID,
       Filter = "yesterday",
+      Department,
       page = 1,
       PageSize = 10,
     } = req.query;
 
     // ========================================================
-    // 2. Filter Validation
+    // 1. Filter Validation
     // ========================================================
 
     const filter = String(Filter).trim().toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       throw new AppError(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -1018,7 +1024,7 @@ exports.getCEOSRMSRequestDetails = async (req, res) => {
     }
 
     // ========================================================
-    // 3. OrganizationID Validation
+    // 2. OrganizationID Validation
     // ========================================================
 
     const orgID = OrganizationID == null
@@ -1037,6 +1043,14 @@ exports.getCEOSRMSRequestDetails = async (req, res) => {
         STATUS_CODES.BAD_REQUEST
       );
     }
+
+    // ========================================================
+    // 3. Department
+    // ========================================================
+
+    const department = Department == null
+      ? ""
+      : String(Department).trim();
 
     // ========================================================
     // 4. Pagination Validation
@@ -1071,6 +1085,7 @@ exports.getCEOSRMSRequestDetails = async (req, res) => {
       await DashboardService.getCEOSRMSRequestDetails({
         OrganizationID: orgID || null,
         Filter: filter,
+        Department: department || null,
         page: Number(page),
         PageSize: Number(PageSize),
       });
@@ -1100,17 +1115,14 @@ exports.getCEOTop20SRMSRequests = async (req, res) => {
     const {
       Filter = "yearly",
       OrganizationID,
+      Department,
     } = req.query;
 
-    // ========================================================
-    // 2. Filter Validation
-    // ========================================================
-
+    // Filter Validation
     const filter = String(Filter).trim().toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       throw new AppError(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -1118,10 +1130,7 @@ exports.getCEOTop20SRMSRequests = async (req, res) => {
       );
     }
 
-    // ========================================================
-    // 3. OrganizationID Validation
-    // ========================================================
-
+    // OrganizationID Validation
     if (
       OrganizationID !== undefined &&
       String(OrganizationID).trim() !== ""
@@ -1139,14 +1148,27 @@ exports.getCEOTop20SRMSRequests = async (req, res) => {
       }
     }
 
-    // ========================================================
-    // 4. Service
-    // ========================================================
+    // Department Validation
+    if (Department !== undefined && typeof Department !== "string") {
+      throw new AppError(
+        "Department must be a string.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
 
+    if (Department && Department.length > 255) {
+      throw new AppError(
+        "Department cannot exceed 255 characters.",
+        STATUS_CODES.BAD_REQUEST
+      );
+    }
+
+    // Service
     const result =
       await DashboardService.getCEOTop20SRMSRequests({
         Filter: filter,
         OrganizationID: OrganizationID || null,
+        Department: Department?.trim() || null,
       });
 
     if (!result.success) {
@@ -1277,6 +1299,7 @@ exports.getCEOSRMSRequestByOrganization = async (req, res) => {
       Filter,
       OrganizationID,
       Request: requestName,
+      Department,
       Page = 1,
       PageSize = 10,
     } = req.query;
@@ -1333,6 +1356,27 @@ exports.getCEOSRMSRequestByOrganization = async (req, res) => {
       });
     }
 
+    // Department validation
+    if (
+      Department !== undefined &&
+      typeof Department !== "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Department must be a string.",
+      });
+    }
+
+    if (
+      typeof Department === "string" &&
+      Department.length > 255
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Department cannot exceed 255 characters.",
+      });
+    }
+
     const page = Number(Page);
     const pageSize = Number(PageSize);
 
@@ -1357,15 +1401,18 @@ exports.getCEOSRMSRequestByOrganization = async (req, res) => {
     // Keep the same CEO authorization check used by
     // the existing CEO dashboard controller handlers.
 
-    const result = await DashboardService.getCEOSRMSRequestByOrganizations({
-      Filter,
-      OrganizationID: organizationID,
-      Request: requestName,
-      Page: page,
-      PageSize: pageSize,
-    });
+    const result =
+      await DashboardService.getCEOSRMSRequestByOrganizations({
+        Filter,
+        OrganizationID: organizationID,
+        Request: requestName,
+        Department: Department?.trim() || null,
+        Page: page,
+        PageSize: pageSize,
+      });
 
     return res.status(200).json(result);
+
   } catch (error) {
     return handleError(res, error);
   }
@@ -1373,17 +1420,16 @@ exports.getCEOSRMSRequestByOrganization = async (req, res) => {
 // 8. ============================================================ SRMS Requests Completion Duration in Minutes
 exports.getCEOSRMSCompletionDuration = async (req, res) => {
   try {
-    const { Filter = "yesterday", OrganizationID } = req.query;
-
-    // ========================================================
-    // 2. Filter Validation
-    // ========================================================
+    const {
+      Filter = "yesterday",
+      OrganizationID,
+      Department,
+    } = req.query;
 
     const filter = String(Filter).trim().toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       throw new AppError(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -1391,14 +1437,11 @@ exports.getCEOSRMSCompletionDuration = async (req, res) => {
       );
     }
 
-    // ========================================================
-    // 3. Service
-    // ========================================================
-
     const result =
       await DashboardService.getCEOSRMSCompletionDuration({
         Filter: filter,
         OrganizationID,
+        Department: Department?.trim() || null,
       });
 
     if (!result.success) {
@@ -1420,6 +1463,7 @@ exports.getCEOSRMSCompletionDuration = async (req, res) => {
 exports.getCEOSRMSCompletionDurationDetails = async (req, res) => {
   try {
     const {
+      Department,
       OrganizationID,
       CD,
       Filter = "yesterday",
@@ -1427,9 +1471,7 @@ exports.getCEOSRMSCompletionDurationDetails = async (req, res) => {
       PageSize = 10,
     } = req.query;
 
-    // ========================================================
-    // 2. CD Validation
-    // ========================================================
+    // CD Validation
     if (
       CD === undefined ||
       String(CD).trim() === "" ||
@@ -1443,14 +1485,11 @@ exports.getCEOSRMSCompletionDurationDetails = async (req, res) => {
       );
     }
 
-    // ========================================================
-    // 3. Filter Validation
-    // ========================================================
+    // Filter Validation
     const filter = String(Filter).trim().toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       throw new AppError(
         "Invalid date filter.",
@@ -1458,9 +1497,7 @@ exports.getCEOSRMSCompletionDurationDetails = async (req, res) => {
       );
     }
 
-    // ========================================================
-    // 4. OrganizationID Validation
-    // ========================================================
+    // OrganizationID Validation
     const orgID = OrganizationID == null
       ? ""
       : String(OrganizationID).trim();
@@ -1478,9 +1515,7 @@ exports.getCEOSRMSCompletionDurationDetails = async (req, res) => {
       );
     }
 
-    // ========================================================
-    // 5. Pagination Validation
-    // ========================================================
+    // Pagination Validation
     if (
       !Number.isSafeInteger(Number(page)) ||
       Number(page) <= 0 ||
@@ -1494,21 +1529,17 @@ exports.getCEOSRMSCompletionDurationDetails = async (req, res) => {
       );
     }
 
-    // ========================================================
-    // 6. Service
-    // ========================================================
+    // Service
     const result =
       await DashboardService.getCEOSRMSCompletionDurationDetails({
         OrganizationID: orgID || null,
         CD: Number(CD),
         Filter: filter,
+        Department: Department?.trim() || null,
         page: Number(page),
         PageSize: Number(PageSize),
       });
 
-    // ========================================================
-    // 7. Response
-    // ========================================================
     if (!result.success) {
       throw new AppError(
         result.message,
@@ -2156,17 +2187,17 @@ exports.getCEOTrainingHours = async (req, res) => {
     const {
       Filter = "yesterday",
       OrganizationID,
+      Department,
     } = req.query;
 
     // ========================================================
-    // 2. Filter Validation
+    // 1. Filter Validation
     // ========================================================
 
     const filter = String(Filter).trim().toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       throw new AppError(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -2175,7 +2206,7 @@ exports.getCEOTrainingHours = async (req, res) => {
     }
 
     // ========================================================
-    // 3. OrganizationID Validation
+    // 2. OrganizationID Validation
     // ========================================================
 
     if (
@@ -2196,6 +2227,14 @@ exports.getCEOTrainingHours = async (req, res) => {
     }
 
     // ========================================================
+    // 3. Department
+    // ========================================================
+
+    const department = Department == null
+      ? ""
+      : String(Department).trim();
+
+    // ========================================================
     // 4. Service
     // ========================================================
 
@@ -2203,7 +2242,12 @@ exports.getCEOTrainingHours = async (req, res) => {
       await DashboardService.getCEOTrainingHours({
         Filter: filter,
         OrganizationID: OrganizationID || null,
+        Department: department || null,
       });
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
 
     if (!result.success) {
       throw new AppError(
@@ -2226,6 +2270,7 @@ exports.getCEOTrainingHoursDetails = async (req, res) => {
     const {
       Filter = "yesterday",
       OrganizationID,
+      Department,
       page = 1,
       PageSize = 10,
     } = req.query;
@@ -2292,6 +2337,7 @@ exports.getCEOTrainingHoursDetails = async (req, res) => {
       await DashboardService.getCEOTrainingHoursDetails({
         Filter: filter,
         OrganizationID: orgID || null,
+        Department: Department?.trim() || null,
         page: Number(page),
         PageSize: Number(PageSize),
       });
@@ -2676,17 +2722,17 @@ exports.getCEOCheckList = async (req, res) => {
     const {
       Filter = "weekly",
       OrganizationID,
+      Department,
     } = req.query;
 
     // ========================================================
-    // 2. Filter Validation
+    // 1. Filter Validation
     // ========================================================
 
     const filter = String(Filter).trim().toLowerCase();
 
     if (
-      !["yesterday", "weekly", "monthly", "yearly"]
-        .includes(filter)
+      !["yesterday", "weekly", "monthly", "yearly"].includes(filter)
     ) {
       throw new AppError(
         "Filter must be yesterday, weekly, monthly or yearly.",
@@ -2695,14 +2741,16 @@ exports.getCEOCheckList = async (req, res) => {
     }
 
     // ========================================================
-    // 3. OrganizationID Validation
+    // 2. OrganizationID Validation
     // ========================================================
+
+    let orgID = null;
 
     if (
       OrganizationID !== undefined &&
       String(OrganizationID).trim() !== ""
     ) {
-      const orgID = String(OrganizationID).trim();
+      orgID = String(OrganizationID).trim();
 
       if (
         !/^[1-9]\d*$/.test(orgID) ||
@@ -2716,14 +2764,26 @@ exports.getCEOCheckList = async (req, res) => {
     }
 
     // ========================================================
+    // 3. Department
+    // ========================================================
+
+    const department = Department == null
+      ? ""
+      : String(Department).trim();
+
+    // ========================================================
     // 4. Service
     // ========================================================
 
-    const result =
-      await DashboardService.getCEOCheckList({
-        Filter: filter,
-        OrganizationID: OrganizationID || null,
-      });
+    const result = await DashboardService.getCEOCheckList({
+      Filter: filter,
+      OrganizationID: orgID,
+      Department: department || null,
+    });
+
+    // ========================================================
+    // 5. Response
+    // ========================================================
 
     if (!result.success) {
       throw new AppError(
@@ -2746,6 +2806,7 @@ exports.getCEOCheckListDetails = async (req, res) => {
     const {
       Filter = "yearly",
       OrganizationID,
+      Department,
       page = 1,
       PageSize = 10,
     } = req.query;
@@ -2789,7 +2850,15 @@ exports.getCEOCheckListDetails = async (req, res) => {
     }
 
     // ========================================================
-    // 3. Pagination Validation
+    // 3. Department
+    // ========================================================
+
+    const department = Department == null
+      ? ""
+      : String(Department).trim();
+
+    // ========================================================
+    // 4. Pagination Validation
     // ========================================================
 
     const pageNumber = Number(page);
@@ -2809,18 +2878,19 @@ exports.getCEOCheckListDetails = async (req, res) => {
     }
 
     // ========================================================
-    // 4. Service Call
+    // 5. Service Call
     // ========================================================
 
     const result = await DashboardService.getCEOChecklistDetails({
       Filter: filter,
       OrganizationID: orgID,
+      Department: department || null,
       page: pageNumber,
       PageSize: pageSizeNumber,
     });
 
     // ========================================================
-    // 5. Response
+    // 6. Response
     // ========================================================
 
     if (!result.success) {
@@ -5253,6 +5323,178 @@ exports.getCEOCompRoomDetails = async (req, res) => {
   }
 };
 
+
+// ==============================================================================================Dashboard Access
+// ============================================================CREATE
+exports.createDashboardComponentAccess = async (req, res) => {
+  try {
+    if (!req.user || !req.user.UserID) {
+      throw new AppError(
+        "Authenticated user information missing. Check authentication middleware.",
+        STATUS_CODES.UNAUTHORIZED
+      );
+    }
+
+    const data = {
+      Department: req.body.Department,
+      UserType: req.body.UserType,
+      Component: req.body.Component,
+      Components: req.body.Components,
+      CreatedBy: req.user.UserID,
+    };
+
+   const response = await producer.sendMessage(
+  QUEUE.DASHBOARD.REQUEST,
+  QUEUE.DASHBOARD.RESPONSE,
+  {
+    action: "CREATE_DASHBOARD_COMPONENT_ACCESS",
+    data: {
+      ...data,
+      UserID: req.user.UserID,
+      
+    },
+  }
+);
+
+    if (!response?.success) {
+      throw new AppError(
+        response?.message || "Unable to create dashboard component access.",
+        response?.statusCode || STATUS_CODES.INTERNAL_SERVER_ERROR
+      );
+    }
+
+    return res.status(STATUS_CODES.CREATED).json(response);
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// ============================================================GET ALL
+exports.getDashboardComponentAccess = async (req, res) => {
+  try {
+    const response =
+      await DashboardService.getDashboardComponentAccess({
+        Department: req.query.Department,
+        UserType: req.query.UserType,
+        Component: req.query.Component,
+      });
+
+    if (!response?.success) {
+      throw new AppError(
+        response?.message ||
+          "Unable to fetch dashboard component access.",
+        response?.statusCode ||
+          STATUS_CODES.INTERNAL_SERVER_ERROR
+      );
+    }
+
+    return res.status(STATUS_CODES.SUCCESS).json(response);
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// ============================================================UPDATE
+exports.updateDashboardComponentAccess = async (req, res) => {
+  try {
+    const data = {
+      Department: req.body.Department,
+      UserType: req.body.UserType,
+      Components: req.body.Components,
+      ModifiedBy: req.user.UserID,
+    };
+
+    const response = await producer.sendMessage(
+      QUEUE.DASHBOARD.REQUEST,
+      QUEUE.DASHBOARD.RESPONSE,
+      {
+        action: "UPDATE_DASHBOARD_COMPONENT_ACCESS",
+        data,
+      }
+    );
+
+    if (!response?.success) {
+      throw new AppError(
+        response?.message ||
+          "Unable to update dashboard component access.",
+        response?.statusCode ||
+          STATUS_CODES.INTERNAL_SERVER_ERROR
+      );
+    }
+
+    return res.status(STATUS_CODES.SUCCESS).json(response);
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+// ============================================================DELETE
+exports.deleteDashboardComponentAccess = async (req, res) => {
+  try {
+    const data = {
+      DashboardAccessID: req.body.DashboardAccessID,
+      DeletedBy: req.user.UserID,
+    };
+
+    const response = await producer.sendMessage(
+      QUEUE.DASHBOARD.REQUEST,
+      QUEUE.DASHBOARD.RESPONSE,
+      {
+        action: "DELETE_DASHBOARD_COMPONENT_ACCESS",
+        data,
+      }
+    );
+
+    if (!response?.success) {
+      throw new AppError(
+        response?.message ||
+          "Unable to delete dashboard component access.",
+        response?.statusCode ||
+          STATUS_CODES.INTERNAL_SERVER_ERROR
+      );
+    }
+
+    return res
+      .status(STATUS_CODES.SUCCESS)
+      .json(response);
+
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
+
+// ==============================================================================================GM Dashboard 
+exports.getRGPOverdueDetails = async (req, res) => {
+  try {
+    const {
+      OrganizationID,
+      DepartmentID,
+      page,
+      PageSize,
+    } = req.query;
+
+    const data = {
+      OrganizationID: OrganizationID || null,
+      DepartmentID: DepartmentID || null,
+      page: page || 1,
+      PageSize: PageSize || 10,
+    };
+
+    const result = await DashboardService.getRGPOverdueDetails(data);
+
+    return res.status(
+      result.statusCode || 200
+    ).json(result);
+
+  } catch (error) {
+    console.error(
+      "Get RGP Overdue Details Controller Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch Gatepass overdue details.",
+    });
+  }
+};
 
 
 
