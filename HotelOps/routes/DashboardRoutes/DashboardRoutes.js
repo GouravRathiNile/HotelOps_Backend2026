@@ -77,6 +77,7 @@ const {
 
   getRGPOverdueDetails,
   getMODChecklist,
+  getUserPendingMeetings,
 } = require(
   "../../controllers/DashboardController/DashboardController",
 )
@@ -233,5 +234,7 @@ router.delete("/DeleteAccess",authenticateToken,deleteDashboardComponentAccess);
 router.get("/GatepassOverdueDetails",authenticateToken,getRGPOverdueDetails);
 // 2. ============================================================ MOD Checklist Details
 router.get("/MODChecklist",authenticateToken,getMODChecklist);
+// 3. ============================================================ MOM
+router.get("/MOMList",authenticateToken,getUserPendingMeetings);
 
 module.exports = router;

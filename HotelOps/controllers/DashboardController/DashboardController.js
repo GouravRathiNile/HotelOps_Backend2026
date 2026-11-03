@@ -5587,8 +5587,87 @@ exports.getMODChecklist = async (req, res) => {
     );
   }
 };
+// 3. ============================================================ MOM
+exports.getUserPendingMeetings = async (req, res) => {
+  try {
+    const {
+      OrganizationID,
+      Page = 1,
+      PageSize = 10,
+    } = req.query;
 
+    // ============================================================
+    // UserID from Verified JWT
+    // ============================================================
 
+    const UserID = req.user?.UserID;
+
+    if (!UserID || !Number.isInteger(Number(UserID))) {
+      return res.status(401).json(
+        fail("Valid authenticated UserID is required.", 401)
+      );
+    }
+
+    // ============================================================
+    // Organization Validation
+    // ============================================================
+
+    if (
+      !OrganizationID ||
+      !/^\d+$/.test(String(OrganizationID)) ||
+      Number(OrganizationID) <= 0
+    ) {
+      return res.status(400).json(
+        fail("Valid OrganizationID is required.", 400)
+      );
+    }
+
+    // ============================================================
+    // Pagination Validation
+    // ============================================================
+
+    if (
+      !/^\d+$/.test(String(Page)) ||
+      Number(Page) < 1
+    ) {
+      return res.status(400).json(
+        fail("Page must be greater than zero.", 400)
+      );
+    }
+
+    if (
+      !/^\d+$/.test(String(PageSize)) ||
+      Number(PageSize) < 1 ||
+      Number(PageSize) > 100
+    ) {
+      return res.status(400).json(
+        fail("PageSize must be between 1 and 100.", 400)
+      );
+    }
+
+    // ============================================================
+    // Service Call
+    // ============================================================
+
+    const result = await DashboardService.getUserPendingMeetings({
+      UserID: Number(UserID),
+      OrganizationID: Number(OrganizationID),
+      Page: Number(Page),
+      PageSize: Number(PageSize),
+    });
+
+    return res.status(
+      result.statusCode || 200
+    ).json(result);
+
+  } catch (error) {
+    console.error("Get User Pending Meetings Error:", error);
+
+    return res.status(500).json(
+      fail("Failed to fetch user pending meetings.", 500)
+    );
+  }
+};
 
 
 

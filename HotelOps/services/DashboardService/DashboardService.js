@@ -16746,6 +16746,132 @@ ROW_NUMBER() OVER (
     );
   }
 };
+// 3. ============================================================ MOM
+const getUserPendingMeetings = async (data) => {
+  try {
+    const page = Math.max(Number(data.Page) || 1, 1);
+
+    const pageSize = Math.min(
+      Math.max(Number(data.PageSize) || 10, 1),
+      100
+    );
+
+    const offset = (page - 1) * pageSize;
+
+    // ============================================================
+    // Common Filters
+    // ============================================================
+
+    const whereClause = `
+      WHERE m.OrganizationID = $2
+        AND m.Status = 'Active'
+        AND m.IsDeleted = FALSE
+        AND COALESCE(m.CompletionPercentage, 0) < 100
+
+        AND (
+          $1::BIGINT = ANY(
+            COALESCE(m.Attendees, ARRAY[]::BIGINT[])
+          )
+
+          OR
+
+          $1::BIGINT = ANY(
+            COALESCE(m.NotesTaker, ARRAY[]::BIGINT[])
+          )
+
+          OR
+
+          EXISTS (
+            SELECT 1
+            FROM mom_entry_action_details a
+            WHERE a.MeetingID = m.MeetingID
+              AND a.OrganizationID = m.OrganizationID
+              AND a.IsDeleted = FALSE
+              AND $1::BIGINT = ANY(
+                COALESCE(
+                  a.ResponsiblePerson,
+                  ARRAY[]::BIGINT[]
+                )
+              )
+          )
+        )
+    `;
+
+    const values = [
+      data.UserID,
+      data.OrganizationID,
+    ];
+
+    // ============================================================
+    // Total Count
+    // ============================================================
+
+    const countResult = await pool.query(
+      `
+        SELECT COUNT(*)::BIGINT AS TotalCount
+        FROM mom_entry_master m
+        ${whereClause};
+      `,
+      values
+    );
+
+    const totalCount = Number(
+      countResult.rows[0]?.totalcount || 0
+    );
+
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const listValues = [
+      ...values,
+      pageSize,
+      offset,
+    ];
+
+    // ============================================================
+    // Meeting Details
+    // ============================================================
+
+    const result = await pool.query(
+      `
+        SELECT
+          m.*
+        FROM mom_entry_master m
+
+        ${whereClause}
+
+        ORDER BY m.CreatedDate DESC
+
+        LIMIT $3
+        OFFSET $4;
+      `,
+      listValues
+    );
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    return ok(
+      "User pending meetings fetched successfully.",
+      result.rows,
+      {
+        TotalCount: totalCount,
+        Page: page,
+        PageSize: pageSize,
+        TotalPages: Math.ceil(totalCount / pageSize),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch user pending meetings"
+    );
+  }
+};
+
 
 
 // ============================================================
@@ -16828,5 +16954,6 @@ module.exports = {
 
   getRGPOverdueDetails,
   getMODChecklist,
+  getUserPendingMeetings,
 };
 
