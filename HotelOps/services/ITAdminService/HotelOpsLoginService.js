@@ -461,7 +461,7 @@ const changePassword = async (data) => {
   try {
     await client.query("BEGIN");
 
-    const { UserID, CurrentPassword, NewPassword } = data;
+    const { UserID, NewPassword } = data;
 
     // ========================================================
     // Get User
@@ -511,24 +511,6 @@ const changePassword = async (data) => {
       return {
         success: false,
         message: "User account is inactive",
-      };
-    }
-
-    // ========================================================
-    // Verify Current Password
-    // ========================================================
-
-    const currentPasswordMatched = await bcrypt.compare(
-      CurrentPassword,
-      user.passwordhash,
-    );
-
-    if (!currentPasswordMatched) {
-      await client.query("ROLLBACK");
-
-      return {
-        success: false,
-        message: "Current password is incorrect",
       };
     }
 

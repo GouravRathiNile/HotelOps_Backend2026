@@ -412,7 +412,6 @@ exports.changePassword = async (req, res) => {
   try {
 
     const {
-      CurrentPassword,
       NewPassword,
     } = req.body;
 
@@ -433,14 +432,7 @@ exports.changePassword = async (req, res) => {
     // Validation
     // ========================================================
 
-    if (!CurrentPassword) {
-      throw new AppError(
-        "Current Password is required",
-        STATUS_CODES.BAD_REQUEST
-      );
-    }
-
-    if (!NewPassword) {
+    if (typeof NewPassword !== "string" || !NewPassword) {
       throw new AppError(
         "New Password is required",
         STATUS_CODES.BAD_REQUEST
@@ -474,7 +466,6 @@ exports.changePassword = async (req, res) => {
         data: {
           UserID,
 
-          CurrentPassword,
           NewPassword,
         },
       }
