@@ -76,6 +76,7 @@ const {
   deleteDashboardComponentAccess,
 
   getRGPOverdueDetails,
+  getMODChecklist,
 } = require(
   "../../controllers/DashboardController/DashboardController",
 )
@@ -228,6 +229,9 @@ router.put("/UpdateAccess",authenticateToken,updateDashboardComponentAccess);
 router.delete("/DeleteAccess",authenticateToken,deleteDashboardComponentAccess);
 
 // ==============================================================================================GM Dashboard 
+// 1. ============================================================ Gatepass RGP Overdue Details
 router.get("/GatepassOverdueDetails",authenticateToken,getRGPOverdueDetails);
+// 2. ============================================================ MOD Checklist Details
+router.get("/MODChecklist",authenticateToken,getMODChecklist);
 
 module.exports = router;

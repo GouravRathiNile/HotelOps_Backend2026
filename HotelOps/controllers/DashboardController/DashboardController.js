@@ -5461,6 +5461,7 @@ exports.deleteDashboardComponentAccess = async (req, res) => {
 };
 
 // ==============================================================================================GM Dashboard 
+// 1. ============================================================ Gatepass RGP Overdue Details
 exports.getRGPOverdueDetails = async (req, res) => {
   try {
     const {
@@ -5495,7 +5496,97 @@ exports.getRGPOverdueDetails = async (req, res) => {
     });
   }
 };
+// 2. ============================================================ MOD Checklist Details
+exports.getMODChecklist = async (req, res) => {
+  try {
+    const {
+      EntryDate,
+      OrganizationID,
+      EI = 0,
+      Page = 1,
+      PageSize = 10,
+    } = req.query;
 
+    // ============================================================
+    // Validation
+    // ============================================================
+
+    if (!EntryDate || !/^\d{4}-\d{2}-\d{2}$/.test(EntryDate)) {
+      return res.status(400).json(
+        fail("EntryDate is required in YYYY-MM-DD format.", 400)
+      );
+    }
+
+    const parsedDate = new Date(`${EntryDate}T00:00:00.000Z`);
+
+    if (
+      Number.isNaN(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== EntryDate
+    ) {
+      return res.status(400).json(
+        fail("Invalid EntryDate.", 400)
+      );
+    }
+
+    if (
+      !OrganizationID ||
+      !/^\d+$/.test(String(OrganizationID)) ||
+      Number(OrganizationID) <= 0
+    ) {
+      return res.status(400).json(
+        fail("Valid OrganizationID is required.", 400)
+      );
+    }
+
+    if (!/^\d+$/.test(String(EI)) || Number(EI) < 0) {
+      return res.status(400).json(
+        fail("EI must be zero or a valid Entry ID.", 400)
+      );
+    }
+
+    if (
+      !/^\d+$/.test(String(Page)) ||
+      Number(Page) < 1
+    ) {
+      return res.status(400).json(
+        fail("Page must be greater than zero.", 400)
+      );
+    }
+
+    if (
+      !/^\d+$/.test(String(PageSize)) ||
+      Number(PageSize) < 1 ||
+      Number(PageSize) > 100
+    ) {
+      return res.status(400).json(
+        fail("PageSize must be between 1 and 100.", 400)
+      );
+    }
+
+    // ============================================================
+    // Service Call
+    // ============================================================
+
+    const result = await DashboardService.getMODChecklist({
+      EntryDate,
+      OrganizationID: Number(OrganizationID),
+      EI: Number(EI),
+      Page: Number(Page),
+      PageSize: Number(PageSize),
+    });
+
+    return res.status(
+      result.statusCode || 200
+    ).json(result);
+
+  } catch (error) {
+    console.error("MOD Checklist Error:", error);
+
+    return res.status(500).json(
+      fail("Failed to fetch MOD Checklist details.", 500)
+    );
+  }
+};
 
 
 

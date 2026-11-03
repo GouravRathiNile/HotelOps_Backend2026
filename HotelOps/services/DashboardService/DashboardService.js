@@ -16356,6 +16356,7 @@ const deleteDashboardComponentAccess = async (data) => {
 };
 
 // ==============================================================================================GM Dashboard 
+// 1. ============================================================ Gatepass RGP Overdue Details
 const getRGPOverdueDetails = async (data) => {
   try {
     // ============================================================
@@ -16552,6 +16553,199 @@ const getRGPOverdueDetails = async (data) => {
     );
   }
 };
+// 2. ============================================================ MOD Checklist Details
+const getMODChecklist = async (data) => {
+  try {
+    const pool = await getMssqlPool();
+
+    // ============================================================
+    // Pagination
+    // ============================================================
+
+    const page = Math.max(Number(data.Page) || 1, 1);
+    const pageSize = Math.min(
+      Math.max(Number(data.PageSize) || 10, 1),
+      100
+    );
+
+    const offset = (page - 1) * pageSize;
+
+    // ============================================================
+    // Count Query
+    // ============================================================
+
+    const countResult = await pool.request()
+      .input(
+        "EntryDate",
+        sql.Date,
+        data.EntryDate
+      )
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        data.OrganizationID
+      )
+      .input(
+        "EI",
+        sql.BigInt,
+        data.EI ?? 0
+      )
+      .query(`
+        SELECT COUNT(*) AS TotalCount
+        FROM MODCHK.Tbl_CheckList_Master cma
+
+        INNER JOIN MODCHK.Tbl_CheckList_Category_Master cm
+          ON cma.CategoryID = cm.ID
+         AND cma.OrganizationID = cm.OrganizationID
+         AND cma.OrganizationID = @OrganizationID
+
+        LEFT JOIN (
+          SELECT b.CheckListID, b.IsDone, b.Comment,
+            a.EntryBy, a.EntryDay, a.EntryDate,
+            o.Organization_name, o.OrganizationLogo
+          FROM MODCHK.Tbl_CheckList_Entry_Master a
+          INNER JOIN MODCHK.Tbl_CheckList_Entry_Details b
+            ON a.ID = b.EntryID
+          INNER JOIN dbo.htl_tbl_organization_master o
+            ON o.OrganizationID = a.OrganizationID
+          WHERE a.OrganizationID = @OrganizationID
+            AND a.EntryDate = @EntryDate
+            AND (@EI = 0 OR a.ID = @EI)
+        ) fnl ON fnl.CheckListID = cma.ID;
+      `);
+
+    const totalCount = Number(
+      countResult.recordset[0]?.TotalCount || 0
+    );
+
+    // ============================================================
+    // Details Query
+    // ============================================================
+
+    const result = await pool.request()
+      .input(
+        "EntryDate",
+        sql.Date,
+        data.EntryDate
+      )
+      .input(
+        "OrganizationID",
+        sql.BigInt,
+        data.OrganizationID
+      )
+      .input(
+        "EI",
+        sql.BigInt,
+        data.EI ?? 0
+      )
+      .input(
+        "Offset",
+        sql.Int,
+        offset
+      )
+      .input(
+        "PageSize",
+        sql.Int,
+        pageSize
+      )
+      .query(`
+        ;WITH ChecklistData AS
+        (
+          SELECT
+            cm.Category,
+            cma.CategoryID,
+            cma.ID AS CheckListID,
+            cma.CheckList,
+
+            fnl.IsDone,
+            fnl.Comment,
+
+            fnl.EntryBy,
+            fnl.EntryDay,
+            fnl.EntryDate,
+
+            fnl.Organization_name,
+            fnl.OrganizationLogo,
+
+ROW_NUMBER() OVER (
+              ORDER BY cma.CategoryID, cma.ID
+            ) AS RowNumber
+
+          FROM MODCHK.Tbl_CheckList_Master cma
+
+          INNER JOIN MODCHK.Tbl_CheckList_Category_Master cm
+            ON cma.CategoryID = cm.ID
+           AND cma.OrganizationID = cm.OrganizationID
+           AND cma.OrganizationID = @OrganizationID
+
+          LEFT JOIN (
+          SELECT b.CheckListID, b.IsDone, b.Comment,
+            a.EntryBy, a.EntryDay, a.EntryDate,
+            o.Organization_name, o.OrganizationLogo
+          FROM MODCHK.Tbl_CheckList_Entry_Master a
+          INNER JOIN MODCHK.Tbl_CheckList_Entry_Details b
+            ON a.ID = b.EntryID
+          INNER JOIN dbo.htl_tbl_organization_master o
+            ON o.OrganizationID = a.OrganizationID
+          WHERE a.OrganizationID = @OrganizationID
+            AND a.EntryDate = @EntryDate
+            AND (@EI = 0 OR a.ID = @EI)
+        ) fnl ON fnl.CheckListID = cma.ID
+        )
+
+        SELECT
+          Category,
+          CheckListID,
+          CheckList,
+          IsDone,
+          Comment,
+          EntryBy,
+          EntryDay,
+          EntryDate,
+          Organization_name,
+          OrganizationLogo
+
+        FROM ChecklistData
+
+        WHERE RowNumber > @Offset
+          AND RowNumber <= (@Offset + @PageSize)
+
+        ORDER BY RowNumber;
+      `);
+
+    // ============================================================
+    // Response
+    // ============================================================
+
+    const groups = new Map();
+    for (const row of result.recordset) {
+      const { Category, EntryBy, EntryDay, EntryDate,
+        Organization_name, OrganizationLogo, ...checklist } = row;
+      const common = { Category, EntryBy, EntryDay, EntryDate: formatDate(EntryDate),
+        Organization_name, OrganizationLogo };
+      const key = JSON.stringify(common);
+      if (!groups.has(key)) groups.set(key, { ...common, CheckLists: [] });
+      groups.get(key).CheckLists.push(checklist);
+    }
+
+    return ok(
+      "CEO Checklist entry details fetched successfully.",
+      Array.from(groups.values()),
+      {
+        TotalCount: totalCount,
+        Page: page,
+        PageSize: pageSize,
+        TotalPages: Math.ceil(totalCount / pageSize),
+      }
+    );
+
+  } catch (error) {
+    return databaseFailure(
+      error,
+      "Fetch CEO Checklist entry details"
+    );
+  }
+};
 
 
 // ============================================================
@@ -16633,5 +16827,6 @@ module.exports = {
   deleteDashboardComponentAccess,
 
   getRGPOverdueDetails,
+  getMODChecklist,
 };
 
