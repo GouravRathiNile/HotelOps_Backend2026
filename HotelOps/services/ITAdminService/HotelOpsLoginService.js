@@ -585,13 +585,7 @@ const changePassword = async (data) => {
 
       message: "Password changed successfully",
 
-      data: {
-        UserID,
-
-        PasswordChangedDate: new Date(),
-
-        PasswordExpiryDate: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
-      },
+      
     };
   } catch (error) {
     await client.query("ROLLBACK");
