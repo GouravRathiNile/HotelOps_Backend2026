@@ -405,6 +405,9 @@ const compactReportDTO = (row = {}) => ({
   ServiceRecovery:
     row.servicerecovery ?? null,
 
+  DetailedInvestigation:
+    row.detailedinvestigation ?? row.DetailedInvestigation ?? null,
+
   InternalActionTaken:
     row.internalactiontaken ?? null,
 

@@ -485,8 +485,14 @@ const buildReportFilters = (data, organizationID) => {
   if (data.toDate) add("gg.entrydate <= ?", data.toDate);
   if (data.statusExact) add("LOWER(COALESCE(gg.status, '')) = LOWER(?::text)", data.statusExact);
   if (data.complaintEscaped) add("COALESCE(gg.complaint, '') ILIKE ? ESCAPE '\\'", `%${data.complaintEscaped}%`);
+  if (data.status) {
+    add(
+      "LOWER(TRIM(COALESCE(gg.status, ''))) = LOWER(TRIM(?::text))",
+      data.status
+    );
+  }
   for (const [field, column] of Object.entries({
-    status: "gg.status", guestStatus: "gg.gueststatus", roomNumber: "gg.roomnumber",
+    guestStatus: "gg.gueststatus", roomNumber: "gg.roomnumber",
     guestName: "gg.guestname", complaint: "gg.complaint",
     complaintSource: "gg.complaintsource", raiseSource: "gg.raisesource",
     processLapse: "gg.processlapse", processLapseCategory: "gg.processlapsecategory",
@@ -721,18 +727,29 @@ const resolveSelections = async (client, organizationID, rows = []) => {
           };
         })
       : (row.departmentids || [])
-      .map(Number)
-      .map((id) => ({
-        ID: id,
-        Name: departmentMap.get(id) || null,
-      })),
+        .map(Number)
+        .map((id) => ({
+          ID: id,
+          Name: departmentMap.get(id) || null,
+        })),
 
-    receivedByUsers: (row.receivedbyids || [])
-      .map(Number)
-      .map((id) => ({
+    // receivedByUsers: (row.receivedbyids || [])
+    //   .map(Number)
+    //   .map((id) => ({
+    //     ID: id,
+    //     Name: userMap.get(id) || null,
+    //   })),
+    receivedByUsers: (row.receivedbyids || []).length
+      ? row.receivedbyids.map(Number).map((id) => ({
         ID: id,
         Name: userMap.get(id) || null,
-      })),
+      }))
+      : row.receivedby
+        ? row.receivedby.split(",").map((name) => ({
+          ID: null,
+          Name: name.trim(),
+        })).filter((user) => user.Name)
+        : [],
 
     informedToUsers: (row.informedtoids || [])
       .map(Number)

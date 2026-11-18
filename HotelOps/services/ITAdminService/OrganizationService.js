@@ -284,7 +284,8 @@ const getAllOrganizations = async (
   OrganizationID,
   BrandID,
   City,
-  limit = 10
+  limit = 10,
+  OrganizationName
 ) => {
   try {
     const offset = (page - 1) * limit;
@@ -304,6 +305,17 @@ const getAllOrganizations = async (
     if (City) {
       filterValues.push(`%${City}%`);
       filters.push(`City ILIKE $${filterValues.length}`);
+    }
+
+    if (OrganizationName) {
+      filterValues.push(`%${OrganizationName}%`);
+      const searchParam = `$${filterValues.length}`;
+
+      filters.push(`(
+    OrganizationName ILIKE ${searchParam}
+    OR OrganizationCode ILIKE ${searchParam}
+    OR ShortName ILIKE ${searchParam}
+  )`);
     }
 
     const whereClause = filters.join(" AND ");
@@ -587,7 +599,7 @@ const updateOrganization = async (data) => {
         ? null
         : Number(FinancialYearStart);
 
-    
+
     const values = [
       OrganizationName,
       OrganizationCode,

@@ -1509,6 +1509,7 @@ exports.getCompanyWiseReport = async (
       .json(result);
 
   } catch (error) {
+    console.error("Company Wise Report Error:", error);
     return handleError(
       error,
       res,
@@ -1547,6 +1548,7 @@ exports.getOrganizationWiseReport = async (
       .json(result);
 
   } catch (error) {
+    console.error("Organization Wise Report Error:", error);
     return handleError(
       error,
       res,

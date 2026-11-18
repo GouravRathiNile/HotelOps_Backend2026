@@ -1,6 +1,6 @@
 const { isLegacyCreditApprover, creditApproverAssignmentSql } = require("../../utils/creditApplicationApprover");
 const { pool } = require("../../db");
-const {retryableDatabaseResponse,} = require("../../utils/retryableDatabaseError");
+const { retryableDatabaseResponse, } = require("../../utils/retryableDatabaseError");
 const { formatDate } = require("../../utils/dateFormatter");
 const generateUrl = require("../../AzurConfigration/CreditApplication/AzureGetData");
 const { dispatchCommittedCreditApplicationEvent } = require("./CreditApplicationNotificationService");
@@ -145,13 +145,13 @@ const createCreditApplication = async (data) => {
       const ApprovalRole =
         String(
           approvalStep.ApprovalRole ||
-            "",
+          "",
         ).trim();
 
       const ApproverType =
         String(
           approvalStep.ApproverType ||
-            "",
+          "",
         )
           .trim()
           .toUpperCase();
@@ -159,7 +159,7 @@ const createCreditApplication = async (data) => {
       const ApproverValue =
         String(
           approvalStep.ApproverValue ||
-            "",
+          "",
         ).trim();
 
 
@@ -213,21 +213,21 @@ const createCreditApplication = async (data) => {
 
 
       if (
-  ![
-    "USER",
-    "ROLE",
-    "REGIONAL",
-  ].includes(
-    ApproverType,
-  )
-) {
-  await client.query("ROLLBACK");
+        ![
+          "USER",
+          "ROLE",
+          "REGIONAL",
+        ].includes(
+          ApproverType,
+        )
+      ) {
+        await client.query("ROLLBACK");
 
-  return fail(
-    "ApproverType must be USER, ROLE, or REGIONAL.",
-    400,
-  );
-}
+        return fail(
+          "ApproverType must be USER, ROLE, or REGIONAL.",
+          400,
+        );
+      }
 
 
       if (!ApproverValue) {
@@ -428,19 +428,19 @@ const createCreditApplication = async (data) => {
           CreditApplicationID,
 
           document.DocumentType ||
-            null,
+          null,
 
           document.FileName ||
-            null,
+          null,
 
           document.FilePath ||
-            null,
+          null,
 
           document.FileType ||
-            null,
+          null,
 
           document.FileSize ??
-            null,
+          null,
 
           UserID,
         ],
@@ -457,7 +457,7 @@ const createCreditApplication = async (data) => {
 
     for (
       const approvalStep of
-        approvalFlow
+      approvalFlow
     ) {
       const ApprovalID =
         Number(
@@ -477,7 +477,7 @@ const createCreditApplication = async (data) => {
       const ApprovalRole =
         String(
           approvalStep.ApprovalRole ||
-            "",
+          "",
         )
           .trim()
           .toUpperCase();
@@ -485,7 +485,7 @@ const createCreditApplication = async (data) => {
       const ApproverType =
         String(
           approvalStep.ApproverType ||
-            "",
+          "",
         )
           .trim()
           .toUpperCase();
@@ -493,7 +493,7 @@ const createCreditApplication = async (data) => {
       const ApproverValue =
         String(
           approvalStep.ApproverValue ||
-            "",
+          "",
         ).trim();
 
 
@@ -608,8 +608,8 @@ const createCreditApplication = async (data) => {
       roles:
         firstApprovalRole
           ? [
-              firstApprovalRole,
-            ]
+            firstApprovalRole,
+          ]
           : [],
 
       kind:
@@ -804,9 +804,9 @@ const getCreditApplicationApprovalFlow = async (
   return result.rows.map(
     (row) => {
       const approvalRole =
-  normalizeCreditApplicationApprovalRole(
-    row.approvaltype,
-  );
+        normalizeCreditApplicationApprovalRole(
+          row.approvaltype,
+        );
 
       return {
         ApprovalMasterID:
@@ -896,7 +896,7 @@ const getCreditApplicationUserContext = async (
     Username =
       String(
         result.rows[0]?.username ||
-          "",
+        "",
       )
         .trim()
         .toUpperCase();
@@ -959,7 +959,7 @@ const isCreditApplicationApprovalStepAssignedToUser = (
   const approvalRole =
     normalizeCreditApplicationApprovalRole(
       approvalStep.ApprovalRole ||
-        approvalStep.ApprovalType,
+      approvalStep.ApprovalType,
     );
 
 
@@ -974,7 +974,7 @@ const isCreditApplicationApprovalStepAssignedToUser = (
   const approverType =
     String(
       approvalStep.ApproverType ||
-        "",
+      "",
     )
       .trim()
       .toUpperCase();
@@ -996,7 +996,7 @@ const isCreditApplicationApprovalStepAssignedToUser = (
   const approverValue =
     String(
       approvalStep.ApproverValue ||
-        "",
+      "",
     )
       .trim()
       .toUpperCase();
@@ -1014,7 +1014,7 @@ const isCreditApplicationApprovalStepAssignedToUser = (
   const userID =
     String(
       userContext.UserID ||
-        "",
+      "",
     )
       .trim()
       .toUpperCase();
@@ -1023,7 +1023,7 @@ const isCreditApplicationApprovalStepAssignedToUser = (
   const username =
     String(
       userContext.Username ||
-        "",
+      "",
     )
       .trim()
       .toUpperCase();
@@ -1032,7 +1032,7 @@ const isCreditApplicationApprovalStepAssignedToUser = (
   const userType =
     String(
       userContext.UserType ||
-        "",
+      "",
     )
       .trim()
       .toUpperCase();
@@ -1041,7 +1041,7 @@ const isCreditApplicationApprovalStepAssignedToUser = (
   const departmentName =
     String(
       userContext.DepartmentName ||
-        "",
+      "",
     )
       .trim()
       .toUpperCase();
@@ -1204,15 +1204,15 @@ const mapCreditApplication = (row) => ({
   CreditAmountAllowed:
     row.creditamountallowed !== null
       ? Number(
-          row.creditamountallowed,
-        )
+        row.creditamountallowed,
+      )
       : null,
 
   ExpectedBusinessFY:
     row.expectedbusinessfy !== null
       ? Number(
-          row.expectedbusinessfy,
-        )
+        row.expectedbusinessfy,
+      )
       : null,
 
   FinancialYear:
@@ -1470,10 +1470,10 @@ const attachCreditApplicationRelatedData = async (
 
       ApprovalID:
         row.approvalid !== null &&
-        row.approvalid !== undefined
+          row.approvalid !== undefined
           ? Number(
-              row.approvalid,
-            )
+            row.approvalid,
+          )
           : null,
 
       LevelNo:
@@ -1514,19 +1514,19 @@ const attachCreditApplicationRelatedData = async (
 
       ActionBy:
         row.actionby !== null &&
-        row.actionby !== undefined
+          row.actionby !== undefined
           ? Number(
-              row.actionby,
-            )
+            row.actionby,
+          )
           : null,
 
       // Existing frontend compatibility
       ApprovedBy:
         row.actionby !== null &&
-        row.actionby !== undefined
+          row.actionby !== undefined
           ? Number(
-              row.actionby,
-            )
+            row.actionby,
+          )
           : null,
 
       Remarks:
@@ -1570,8 +1570,8 @@ const attachCreditApplicationRelatedData = async (
       FilePath:
         row.filepath
           ? generateUrl(
-              row.filepath,
-            )
+            row.filepath,
+          )
           : null,
 
       FileType:
@@ -1580,10 +1580,10 @@ const attachCreditApplicationRelatedData = async (
 
       FileSize:
         row.filesize !== null &&
-        row.filesize !== undefined
+          row.filesize !== undefined
           ? Number(
-              row.filesize,
-            )
+            row.filesize,
+          )
           : null,
 
       CreatedDate:
@@ -1810,13 +1810,13 @@ const getCreditApplicationList = async (data) => {
 
     const CompanyName =
       data.CompanyName !== undefined &&
-      data.CompanyName !== null &&
-      String(
-        data.CompanyName,
-      ).trim() !== ""
+        data.CompanyName !== null &&
+        String(
+          data.CompanyName,
+        ).trim() !== ""
         ? String(
-            data.CompanyName,
-          ).trim()
+          data.CompanyName,
+        ).trim()
         : null;
 
 
@@ -1831,15 +1831,15 @@ const getCreditApplicationList = async (data) => {
 
     const Status =
       data.Status !== undefined &&
-      data.Status !== null &&
-      String(
-        data.Status,
-      ).trim() !== ""
+        data.Status !== null &&
+        String(
+          data.Status,
+        ).trim() !== ""
         ? String(
-            data.Status,
-          )
-            .trim()
-            .toUpperCase()
+          data.Status,
+        )
+          .trim()
+          .toUpperCase()
         : null;
 
     const validStatuses = [
@@ -1868,16 +1868,16 @@ const getCreditApplicationList = async (data) => {
     // FC / GM / CEO / etc.
     // ============================================================
 
-  const ApprovalFlow =
-  data.ApprovalFlow !== undefined &&
-  data.ApprovalFlow !== null &&
-  String(
-    data.ApprovalFlow,
-  ).trim() !== ""
-    ? normalizeCreditApplicationApprovalRole(
-        data.ApprovalFlow,
-      )
-    : null;
+    const ApprovalFlow =
+      data.ApprovalFlow !== undefined &&
+        data.ApprovalFlow !== null &&
+        String(
+          data.ApprovalFlow,
+        ).trim() !== ""
+        ? normalizeCreditApplicationApprovalRole(
+          data.ApprovalFlow,
+        )
+        : null;
 
 
     // ============================================================
@@ -1888,8 +1888,8 @@ const getCreditApplicationList = async (data) => {
       value,
     ) =>
       value !== undefined &&
-      value !== null &&
-      String(value).trim() !== ""
+        value !== null &&
+        String(value).trim() !== ""
         ? String(value).trim()
         : null;
 
@@ -1928,7 +1928,7 @@ const getCreditApplicationList = async (data) => {
         parsedDate
           .toISOString()
           .slice(0, 10) ===
-          value
+        value
       );
     };
 
@@ -2064,10 +2064,10 @@ const getCreditApplicationList = async (data) => {
       !isApprover &&
       (
         departmentName ===
-          "FRONT OFFICE" ||
+        "FRONT OFFICE" ||
 
         departmentName ===
-          "FO"
+        "FO"
       );
 
     const completedOnlyViewer =
@@ -3073,7 +3073,7 @@ const getCreditApplicationList = async (data) => {
           (stage) =>
             String(
               stage.ApprovalRole ||
-                "",
+              "",
             )
               .trim()
               .toUpperCase() ===
@@ -3094,7 +3094,7 @@ const getCreditApplicationList = async (data) => {
 
       const allApprovalsApproved =
         record.Approvals.length >
-          0 &&
+        0 &&
 
         record.Approvals.every(
           (stage) =>
@@ -3155,8 +3155,8 @@ const getCreditApplicationList = async (data) => {
 
       for (
         const approval of
-          record.Approvals ||
-          []
+        record.Approvals ||
+        []
       ) {
         delete approval.ApprovalID;
 
@@ -3184,9 +3184,9 @@ const getCreditApplicationList = async (data) => {
     const TotalPages =
       TotalCount > 0
         ? Math.ceil(
-            TotalCount /
-              PageSize,
-          )
+          TotalCount /
+          PageSize,
+        )
         : 0;
 
 
@@ -3454,7 +3454,7 @@ const getCreditApplicationById = async (data) => {
 
     const allApprovalsApproved =
       CreditApplication.Approvals.length >
-        0 &&
+      0 &&
 
       CreditApplication.Approvals.every(
         (stage) =>
@@ -3472,7 +3472,7 @@ const getCreditApplicationById = async (data) => {
     const hasARID =
       String(
         CreditApplication.ARID ||
-          "",
+        "",
       ).trim() !== "";
 
 
@@ -3499,7 +3499,7 @@ const getCreditApplicationById = async (data) => {
       completedOnlyViewer &&
       (
         overallStatus !==
-          "APPROVED" ||
+        "APPROVED" ||
 
         !allApprovalsApproved ||
 
@@ -3557,7 +3557,7 @@ const getCreditApplicationById = async (data) => {
       allApprovalsApproved &&
 
       overallStatus ===
-        "APPROVED" &&
+      "APPROVED" &&
 
       !hasARID;
 
@@ -3646,7 +3646,7 @@ const getCreditApplicationById = async (data) => {
     CreditApplication.CanApprove =
       Boolean(
         overallStatus ===
-          "PENDING" &&
+        "PENDING" &&
 
         currentStage &&
 
@@ -3655,7 +3655,7 @@ const getCreditApplicationById = async (data) => {
         normalizeCreditApprovalStatus(
           currentStage.Status,
         ) ===
-          "PENDING"
+        "PENDING"
       );
 
 
@@ -3704,8 +3704,8 @@ const getCreditApplicationById = async (data) => {
 
     for (
       const approval of
-        CreditApplication.Approvals ||
-        []
+      CreditApplication.Approvals ||
+      []
     ) {
       delete approval.ApprovalID;
 
@@ -3817,12 +3817,12 @@ const getCompanyNames = async (data) => {
     // ============================================================
 
     const records =
-  result.rows.map(
-    (row) => ({
-      CompanyName:
-        row.companyname,
-    }),
-  );
+      result.rows.map(
+        (row) => ({
+          CompanyName:
+            row.companyname,
+        }),
+      );
     // ============================================================
     // Response
     // ============================================================
@@ -3895,8 +3895,8 @@ const updateCreditApplication = async (data) => {
     // ============================================================
 
     const existingResult =
-  await client.query(
-    `
+      await client.query(
+        `
       SELECT
         ca.CreditApplicationID,
         ca.Status,
@@ -3919,11 +3919,11 @@ const updateCreditApplication = async (data) => {
 
       FOR UPDATE;
     `,
-    [
-      CreditApplicationID,
-      OrganizationID,
-    ],
-  );
+        [
+          CreditApplicationID,
+          OrganizationID,
+        ],
+      );
 
     if (
       existingResult.rows.length === 0
@@ -3941,25 +3941,25 @@ const updateCreditApplication = async (data) => {
     // ============================================================
 
     const applicationStatus =
-  normalizeCreditApprovalStatus(
-    existingResult.rows[0].status,
-  );
+      normalizeCreditApprovalStatus(
+        existingResult.rows[0].status,
+      );
 
-if (
-  applicationStatus === "APPROVED" ||
-  normalizeCreditApprovalStatus(
-    existingResult.rows[0].firstapprovalstatus,
-  ) === "APPROVED"
-) {
-  await client.query(
-    "ROLLBACK",
-  );
+    if (
+      applicationStatus === "APPROVED" ||
+      normalizeCreditApprovalStatus(
+        existingResult.rows[0].firstapprovalstatus,
+      ) === "APPROVED"
+    ) {
+      await client.query(
+        "ROLLBACK",
+      );
 
-  return fail(
-    "Approved Credit Application cannot be modified.",
-    400,
-  );
-}
+      return fail(
+        "Approved Credit Application cannot be modified.",
+        400,
+      );
+    }
 
     // ============================================================
     // Update Master
@@ -4184,9 +4184,9 @@ const deleteCreditApplication = async (data) => {
       UserID,
     } = data;
 
-   const existingResult =
-  await client.query(
-    `
+    const existingResult =
+      await client.query(
+        `
       SELECT
         ca.CreditApplicationID,
         ca.Status,
@@ -4208,10 +4208,10 @@ const deleteCreditApplication = async (data) => {
 
       FOR UPDATE;
     `,
-    [
-      CreditApplicationID,
-    ],
-  );
+        [
+          CreditApplicationID,
+        ],
+      );
     if (
       existingResult.rows.length === 0
     ) {
@@ -4223,26 +4223,26 @@ const deleteCreditApplication = async (data) => {
       );
     }
 
-   const applicationStatus =
-  normalizeCreditApprovalStatus(
-    existingResult.rows[0].status,
-  );
+    const applicationStatus =
+      normalizeCreditApprovalStatus(
+        existingResult.rows[0].status,
+      );
 
-if (
-  applicationStatus === "APPROVED" ||
-  normalizeCreditApprovalStatus(
-    existingResult.rows[0].firstapprovalstatus,
-  ) === "APPROVED"
-) {
-  await client.query(
-    "ROLLBACK",
-  );
+    if (
+      applicationStatus === "APPROVED" ||
+      normalizeCreditApprovalStatus(
+        existingResult.rows[0].firstapprovalstatus,
+      ) === "APPROVED"
+    ) {
+      await client.query(
+        "ROLLBACK",
+      );
 
-  return fail(
-    "Approved Credit Application cannot be deleted.",
-    400,
-  );
-}
+      return fail(
+        "Approved Credit Application cannot be deleted.",
+        400,
+      );
+    }
 
     await client.query(
       `
@@ -4574,8 +4574,8 @@ const processCreditApplicationApproval = async (data) => {
           ApprovalID:
             approvalRow.approvalid !== null
               ? Number(
-                  approvalRow.approvalid,
-                )
+                approvalRow.approvalid,
+              )
               : null,
 
           ApprovalLevel:
@@ -4601,7 +4601,7 @@ const processCreditApplicationApproval = async (data) => {
           ApproverType:
             String(
               approvalRow.approvertype ||
-                "",
+              "",
             )
               .trim()
               .toUpperCase(),
@@ -4609,7 +4609,7 @@ const processCreditApplicationApproval = async (data) => {
           ApproverValue:
             String(
               approvalRow.approvervalue ||
-                "",
+              "",
             ).trim(),
 
           Status:
@@ -4624,8 +4624,8 @@ const processCreditApplicationApproval = async (data) => {
           ActionBy:
             approvalRow.actionby !== null
               ? Number(
-                  approvalRow.actionby,
-                )
+                approvalRow.actionby,
+              )
               : null,
 
           Remarks:
@@ -5017,7 +5017,7 @@ const processCreditApplicationApproval = async (data) => {
 
       if (
         currentStage.ApprovalRole ===
-          "FC" &&
+        "FC" &&
         nextStage
       ) {
         committedNotificationEvent = {
@@ -5053,7 +5053,7 @@ const processCreditApplicationApproval = async (data) => {
 
       else if (
         currentStage.ApprovalRole ===
-          "GM" &&
+        "GM" &&
         !nextStage
       ) {
         committedNotificationEvent = {
@@ -5116,7 +5116,7 @@ const processCreditApplicationApproval = async (data) => {
 
     const responseStatus =
       normalizedAction ===
-      "APPROVE"
+        "APPROVE"
         ? "approved"
         : "rejected";
 
@@ -5363,8 +5363,8 @@ const updateCreditApplicationARID = async (data) => {
           ApprovalID:
             approvalRow.approvalid !== null
               ? Number(
-                  approvalRow.approvalid,
-                )
+                approvalRow.approvalid,
+              )
               : null,
 
           ApprovalLevel:
@@ -5390,7 +5390,7 @@ const updateCreditApplicationARID = async (data) => {
           ApproverType:
             String(
               approvalRow.approvertype ||
-                "",
+              "",
             )
               .trim()
               .toUpperCase(),
@@ -5398,7 +5398,7 @@ const updateCreditApplicationARID = async (data) => {
           ApproverValue:
             String(
               approvalRow.approvervalue ||
-                "",
+              "",
             ).trim(),
 
           Status:
@@ -5413,8 +5413,8 @@ const updateCreditApplicationARID = async (data) => {
           ActionBy:
             approvalRow.actionby !== null
               ? Number(
-                  approvalRow.actionby,
-                )
+                approvalRow.actionby,
+              )
               : null,
 
           Remarks:
@@ -6071,7 +6071,7 @@ const createCreditApplicationApprovalConfig = async (data) => {
 
       if (
         existing.IsDeleted ===
-          false &&
+        false &&
         !processedLevels.has(
           level,
         )
@@ -6239,9 +6239,9 @@ const getCreditApplicationApprovalConfigList = async (data) => {
     const CreatedDate =
       result.rows.length > 0
         ? formatDate(
-            result.rows[0]
-              .createddate,
-          )
+          result.rows[0]
+            .createddate,
+        )
         : null;
 
     const approvals =
@@ -6452,37 +6452,37 @@ const getCompanyWiseReport = async (data) => {
 
     const CompanyName =
       data.CompanyName !== undefined &&
-      data.CompanyName !== null &&
-      String(
-        data.CompanyName,
-      ).trim() !== ""
+        data.CompanyName !== null &&
+        String(
+          data.CompanyName,
+        ).trim() !== ""
         ? String(
-            data.CompanyName,
-          ).trim()
+          data.CompanyName,
+        ).trim()
         : null;
 
 
     const FromDate =
       data.FromDate !== undefined &&
-      data.FromDate !== null &&
-      String(
-        data.FromDate,
-      ).trim() !== ""
+        data.FromDate !== null &&
+        String(
+          data.FromDate,
+        ).trim() !== ""
         ? String(
-            data.FromDate,
-          ).trim()
+          data.FromDate,
+        ).trim()
         : null;
 
 
     const ToDate =
       data.ToDate !== undefined &&
-      data.ToDate !== null &&
-      String(
-        data.ToDate,
-      ).trim() !== ""
+        data.ToDate !== null &&
+        String(
+          data.ToDate,
+        ).trim() !== ""
         ? String(
-            data.ToDate,
-          ).trim()
+          data.ToDate,
+        ).trim()
         : null;
 
 
@@ -6777,10 +6777,8 @@ const getCompanyWiseReport = async (data) => {
 
             -- ======================================================
             -- AR Pending
-            //
-            // Application approved hai
-            // but ARID abhi blank hai.
-            // ======================================================
+            -- Application approved hai but ARID abhi blank hai.
+            -- ======================================================
 
             COUNT(*) FILTER
             (
@@ -6887,9 +6885,9 @@ const getCompanyWiseReport = async (data) => {
     const TotalPages =
       TotalCount > 0
         ? Math.ceil(
-            TotalCount /
-              PageSize,
-          )
+          TotalCount /
+          PageSize,
+        )
         : 0;
 
 
@@ -6934,13 +6932,13 @@ const getOrganizationWiseReport = async (data) => {
 
     const OrganizationID =
       data.OrganizationID !== undefined &&
-      data.OrganizationID !== null &&
-      String(
-        data.OrganizationID,
-      ).trim() !== ""
+        data.OrganizationID !== null &&
+        String(
+          data.OrganizationID,
+        ).trim() !== ""
         ? Number(
-            data.OrganizationID,
-          )
+          data.OrganizationID,
+        )
         : null;
 
 
@@ -7004,25 +7002,25 @@ const getOrganizationWiseReport = async (data) => {
 
     const FromDate =
       data.FromDate !== undefined &&
-      data.FromDate !== null &&
-      String(
-        data.FromDate,
-      ).trim() !== ""
+        data.FromDate !== null &&
+        String(
+          data.FromDate,
+        ).trim() !== ""
         ? String(
-            data.FromDate,
-          ).trim()
+          data.FromDate,
+        ).trim()
         : null;
 
 
     const ToDate =
       data.ToDate !== undefined &&
-      data.ToDate !== null &&
-      String(
-        data.ToDate,
-      ).trim() !== ""
+        data.ToDate !== null &&
+        String(
+          data.ToDate,
+        ).trim() !== ""
         ? String(
-            data.ToDate,
-          ).trim()
+          data.ToDate,
+        ).trim()
         : null;
 
 
@@ -7282,9 +7280,8 @@ const getOrganizationWiseReport = async (data) => {
 
             -- ======================================================
             -- AR Pending
-            //
-            // Fully approved but ARID blank.
-            // ======================================================
+            -- Fully approved but ARID blank.
+            -- ======================================================
 
             COUNT(*) FILTER
             (
@@ -7404,9 +7401,9 @@ const getOrganizationWiseReport = async (data) => {
     const TotalPages =
       TotalCount > 0
         ? Math.ceil(
-            TotalCount /
-              PageSize,
-          )
+          TotalCount /
+          PageSize,
+        )
         : 0;
 
 
@@ -7544,7 +7541,7 @@ const generateCreditApplicationListPdf = async (data) => {
         Number(
           firstPageResult.data
             ?.TotalPages ||
-            0,
+          0,
         );
 
 
@@ -7674,13 +7671,13 @@ const generateCreditApplicationListPdf = async (data) => {
 
           ...(
             index <
-            items.length - 1
+              items.length - 1
               ? [
-                  {
-                    text:
-                      "\n",
-                  },
-                ]
+                {
+                  text:
+                    "\n",
+                },
+              ]
               : []
           ),
         ],
@@ -7736,7 +7733,7 @@ const generateCreditApplicationListPdf = async (data) => {
             normalizeCreditApplicationApprovalRole(
               approval
                 .ApprovalRole ||
-                "-",
+              "-",
             );
 
 
@@ -7776,7 +7773,7 @@ const generateCreditApplicationListPdf = async (data) => {
             row.ApplicationDate,
 
         width:
-          50,
+          48,
       },
 
 
@@ -7820,7 +7817,7 @@ const generateCreditApplicationListPdf = async (data) => {
             ]),
 
         width:
-          105,
+          100,
 
         richText:
           true,
@@ -7858,7 +7855,7 @@ const generateCreditApplicationListPdf = async (data) => {
             ]),
 
         width:
-          105,
+          100,
 
         richText:
           true,
@@ -7878,21 +7875,21 @@ const generateCreditApplicationListPdf = async (data) => {
             [
               row
                 .AuthorisedPersonNamePosition ||
-                "-",
+              "-",
 
               row
                 .AuthorisedPersonMobileNo ||
-                "-",
+              "-",
 
               row
                 .AuthorisedPersonEmail ||
-                "-",
+              "-",
             ].join(
               "\n",
             ),
 
         width:
-          90,
+          88,
       },
 
 
@@ -7909,21 +7906,21 @@ const generateCreditApplicationListPdf = async (data) => {
             [
               row
                 .AccountsContactNamePosition ||
-                "-",
+              "-",
 
               row
                 .AccountsContactMobileNo ||
-                "-",
+              "-",
 
               row
                 .AccountsContactEmail ||
-                "-",
+              "-",
             ].join(
               "\n",
             ),
 
         width:
-          100,
+          96,
       },
 
 
@@ -7958,7 +7955,7 @@ const generateCreditApplicationListPdf = async (data) => {
             ]),
 
         width:
-          70,
+          68,
 
         richText:
           true,
@@ -7998,7 +7995,7 @@ const generateCreditApplicationListPdf = async (data) => {
             ]),
 
         width:
-          80,
+          76,
 
         richText:
           true,
@@ -8024,7 +8021,7 @@ const generateCreditApplicationListPdf = async (data) => {
                   Number(
                     row
                       .CreditAmountAllowed ||
-                      0,
+                    0,
                   ).toLocaleString(
                     "en-IN",
                   ),
@@ -8038,7 +8035,7 @@ const generateCreditApplicationListPdf = async (data) => {
                   Number(
                     row
                       .ExpectedBusinessFY ||
-                      0,
+                    0,
                   ).toLocaleString(
                     "en-IN",
                   ),
@@ -8055,7 +8052,7 @@ const generateCreditApplicationListPdf = async (data) => {
             ]),
 
         width:
-          70,
+          68,
 
         richText:
           true,
@@ -8076,7 +8073,7 @@ const generateCreditApplicationListPdf = async (data) => {
             "-",
 
         width:
-          40,
+          38,
       },
 
 
@@ -8102,7 +8099,7 @@ const generateCreditApplicationListPdf = async (data) => {
             ),
 
         width:
-          70,
+          78,
 
         richText:
           true,
@@ -8150,8 +8147,8 @@ const generateCreditApplicationListPdf = async (data) => {
         value:
           data.ApprovalFlow
             ? normalizeCreditApplicationApprovalRole(
-                data.ApprovalFlow,
-              )
+              data.ApprovalFlow,
+            )
             : "All",
       },
 
@@ -8162,8 +8159,8 @@ const generateCreditApplicationListPdf = async (data) => {
         value:
           data.FromDate
             ? formatDate(
-                data.FromDate,
-              )
+              data.FromDate,
+            )
             : "All",
       },
 
@@ -8174,8 +8171,8 @@ const generateCreditApplicationListPdf = async (data) => {
         value:
           data.ToDate
             ? formatDate(
-                data.ToDate,
-              )
+              data.ToDate,
+            )
             : "All",
       },
 
@@ -8456,7 +8453,7 @@ const generateCompanyWiseReportPdf = async (data) => {
           (row) =>
             Number(
               row.TotalCreditAmount ||
-                0,
+              0,
             ).toLocaleString(
               "en-IN",
               {
@@ -8482,7 +8479,7 @@ const generateCompanyWiseReportPdf = async (data) => {
           (row) =>
             Number(
               row.TotalExpectedBusinessFY ||
-                0,
+              0,
             ).toLocaleString(
               "en-IN",
               {
@@ -8635,8 +8632,8 @@ const generateCompanyWiseReportPdf = async (data) => {
         value:
           data.FromDate
             ? formatDate(
-                data.FromDate,
-              )
+              data.FromDate,
+            )
             : "All",
       },
 
@@ -8648,8 +8645,8 @@ const generateCompanyWiseReportPdf = async (data) => {
         value:
           data.ToDate
             ? formatDate(
-                data.ToDate,
-              )
+              data.ToDate,
+            )
             : "All",
       },
 
@@ -8818,13 +8815,13 @@ const generateOrganizationWiseReportPdf = async (data) => {
 
     const organizationId =
       data.OrganizationID !== undefined &&
-      data.OrganizationID !== null &&
-      String(
-        data.OrganizationID,
-      ).trim() !== ""
+        data.OrganizationID !== null &&
+        String(
+          data.OrganizationID,
+        ).trim() !== ""
         ? Number(
-            data.OrganizationID,
-          )
+          data.OrganizationID,
+        )
         : null;
 
 
@@ -8951,7 +8948,7 @@ const generateOrganizationWiseReportPdf = async (data) => {
           (row) =>
             Number(
               row.TotalCreditAmount ||
-                0,
+              0,
             ).toLocaleString(
               "en-IN",
               {
@@ -9114,8 +9111,8 @@ const generateOrganizationWiseReportPdf = async (data) => {
         value:
           data.FromDate
             ? formatDate(
-                data.FromDate,
-              )
+              data.FromDate,
+            )
             : "All",
       },
 
@@ -9127,8 +9124,8 @@ const generateOrganizationWiseReportPdf = async (data) => {
         value:
           data.ToDate
             ? formatDate(
-                data.ToDate,
-              )
+              data.ToDate,
+            )
             : "All",
       },
 
@@ -9322,8 +9319,8 @@ const generateCreditApplicationDetailPdf = async (data) => {
       value,
     ) =>
       value === null ||
-      value === undefined ||
-      String(value).trim() === ""
+        value === undefined ||
+        String(value).trim() === ""
         ? "-"
         : String(value);
 
@@ -9908,7 +9905,7 @@ const generateCreditApplicationDetailPdf = async (data) => {
           ) {
             if (
               typeof scaledShape[
-                coordinate
+              coordinate
               ] ===
               "number"
             ) {
@@ -10100,34 +10097,34 @@ const generateCreditApplicationDetailPdf = async (data) => {
     const creditAmount =
       detail.CreditAmountAllowed !==
         null &&
-      detail.CreditAmountAllowed !==
+        detail.CreditAmountAllowed !==
         undefined
         ? Number(
-            detail.CreditAmountAllowed,
-          ).toLocaleString(
-            "en-IN",
-            {
-              maximumFractionDigits:
-                2,
-            },
-          )
+          detail.CreditAmountAllowed,
+        ).toLocaleString(
+          "en-IN",
+          {
+            maximumFractionDigits:
+              2,
+          },
+        )
         : null;
 
 
     const expectedBusinessFY =
       detail.ExpectedBusinessFY !==
         null &&
-      detail.ExpectedBusinessFY !==
+        detail.ExpectedBusinessFY !==
         undefined
         ? Number(
-            detail.ExpectedBusinessFY,
-          ).toLocaleString(
-            "en-IN",
-            {
-              maximumFractionDigits:
-                2,
-            },
-          )
+          detail.ExpectedBusinessFY,
+        ).toLocaleString(
+          "en-IN",
+          {
+            maximumFractionDigits:
+              2,
+          },
+        )
         : null;
 
 
@@ -10193,7 +10190,7 @@ const generateCreditApplicationDetailPdf = async (data) => {
         const approvalRole =
           normalizeCreditApplicationApprovalRole(
             approval.ApprovalRole ||
-              "",
+            "",
           );
 
 
@@ -10311,32 +10308,32 @@ const generateCreditApplicationDetailPdf = async (data) => {
               [
                 logo
                   ? {
-                      image:
-                        logo,
+                    image:
+                      logo,
 
-                      fit: [
-                        88,
-                        50,
-                      ],
+                    fit: [
+                      88,
+                      50,
+                    ],
 
-                      border: [
-                        false,
-                        false,
-                        false,
-                        false,
-                      ],
-                    }
+                    border: [
+                      false,
+                      false,
+                      false,
+                      false,
+                    ],
+                  }
                   : {
-                      text:
-                        "",
+                    text:
+                      "",
 
-                      border: [
-                        false,
-                        false,
-                        false,
-                        false,
-                      ],
-                    },
+                    border: [
+                      false,
+                      false,
+                      false,
+                      false,
+                    ],
+                  },
 
 
                 {
@@ -10448,8 +10445,8 @@ const generateCreditApplicationDetailPdf = async (data) => {
                 valueCell(
                   detail
                     .OrganizationShortName ||
-                    detail
-                      .OrganizationName,
+                  detail
+                    .OrganizationName,
                 ),
 
                 labelCell(

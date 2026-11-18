@@ -64,7 +64,7 @@ exports.createDivision = async (req, res) => {
 exports.getAllDivisions = async (req, res) => {
   try {
     const page = Number(req.query.page || 1);
-    const pageSize = Number(req.query.PageSize || 10);
+    const pageSize = Number(req.query.pageSize || req.query.PageSize || 10);
     const { DivisionName } = req.query;
 
     if (!Number.isInteger(page) || page < 1) {
@@ -85,7 +85,7 @@ exports.getAllDivisions = async (req, res) => {
       ? DivisionName.trim()
       : "";
 
-    const currentPage = divisionNameFilter ? 1 : page;
+    const currentPage = page;
     const response = await DivisionService.getAllDivisions(
       currentPage,
       divisionNameFilter,

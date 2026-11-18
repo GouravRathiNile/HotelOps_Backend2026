@@ -9,7 +9,11 @@ const compactReportDTO = (row) => ({
   DetailedInvestigation: row.detailedinvestigation, InternalActionTaken: row.internalactiontaken,
   CheckInDate: row.checkindate, CheckOutDate: row.checkoutdate, CompanyName: row.companyname,
   Rate: numberOrNull(row.rate), UpdatedBy: row.updatedby,
-  ReceivedByUsers: row.receivedByUsers || row.receivedby || "", ResolvedBy: row.resolvedby,
+  // ReceivedByUsers: row.receivedByUsers || row.receivedby || "", 
+  ReceivedByUsers: Array.isArray(row.receivedByUsers) && row.receivedByUsers.length
+    ? row.receivedByUsers.map((item) => item.Name || item.name || "").filter(Boolean).join(", ")
+    : row.receivedby || "",
+  ResolvedBy: row.resolvedby,
   GMComment: row.gmcomment, Status: row.status,
 });
 
@@ -29,7 +33,8 @@ const completeReportDTO = (row, resolved = {}) => ({
     HODComment: String(comment.HODComment ?? comment.comment ?? ""),
   })),
   ProcessLapse: row.processlapse, ProcessLapseCategory: row.processlapsecategory,
-  ServiceRecovery: row.servicerecovery, DetailedInvestigation: row.detailedinvestigation,
+  ServiceRecovery: row.servicerecovery,
+  DetailedInvestigation: row.detailedinvestigation ?? row.DetailedInvestigation ?? null,
   InternalActionTaken: row.internalactiontaken,
   InternalActionTakenCategory: row.internalactiontakencategory,
   CompanyName: row.companyname, Rate: numberOrNull(row.rate), CheckInDate: row.checkindate,
