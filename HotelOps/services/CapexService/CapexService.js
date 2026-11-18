@@ -1,7 +1,7 @@
 const { pool } = require("../../db");
 const CapexWorkflow = require("./CapexWorkflow");
 const CapexWorkflowRead = require("./CapexWorkflowRead");
-const {retryableDatabaseResponse,} = require("../../utils/retryableDatabaseError");
+const { retryableDatabaseResponse, } = require("../../utils/retryableDatabaseError");
 const { formatDate } = require("../../utils/dateFormatter");
 // ===============================================Pdf Helper
 const { generatePdf, loadLogo } = require("../../utils/pdfHelper");
@@ -1136,8 +1136,10 @@ const processCapexApproval = async (data) => {
         actionDate: new Date().toISOString(), approverRole: step.approvaltype,
         action: change.status.toUpperCase()
       });
-      return { success: true, message: change.action === "APPROVE" && !next
-        ? "CAPEX finally approved successfully." : "CAPEX " + change.status.toLowerCase() + " successfully." };
+      return {
+        success: true, message: change.action === "APPROVE" && !next
+          ? "CAPEX finally approved successfully." : "CAPEX " + change.status.toLowerCase() + " successfully."
+      };
     }
 
 
@@ -1796,12 +1798,28 @@ const capexSummaryData = (row) => ({
   VoidAmount: Number(row.voidamount),
 });
 // ============================================================ Summary Report
+// const getCapexSummaryReport = async (data) => {
+//   try {
+//     const [row] = await CapexWorkflowRead.report(data);
+//     return { success: true, message: "CAPEX summary report fetched successfully.",
+//       data: capexSummaryData({ ...row, totalcapex: row.count }) };
+//   } catch (error) { return fail(error.message, error.statusCode || 503); }
+// };
 const getCapexSummaryReport = async (data) => {
   try {
     const [row] = await CapexWorkflowRead.report(data);
-    return { success: true, message: "CAPEX summary report fetched successfully.",
-      data: capexSummaryData({ ...row, totalcapex: row.count }) };
-  } catch (error) { return fail(error.message, error.statusCode || 503); }
+
+    return {
+      success: true,
+      message: "CAPEX summary report fetched successfully.",
+      data: capexSummaryData({
+        ...row,
+        totalcapex: row.count
+      })
+    };
+  } catch (error) {
+    return fail(error.message, error.statusCode || 503);
+  }
 };
 // ===========================================================================(Department and Organization Reports Helpers)
 // Normalize grouped PostgreSQL results into the public API response shape.
@@ -1823,16 +1841,20 @@ const groupedReportRows = (rows, groupField) =>
 const getCapexDepartmentReport = async (data) => {
   try {
     const rows = await CapexWorkflowRead.report(data, "department");
-    return { success: true, message: "CAPEX department report fetched successfully.",
-      data: groupedReportRows(rows, "Department") };
+    return {
+      success: true, message: "CAPEX department report fetched successfully.",
+      data: groupedReportRows(rows, "Department")
+    };
   } catch (error) { return fail(error.message, error.statusCode || 503); }
 };
 // ============================================================ Organization Report
 const getCapexOrganizationReport = async (data) => {
   try {
     const rows = await CapexWorkflowRead.report(data, "organization");
-    return { success: true, message: "CAPEX organization report fetched successfully.",
-      data: groupedReportRows(rows, "OrganizationID").map((row, i) => ({ ...row, ShortName: rows[i].shortname })) };
+    return {
+      success: true, message: "CAPEX organization report fetched successfully.",
+      data: groupedReportRows(rows, "OrganizationID").map((row, i) => ({ ...row, ShortName: rows[i].shortname }))
+    };
   } catch (error) { return fail(error.message, error.statusCode || 503); }
 };
 
@@ -2346,11 +2368,10 @@ const generateCapexListPdfDocument = async (data) => {
 
       const details = [approval.Status || "Pending"];
       details.push(
-        `Qty - ${
-          approval.ApprovedQuantity === null ||
+        `Qty - ${approval.ApprovedQuantity === null ||
           approval.ApprovedQuantity === undefined
-            ? "-"
-            : approval.ApprovedQuantity
+          ? "-"
+          : approval.ApprovedQuantity
         }`,
       );
       if (approval.Remarks) details.push(approval.Remarks);
@@ -2413,28 +2434,28 @@ const generateCapexListPdfDocument = async (data) => {
         align: "left",
       })),
     ];
-// ============================================================
-// METADATA
-// ============================================================
+    // ============================================================
+    // METADATA
+    // ============================================================
 
-let organizationName =
-  capexRows[0]?.OrganizationName || data.OrganizationName || null;
+    let organizationName =
+      capexRows[0]?.OrganizationName || data.OrganizationName || null;
 
-if (!organizationName && organizationId) {
-  const organizationResult = await pool.query(
-    `SELECT OrganizationName
+    if (!organizationName && organizationId) {
+      const organizationResult = await pool.query(
+        `SELECT OrganizationName
      FROM Organization_Master
      WHERE OrganizationID = $1
        AND IsDeleted = FALSE
      LIMIT 1`,
-    [organizationId],
-  );
+        [organizationId],
+      );
 
-  organizationName =
-    organizationResult.rows[0]?.organizationname || null;
-}
+      organizationName =
+        organizationResult.rows[0]?.organizationname || null;
+    }
 
-organizationName ||= "All Organizations";
+    organizationName ||= "All Organizations";
     // ============================================================
     // METADATA
     // ============================================================
@@ -2457,7 +2478,7 @@ organizationName ||= "All Organizations";
     organizationShortName ||= "All Organizations";
 
     const metadata = [
-      { label: "Organization", value: organizationName  },
+      { label: "Organization", value: organizationName },
       { label: "Department", value: data.Department || "All" },
       {
         label: "From Date",
@@ -2551,23 +2572,23 @@ const getCapexDepartmentReportPdf = async (data) => {
     const result = { rows: await CapexWorkflowRead.report(data, "department") };
 
     const rows = result.rows;
-const organizationId = data?.Filters?.OrganizationID || null;
+    const organizationId = data?.Filters?.OrganizationID || null;
 
-let organizationName = "All Organizations";
+    let organizationName = "All Organizations";
 
-if (organizationId) {
-  const organizationResult = await pool.query(
-    `SELECT OrganizationName
+    if (organizationId) {
+      const organizationResult = await pool.query(
+        `SELECT OrganizationName
      FROM Organization_Master
      WHERE OrganizationID = $1
        AND IsDeleted = FALSE
      LIMIT 1`,
-    [organizationId],
-  );
+        [organizationId],
+      );
 
-  organizationName =
-    organizationResult.rows[0]?.organizationname || "All Organizations";
-}
+      organizationName =
+        organizationResult.rows[0]?.organizationname || "All Organizations";
+    }
     const pdfBuffer = await generatePdf({
       title: "CAPEX Department Report",
       reportName: "CAPEX Department Report",
@@ -2579,9 +2600,9 @@ if (organizationId) {
 
       metadata: [
         {
-      label: "Organization",
-      value: organizationName,
-    },
+          label: "Organization",
+          value: organizationName,
+        },
         {
           label: "Department",
           value: data?.Filters?.Department || "All",
@@ -2631,7 +2652,7 @@ if (organizationId) {
           width: 90,
           align: "center",
         },
-         {
+        {
           header: "Returned",
           key: "returnedcount",
           width: 90,
@@ -2643,7 +2664,7 @@ if (organizationId) {
           width: 90,
           align: "center",
         },
-       
+
       ],
 
       rows,
@@ -2726,7 +2747,7 @@ const getCapexOrganizationReportPdf = async (data) => {
           width: 100,
           align: "center",
         },
-         {
+        {
           header: "Returned",
           key: "returnedcount",
           width: 100,
@@ -2738,7 +2759,7 @@ const getCapexOrganizationReportPdf = async (data) => {
           width: 100,
           align: "center",
         },
-       
+
       ],
 
       rows,
@@ -3170,11 +3191,11 @@ const generateCapexByIdPdf = async (data) => {
 
       const approvedQuantity =
         approval.ApprovedQuantity !== null &&
-        approval.ApprovedQuantity !== undefined &&
-        String(approval.ApprovedQuantity).trim() !== ""
+          approval.ApprovedQuantity !== undefined &&
+          String(approval.ApprovedQuantity).trim() !== ""
           ? formatCapexAmount(
-              approval.ApprovedQuantity,
-            )
+            approval.ApprovedQuantity,
+          )
           : "-";
 
       approvalRows.push([
@@ -3254,30 +3275,30 @@ const generateCapexByIdPdf = async (data) => {
               [
                 logo
                   ? {
-                      image: logo,
+                    image: logo,
 
-                      fit: [
-                        102,
-                        58,
-                      ],
+                    fit: [
+                      102,
+                      58,
+                    ],
 
-                      border: [
-                        false,
-                        false,
-                        false,
-                        false,
-                      ],
-                    }
+                    border: [
+                      false,
+                      false,
+                      false,
+                      false,
+                    ],
+                  }
                   : {
-                      text: "",
+                    text: "",
 
-                      border: [
-                        false,
-                        false,
-                        false,
-                        false,
-                      ],
-                    },
+                    border: [
+                      false,
+                      false,
+                      false,
+                      false,
+                    ],
+                  },
 
                 {
                   text: "CAPEX Detail Report",
@@ -3357,7 +3378,7 @@ const generateCapexByIdPdf = async (data) => {
 
                 valueCell(
                   capex.OrganizationShortName ||
-                    capex.OrganizationID,
+                  capex.OrganizationID,
                 ),
 
                 labelCell(

@@ -840,24 +840,13 @@ const getReport = async (req, res, action) => {
 // ============================================================ Summary Report
 exports.getOpexSummaryReport = async (req, res) => {
   try {
-    if (!isPositiveInteger(req.query.OrganizationID)) {
-      throw new AppError(
-        "Organization ID is required and must be a positive integer",
-        STATUS_CODES.BAD_REQUEST
-      );
-    }
-
     const user = authenticatedUser(req);
     const UserType = user.UserType.toUpperCase();
-    const { FromDate, ToDate } = reportFilters(req);
+    const filters = reportFilters(req);
 
     const response = await OpexService.getOpexSummaryReport({
       ...authenticatedUser(req),
-      Filters: {
-        OrganizationID: Number(req.query.OrganizationID),
-        FromDate,
-        ToDate,
-      },
+      Filters: filters,
       UserID: user.UserID,
       UserType,
       DepartmentName: user.DepartmentName,

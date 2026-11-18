@@ -252,7 +252,15 @@ const list = async data => {
                         AND ((actor.logintype = 'SuperAdmin' AND actor.allorganizationaccess = TRUE)
                             OR EXISTS (SELECT 1 FROM user_org_mapping uom
                                 WHERE uom.userid = actor.userid AND uom.organizationid = am.organizationid
-                                    AND uom.isactive = TRUE AND uom.isdeleted = FALSE))
+                                    AND uom.isactive = TRUE AND uom.isdeleted = FALSE)
+                            OR (${regionalEligibilitySQL("actor", "om")} AND EXISTS (
+                                SELECT 1 FROM approval_master_details regional_detail
+                                WHERE regional_detail.approvalmasterid = am.approvalmasterid
+                                    AND UPPER(TRIM(regional_detail.approvertype)) = 'REGIONAL'
+                                    AND regional_detail.role = actor.userid::text
+                                    AND regional_detail.ismandatory = TRUE
+                                    AND regional_detail.isdelete = FALSE
+                            )))
                 )
             ) configured_columns GROUP BY columnkey,label ORDER BY MIN(level),columnkey`,
         [data.UserID, data.Filters?.OrganizationID ?? data.OrganizationID ?? null])

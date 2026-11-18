@@ -58,7 +58,7 @@ exports.createOrganization = async (req, res) => {
       );
     }
 
-     if (!ShortName) {
+    if (!ShortName) {
       throw new AppError(
         "ShortName Code is required",
         STATUS_CODES.BAD_REQUEST,
@@ -67,9 +67,9 @@ exports.createOrganization = async (req, res) => {
     if (!BrandID) {
       throw new AppError("Brand is required", STATUS_CODES.BAD_REQUEST);
     }
-// console.log("LogoType:", req.body.LogoType);
-// console.log("Files:", req.files.length);
-// console.log("Files:", req.files.map(f => f.originalname));
+    // console.log("LogoType:", req.body.LogoType);
+    // console.log("Files:", req.files.length);
+    // console.log("Files:", req.files.map(f => f.originalname));
     const logoTypes = Array.isArray(req.body.LogoType)
       ? req.body.LogoType
       : [req.body.LogoType];
@@ -84,7 +84,7 @@ exports.createOrganization = async (req, res) => {
         LogoName: blobName,
       });
     }
-// console.log(logos);
+    // console.log(logos);
     const response = await producer.sendMessage(
       QUEUE.ORGANIZATION.REQUEST,
       QUEUE.ORGANIZATION.RESPONSE,
@@ -165,7 +165,7 @@ exports.getAllOrganizations = async (req, res) => {
   try {
     const page = Number(req.query.page || 1);
     const pageSize = Number(req.query.PageSize || 10);
-    const { OrganizationID, BrandID, City } = req.query;
+    const { OrganizationID, BrandID, City, OrganizationName } = req.query;
 
     if (!Number.isInteger(page) || page < 1) {
       throw new AppError(
@@ -198,15 +198,24 @@ exports.getAllOrganizations = async (req, res) => {
       );
     }
 
-    const cityFilter = typeof City === "string" ? City.trim() : "";
+    const organizationIdFilter = OrganizationID || undefined;
+    const brandFilter = BrandID || undefined;
 
-    const currentPage = OrganizationID || BrandID || cityFilter ? 1 : page;
+    const cityFilter =
+      typeof City === "string" ? City.trim() : "";
+
+    const organizationFilter =
+      typeof OrganizationName === "string"
+        ? OrganizationName.trim()
+        : "";
+    const currentPage = OrganizationID || BrandID || cityFilter || organizationFilter ? 1 : page;
     const response = await OrganizationService.getAllOrganizations(
-      currentPage,
-      OrganizationID,
-      BrandID,
+      page,
+      organizationIdFilter,
+      brandFilter,
       cityFilter,
-      pageSize
+      pageSize,
+      organizationFilter
     );
 
     if (!response.success) {

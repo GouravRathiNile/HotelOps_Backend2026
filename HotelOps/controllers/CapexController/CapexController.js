@@ -870,24 +870,51 @@ const getReport = async (req, res, action) => {
   }
 };
 // ============================================================ Summary Report
+// exports.getCapexSummaryReport = async (req, res) => {
+//   try {
+//     if (!isPositiveInteger(req.query.OrganizationID)) {
+//       throw new AppError(
+//         "Organization ID is required and must be a positive integer",
+//         STATUS_CODES.BAD_REQUEST
+//       );
+//     }
+
+//     const user = authenticatedUser(req);
+//     const UserType = user.UserType.toUpperCase();
+
+//     const response = await CapexService.getCapexSummaryReport({
+//       Filters: {
+//         OrganizationID: Number(req.query.OrganizationID),
+//         ...reportDateFilters(req),
+//       },
+//       UserType,
+//       UserID: user.UserID,
+//     });
+
+//     if (!response.success) {
+//       throw new AppError(
+//         response.message || "Unable to fetch CAPEX summary report",
+//         response.statusCode || STATUS_CODES.BAD_REQUEST,
+//         response.errors
+//       );
+//     }
+
+//     return res.status(STATUS_CODES.SUCCESS).json(response);
+//   } catch (error) {
+//     return handleControllerError(error, res);
+//   }
+// };
+
 exports.getCapexSummaryReport = async (req, res) => {
   try {
-    if (!isPositiveInteger(req.query.OrganizationID)) {
-      throw new AppError(
-        "Organization ID is required and must be a positive integer",
-        STATUS_CODES.BAD_REQUEST
-      );
-    }
-
     const user = authenticatedUser(req);
-    const UserType = user.UserType.toUpperCase();
 
     const response = await CapexService.getCapexSummaryReport({
       Filters: {
-        OrganizationID: Number(req.query.OrganizationID),
+        ...reportFilters(req),
         ...reportDateFilters(req),
       },
-      UserType,
+      UserType: user.UserType.toUpperCase(),
       UserID: user.UserID,
     });
 
@@ -904,6 +931,7 @@ exports.getCapexSummaryReport = async (req, res) => {
     return handleControllerError(error, res);
   }
 };
+
 // ============================================================ Department Report
 exports.getCapexDepartmentReport = async (req, res) => {
   try {

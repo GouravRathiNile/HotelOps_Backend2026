@@ -231,29 +231,46 @@ const list = async data => {
             ORDER BY r.createddate DESC, r.capexid DESC LIMIT $${values.length+1} OFFSET $${values.length+2}`,
         [...values, size, (page-1)*size]),
         pool.query(`${cte} SELECT COUNT(*) AS count FROM records r ${where}`, values),
-        // Headers describe the current organization configuration, not the filtered
-        // requests. Snapshot stage keys still supply each row's historical values.
-        pool.query(`SELECT 'stage:' || UPPER(TRIM(d.approvaltype)) || ':' ||
-                ROW_NUMBER() OVER (PARTITION BY UPPER(TRIM(d.approvaltype))
-                    ORDER BY d.level, d.approvalid) AS columnkey,
-                UPPER(TRIM(d.approvaltype)) AS label, d.level
-            FROM approval_master am
-            JOIN approval_master_details d ON d.approvalmasterid = am.approvalmasterid
-                AND d.isdelete = FALSE
-            JOIN organization_master om ON om.organizationid = am.organizationid
-                AND om.isactive = TRUE AND om.isdeleted = FALSE AND om.activationstatus = TRUE
-            WHERE am.organizationid = $2 AND UPPER(TRIM(am.modulename)) = 'CAPEX'
-                AND am.isactive = TRUE AND am.isdelete = FALSE
-                AND EXISTS (
-                    SELECT 1 FROM user_master actor
-                    WHERE actor.userid = $1 AND actor.isactive = TRUE
-                        AND actor.isdeleted = FALSE AND actor.islocked = FALSE
-                        AND ((actor.logintype = 'SuperAdmin' AND actor.allorganizationaccess = TRUE)
-                            OR EXISTS (SELECT 1 FROM user_org_mapping uom
-                                WHERE uom.userid = actor.userid AND uom.organizationid = am.organizationid
-                                    AND uom.isactive = TRUE AND uom.isdeleted = FALSE))
-                )
-            ORDER BY d.level, d.approvalid`,
+        // Headers describe the current configuration for every organization the
+        // actor can read. For All Organizations, de-duplicate a stage occurrence
+        // across organizations so its key remains compatible with row snapshots.
+        pool.query(`WITH accessible_stages AS (
+                SELECT UPPER(TRIM(d.approvaltype)) AS label, d.level,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY am.organizationid, UPPER(TRIM(d.approvaltype))
+                        ORDER BY d.level, d.approvalid
+                    ) AS occurrence
+                FROM approval_master am
+                JOIN approval_master_details d ON d.approvalmasterid = am.approvalmasterid
+                    AND d.isdelete = FALSE
+                JOIN organization_master om ON om.organizationid = am.organizationid
+                    AND om.isactive = TRUE AND om.isdeleted = FALSE AND om.activationstatus = TRUE
+                WHERE ($2::bigint IS NULL OR am.organizationid = $2)
+                    AND UPPER(TRIM(am.modulename)) = 'CAPEX'
+                    AND am.isactive = TRUE AND am.isdelete = FALSE
+                    AND EXISTS (
+                        SELECT 1 FROM user_master actor
+                        WHERE actor.userid = $1 AND actor.isactive = TRUE
+                            AND actor.isdeleted = FALSE AND actor.islocked = FALSE
+                            AND ((actor.logintype = 'SuperAdmin' AND actor.allorganizationaccess = TRUE)
+                                OR EXISTS (SELECT 1 FROM user_org_mapping uom
+                                    WHERE uom.userid = actor.userid AND uom.organizationid = am.organizationid
+                                        AND uom.isactive = TRUE AND uom.isdeleted = FALSE)
+                                OR (${regionalEligibilitySQL("actor", "om")} AND EXISTS (
+                                    SELECT 1 FROM approval_master_details regional_detail
+                                    WHERE regional_detail.approvalmasterid = am.approvalmasterid
+                                        AND UPPER(TRIM(regional_detail.approvertype)) = 'REGIONAL'
+                                        AND regional_detail.role = actor.userid::text
+                                        AND regional_detail.ismandatory = TRUE
+                                        AND regional_detail.isdelete = FALSE
+                                )))
+                    )
+            )
+            SELECT 'stage:' || label || ':' || occurrence AS columnkey, label,
+                MIN(level) AS level
+            FROM accessible_stages
+            GROUP BY label, occurrence
+            ORDER BY MIN(level), label, occurrence`,
         [data.UserID, data.Filters?.OrganizationID ?? data.OrganizationID ?? null])
     ]);
     const rows = result.rows.map(row => mapRow(row, data.UserID));
