@@ -3608,8 +3608,54 @@ const mapMaintenanceChecklist = (row) => ({
 });
 // ============================================================Create Maintenance Checklist
 const createMaintenanceChecklist = async (data) => {
+  let client;
   try {
-    await pool.query(
+    const titles = data.Titles === undefined
+      ? (Array.isArray(data.Title) ? data.Title : [data.Title])
+      : data.Titles;
+
+    if (
+      !Array.isArray(titles) ||
+      titles.length === 0 ||
+      titles.some((title) => typeof title !== "string" || !title.trim())
+    ) {
+      return fail("Provide a non-empty Title or an array of non-empty titles.");
+    }
+
+    const normalizedTitles = titles.map((title) => title.trim());
+    client = await pool.connect();
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    // Serialize the duplicate check and insert while the table has no unique constraint.
+    await client.query(
+      "LOCK TABLE Engineering_Maintenance_Checklist_Master IN SHARE ROW EXCLUSIVE MODE",
+    );
+
+    const duplicate = await client.query(
+      `
+      WITH requested AS (
+        SELECT title, position, COUNT(*) OVER (PARTITION BY LOWER(title)) AS occurrences
+        FROM unnest($1::text[]) WITH ORDINALITY AS checklist(title, position)
+      )
+      SELECT requested.title
+      FROM requested
+      WHERE requested.occurrences > 1 OR EXISTS (
+        SELECT 1
+        FROM Engineering_Maintenance_Checklist_Master existing
+        WHERE existing.IsDeleted = FALSE
+          AND LOWER(BTRIM(existing.Title)) = LOWER(requested.title)
+      )
+      ORDER BY requested.position
+      LIMIT 1;
+      `,
+      [normalizedTitles],
+    );
+
+    if (duplicate.rows.length) {
+      await client.query("ROLLBACK");
+      return fail(`Title "${duplicate.rows[0].title}" is already present.`, 409);
+    }
+
+    await client.query(
       `
       INSERT INTO Engineering_Maintenance_Checklist_Master
       (
@@ -3619,25 +3665,32 @@ const createMaintenanceChecklist = async (data) => {
         CreatedBy,
         CreatedDate
       )
-      VALUES
-      (
-        $1,
-        $2,
-        FALSE,
-        $3,
-        CURRENT_TIMESTAMP
-      );
+      SELECT checklist.title, $2, FALSE, $3, CURRENT_TIMESTAMP
+      FROM unnest($1::text[]) AS checklist(title);
       `,
       [
-        data.Title,
+        normalizedTitles,
         data.IsActive !== undefined ? data.IsActive : true,
         data.UserID,
       ],
     );
+    await client.query("COMMIT");
 
-    return ok("Maintenance checklist created successfully.");
+    return ok(titles.length === 1
+      ? "Maintenance checklist created successfully."
+      : "Maintenance checklists created successfully.");
   } catch (error) {
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        client.release(rollbackError);
+        client = undefined;
+      }
+    }
     return databaseFailure(error, "Create Maintenance checklist");
+  } finally {
+    client?.release();
   }
 };
 // ============================================================Maintenance Checklist List

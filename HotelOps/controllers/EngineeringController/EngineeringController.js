@@ -798,25 +798,15 @@ exports.createMaintenanceChecklist = async (
   res,
 ) => {
   try {
-    const { Title, IsActive } =
-      req.body || {};
-
-    if (
-      !Title ||
-      !String(Title).trim()
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Title is required.",
-      });
-    }
+    const { Title, Titles, IsActive } = req.body || {};
 
     return sendQueueResponse(
       req,
       res,
       "CREATE_ENGINEERING_MAINTENANCE_CHECKLIST",
       {
-        Title: String(Title).trim(),
+        Title,
+        Titles,
         IsActive,
       },
     );
