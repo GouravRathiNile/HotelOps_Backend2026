@@ -234,6 +234,27 @@ test("list organization query is optional, validated and preserved with existing
   assert.equal(listDTO({}).organizationId, undefined);
 });
 
+test("empty organization list returns incidents from every mapped active organization", async () => {
+  const originalResolveAll = repository.resolveAllOrganizations;
+  const originalList = repository.list;
+  try {
+    repository.resolveAllOrganizations = async () => [{ organizationid: "10" }, { organizationid: "11" }];
+    repository.list = async (_query, organizationIDs) => {
+      assert.deepEqual(organizationIDs, [10, 11]);
+      return { rows: [], total: 0 };
+    };
+    const response = await service.list({
+      UserID: 7,
+      Query: { ...listDTO({}), organizationId: null },
+    });
+    assert.equal(response.success, true);
+    assert.equal(response.pagination.totalRecords, 0);
+  } finally {
+    repository.resolveAllOrganizations = originalResolveAll;
+    repository.list = originalList;
+  }
+});
+
 test("list year and month combinations follow the report filter contract", () => {
   const yearAndMonth = listDTO({ year: "2026", month: "8" });
   assert.deepEqual(validator.validateList(yearAndMonth), []);

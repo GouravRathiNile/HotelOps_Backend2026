@@ -78,12 +78,14 @@ const {
   getRGPOverdueDetails,
   getMODChecklist,
   getUserPendingMeetings,
+  getPendingApprovalEligibility,
 } = require(
   "../../controllers/DashboardController/DashboardController",
 )
 const router = express.Router();
 
 // ==============================================================================================CEO Dashboard 
+router.get("/PendingApprovalEligibility",authenticateToken,getPendingApprovalEligibility);
 // 1.=============================================================Top Drr Revenre Data
 router.get("/RevenueSummary",authenticateToken,getCEORevenueSummary);
 // 1.1============================================================CEO Revenue Summary Adr and Other

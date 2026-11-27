@@ -78,7 +78,11 @@ const buildQuery = (data={},list=false) => {
     positiveID(data.UserID,'Authenticated UserID');
     const values=[data.UserID],conditions=[];
     const add=(sql,value)=>{values.push(value);conditions.push(sql.replace('?',`$${values.length}`));};
-    conditions.push(`(r.organizationaccess OR EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s
+    // CEO may view the complete AMC list. Detail and action authorization are
+    // deliberately unchanged and continue to use workflow assignments.
+    const ceoListViewer=list&&String(data.UserType||'').trim().toUpperCase()==='CEO';
+    const listVisibilityBypass=ceoListViewer?'TRUE':'FALSE';
+    conditions.push(`(${listVisibilityBypass} OR r.organizationaccess OR EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s
       WHERE (s->>'ismandatory')::boolean AND ${assignmentSQL()}))`);
     // Only the creator, SuperAdmin or a reached configured assignment can view.
     // Account role/business-stage labels never substitute for a selected user.
@@ -88,8 +92,8 @@ const buildQuery = (data={},list=false) => {
         OR UPPER(TRIM(s->>'status')) IN ('APPROVED','REJECTED','RETURNED')))`;
     // Organization-wide admin access must not bypass an assigned approval turn.
     const viewer=`(r.createdby=$1 OR (r.adminaccess AND NOT ${assigned}))`;
-    const statusViewer=`(${viewer} AND NOT ${assigned})`;
-    conditions.push(`(${viewer} OR ${reached})`);
+    const statusViewer=`(${listVisibilityBypass} OR (${viewer} AND NOT ${assigned}))`;
+    conditions.push(`(${listVisibilityBypass} OR ${viewer} OR ${reached})`);
     if (data.OrganizationID!=null) {
         positiveID(data.OrganizationID,'OrganizationID');
         values.push(data.OrganizationID);
@@ -99,11 +103,11 @@ const buildQuery = (data={},list=false) => {
         if (list && Number(data.OrganizationID)!==AMC_RD_ORGANIZATION_ID) {
             // Legacy RD global selection is distinct from selecting an unmapped hotel.
             // Explicit Regional snapshot assignments may grant access to that hotel.
-            conditions.push(`(r.organizationaccess OR (r.regionaleligible AND EXISTS(
+            conditions.push(`(${listVisibilityBypass} OR r.organizationaccess OR (r.regionaleligible AND EXISTS(
               SELECT 1 FROM jsonb_array_elements(r.steps) s WHERE (s->>'ismandatory')::boolean
                 AND s->>'approvertype'='REGIONAL' AND s->>'assigneduserid'=$1::text)))`);
         }
-    } else if (list) throw new AppError('OrganizationID is required',400);
+    }
     if (data.AMCID!=null) add('r.amcid=?',positiveID(data.AMCID,'AMCID'));
     if (data.EquipmentID!=null && String(data.EquipmentID).trim()) add('r.equipmentid=?',positiveID(data.EquipmentID,'EquipmentID'));
     if (data.Search) {

@@ -461,7 +461,7 @@ exports.getAllBreakdowns = async (req, res) => {
     return res
       .status(
         result.statusCode ||
-          (result.success ? 200 : 400),
+        (result.success ? 200 : 400),
       )
       .json(result);
   } catch (error) {
@@ -479,7 +479,7 @@ exports.getBreakdownById = async (req, res) => {
     return res
       .status(
         result.statusCode ||
-          (result.success ? 200 : 400),
+        (result.success ? 200 : 400),
       )
       .json(result);
   } catch (error) {
@@ -627,7 +627,7 @@ exports.generateBreakdownDetailPdf = async (req, res) => {
     res.setHeader(
       "Content-Type",
       result.contentType ||
-        "application/pdf",
+      "application/pdf",
     );
 
     res.setHeader(
@@ -826,23 +826,23 @@ exports.createMaintenanceChecklist = async (
 };
 // ============================================================Maintenance Checklist List
 exports.getAllMaintenanceChecklists = async (req, res) => {
-    try {
-      const result =
-        await EngineeringService.getAllMaintenanceChecklists(
-          {
-            Search: req.query.Search,
-            IsActive: req.query.IsActive,
-            page: req.query.page,
-            PageSize: req.query.PageSize,
-          },
-        );
+  try {
+    const result =
+      await EngineeringService.getAllMaintenanceChecklists(
+        {
+          Search: req.query.Search,
+          IsActive: req.query.IsActive,
+          page: req.query.page,
+          PageSize: req.query.PageSize,
+        },
+      );
 
-      return res
-        .status(result.statusCode || 200)
-        .json(result);
-    } catch (error) {
-      return handleError(error, res);
-    }
+    return res
+      .status(result.statusCode || 200)
+      .json(result);
+  } catch (error) {
+    return handleError(error, res);
+  }
 };
 // ============================================================Update Maintenance Checklist
 exports.updateMaintenanceChecklist = async (
@@ -1061,7 +1061,7 @@ exports.saveMaintenance = async (req, res) => {
           Status:
             req.body.Status,
 
-          
+
 
           Checklists,
           Documents,
@@ -1275,7 +1275,7 @@ exports.getAllBreakdownsReport = async (req, res) => {
     return res
       .status(
         result.statusCode ||
-          (result.success ? 200 : 400),
+        (result.success ? 200 : 400),
       )
       .json(result);
   } catch (error) {
@@ -1473,8 +1473,8 @@ exports.getTotalEquipmentReportsPdf = async (
       Search:
         req.query.Search ||
         null,
-        Title:
-    req.query.Title || null,
+      Title:
+        req.query.Title || null,
     };
 
     const response =
@@ -1487,7 +1487,7 @@ exports.getTotalEquipmentReportsPdf = async (
       return res
         .status(
           response.statusCode ||
-            400,
+          400,
         )
         .json(response);
     }
@@ -1563,7 +1563,7 @@ exports.getBreakdownReportPdf = async (
       return res
         .status(
           response.statusCode ||
-            400,
+          400,
         )
         .json(
           response,
@@ -1643,7 +1643,7 @@ exports.getDailyMaintenanceReportPdf = async (
       return res
         .status(
           response.statusCode ||
-            400,
+          400,
         )
         .json(
           response,
@@ -1727,7 +1727,7 @@ exports.getMonthlyMaintenanceReportPdf = async (
       return res
         .status(
           response.statusCode ||
-            400,
+          400,
         )
         .json(response);
     }
@@ -1781,7 +1781,7 @@ exports.getScheduledMissingReportPdf = async (
       return res
         .status(
           response.statusCode ||
-            400,
+          400,
         )
         .json(
           response,
@@ -2035,7 +2035,7 @@ exports.createAMC = async (req, res) => {
   }
 };
 // ============================================================AMC List
- exports.getAllAMC = async (req, res) => {
+exports.getAllAMC = async (req, res) => {
   try {
     const result =
       await EngineeringService.getAllAMC({
@@ -2047,7 +2047,7 @@ exports.createAMC = async (req, res) => {
 
         Status:
           req.query.Status,
-   ApprovalFlow:
+        ApprovalFlow:
           req.query.ApprovalFlow,
         Search:
           req.query.Search,
@@ -2124,8 +2124,8 @@ exports.updateAMC = async (req, res) => {
       req.body.DeleteDocumentIDs
         ? typeof req.body.DeleteDocumentIDs === "string"
           ? JSON.parse(
-              req.body.DeleteDocumentIDs,
-            )
+            req.body.DeleteDocumentIDs,
+          )
           : req.body.DeleteDocumentIDs
         : [];
 
@@ -2333,6 +2333,7 @@ exports.getAllAMCApprovalConfig = async (
         {
           OrganizationID:
             req.query.OrganizationID,
+          UserID: req.user?.UserID,
         },
       );
 
@@ -2395,7 +2396,7 @@ exports.generateAMCDetailPdf = async (req, res) => {
     res.setHeader(
       "Content-Type",
       result.contentType ||
-        "application/pdf",
+      "application/pdf",
     );
 
     res.setHeader(
@@ -2529,15 +2530,48 @@ exports.downloadAllEquipmentQRCodes = async (req, res) => {
 
     archive.pipe(res);
 
+    // Track duplicate equipment names
+    const usedFileNames = new Set();
+
     for (const qr of QRCodes) {
-      archive.append(
-        qr.QRBuffer,
-        {
-          name:
-            `Equipment-${qr.EquipmentID}-QR.png`,
-        },
-      );
+      // Use equipment name instead of EquipmentID
+      const equipmentName =
+        qr.EquipmentName ||
+        qr.Description ||
+        "Equipment";
+
+      // Make filename ZIP/Windows safe
+      const safeName = String(equipmentName)
+        .trim()
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-");
+
+      let fileName = `Equipment-${safeName}-QR.png`;
+
+      // Handle duplicate names
+      let counter = 2;
+
+      while (usedFileNames.has(fileName.toLowerCase())) {
+        fileName = `Equipment-${safeName}-${counter}-QR.png`;
+        counter++;
+      }
+
+      usedFileNames.add(fileName.toLowerCase());
+
+      archive.append(qr.QRBuffer, {
+        name: fileName,
+      });
     }
+    // for (const qr of QRCodes) {
+    //   archive.append(
+    //     qr.QRBuffer,
+    //     {
+    //       name:
+    //         `Equipment-${qr.EquipmentID}-QR.png`,
+    //     },
+    //   );
+    // }
 
     await archive.finalize();
 

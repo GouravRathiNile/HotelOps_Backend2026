@@ -268,18 +268,23 @@ test("Guest Glitch service overwrites an untrusted organization value", async ()
   }
 });
 
-test("multi-organization list uses only authenticated active mappings", async () => {
+test("CEO list enables unrestricted organization visibility", async () => {
   const originals = { resolveOrganizations: repository.resolveOrganizations, getClient: repository.getClient, list: repository.list };
-  let scope;
+  let scope; let unrestricted;
   try {
     repository.resolveOrganizations = async () => [
       { organizationid: "10", usertype: "CEO" }, { organizationid: "11", usertype: "CEO" },
     ];
     repository.getClient = async () => ({ release() {} });
-    repository.list = async (_data, organizationIDs) => { scope = organizationIDs; return { rows: [], total: 0 }; };
+    repository.list = async (data, organizationIDs) => {
+      scope = organizationIDs;
+      unrestricted = data.UnrestrictedOrganizationAccess;
+      return { rows: [], total: 0 };
+    };
     const response = await service.list({ UserID: 1, page: 1, pageSize: 10, sortBy: "EntryDate", sortDirection: "DESC" });
     assert.equal(response.success, true);
     assert.deepEqual(scope, [10, 11]);
+    assert.equal(unrestricted, true);
   } finally { Object.assign(repository, originals); }
 });
 

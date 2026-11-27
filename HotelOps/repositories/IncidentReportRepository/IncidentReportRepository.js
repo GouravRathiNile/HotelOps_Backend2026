@@ -32,6 +32,18 @@ const resolveOrganizations = async (userID) => {
   return result.rows;
 };
 
+const resolveAllOrganizations = async (userID) => {
+  const result = await pool.query(
+    `SELECT uom.organizationid, om.organizationname, om.shortname
+     FROM user_org_mapping uom
+     INNER JOIN organization_master om ON om.organizationid = uom.organizationid
+     WHERE uom.userid = $1 AND uom.isactive = TRUE AND uom.isdeleted = FALSE
+       AND om.isactive = TRUE AND om.activationstatus = TRUE AND om.isdeleted = FALSE
+     ORDER BY uom.organizationid;`, [userID]
+  );
+  return result.rows;
+};
+
 const resolveRequestedOrganization = async (userID, organizationID) => {
   const result = await pool.query(
     `SELECT uom.organizationid, om.organizationname, om.shortname
@@ -105,8 +117,13 @@ const softDelete = async (client, id, organizationID, userID) => {
 };
 
 const buildFilters = (data, organizationID) => {
-  const filters = ["ir.organizationid = $1", "ir.isdeleted = FALSE"];
-  const values = [organizationID];
+  const organizationIDs = Array.isArray(organizationID)
+    ? organizationID.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)
+    : null;
+  const filters = [organizationIDs
+    ? "ir.organizationid = ANY($1::bigint[])"
+    : "ir.organizationid = $1", "ir.isdeleted = FALSE"];
+  const values = [organizationIDs || organizationID];
   const add = (sql, value) => { values.push(value); filters.push(sql.replace("?", `$${values.length}`)); };
   if (data.search) {
     values.push(`%${data.search}%`);
@@ -151,4 +168,4 @@ const list = async (data, organizationID, detailed = false, paginate = true) => 
   return { rows: result.rows, total: paginate ? Number(count.rows[0].total) : result.rows.length };
 };
 
-module.exports = { getClient, nextIncidentID, resolveOrganizations, resolveRequestedOrganization, findOrganizationByID, insert, findByID, update, softDelete, list };
+module.exports = { getClient, nextIncidentID, resolveOrganizations, resolveAllOrganizations, resolveRequestedOrganization, findOrganizationByID, insert, findByID, update, softDelete, list };

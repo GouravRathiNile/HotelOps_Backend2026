@@ -113,54 +113,62 @@ const getHLPList = async ({ UserID, OrganizationID, EntryDate } = {}) => {
     const denied = await validateOrganization(client, UserID, OrganizationID);
     if (denied) return denied;
     const result = await client.query(
-      `SELECT ml.id AS "ID", ml.title AS "Title", ml.orderby AS "OrderBy",
-              COALESCE(current_detail.yod, next_year_detail.lyod, yesterday_detail.yod, '00') AS "YOD",
-              COALESCE(current_detail.lyod, last_year_detail.yod, '00') AS "LYOD"
+      // Fetch each comparison day's details once, then join their small result
+      // sets to the configured fields. The previous LATERAL form searched the
+      // detail table four times for every master field.
+      `WITH entries AS (
+         SELECT id, entrydate
+           FROM hlpreport_entry_master
+          WHERE organizationid = $1
+            AND entrydate IN (
+              $2::date,
+              ($2::date - INTERVAL '1 day')::date,
+              ($2::date - INTERVAL '1 year')::date,
+              ($2::date + INTERVAL '1 year')::date
+            )
+       ),
+       current_details AS (
+         SELECT d.masterid, LOWER(d.title) AS titlekey, d.yod, d.lyod
+           FROM hlpreport_entry_details d
+           JOIN entries e ON e.id = d.entryid
+          WHERE e.entrydate = $2::date
+       ),
+       yesterday_details AS (
+         SELECT d.masterid, LOWER(d.title) AS titlekey, d.yod
+           FROM hlpreport_entry_details d
+           JOIN entries e ON e.id = d.entryid
+          WHERE e.entrydate = ($2::date - INTERVAL '1 day')::date
+       ),
+       last_year_details AS (
+         SELECT d.masterid, LOWER(d.title) AS titlekey, d.yod
+           FROM hlpreport_entry_details d
+           JOIN entries e ON e.id = d.entryid
+          WHERE e.entrydate = ($2::date - INTERVAL '1 year')::date
+       ),
+       next_year_details AS (
+         SELECT d.masterid, LOWER(d.title) AS titlekey, d.lyod
+           FROM hlpreport_entry_details d
+           JOIN entries e ON e.id = d.entryid
+          WHERE e.entrydate = ($2::date + INTERVAL '1 year')::date
+       )
+       SELECT ml.id AS "ID", ml.title AS "Title", ml.orderby AS "OrderBy",
+              COALESCE(current_by_id.yod, current_by_title.yod, next_year_by_id.lyod, next_year_by_title.lyod,
+                       yesterday_by_id.yod, yesterday_by_title.yod, '00') AS "YOD",
+              COALESCE(current_by_id.lyod, current_by_title.lyod, last_year_by_id.yod, last_year_by_title.yod,
+                       '00') AS "LYOD"
          FROM hlpreport_master_list ml
-         LEFT JOIN hlpreport_entry_master current_entry
-           ON current_entry.organizationid = $1
-          AND current_entry.entrydate = $2::date
-         LEFT JOIN LATERAL (
-           SELECT d.yod, d.lyod
-             FROM hlpreport_entry_details d
-            WHERE d.entryid = current_entry.id
-              AND (d.masterid = ml.id OR LOWER(d.title) = LOWER(ml.title))
-            ORDER BY (d.masterid = ml.id) DESC, d.id DESC LIMIT 1
-         ) current_detail ON TRUE
-         LEFT JOIN hlpreport_entry_master yesterday_entry
-           ON yesterday_entry.organizationid = $1
-          AND yesterday_entry.entrydate = $2::date - INTERVAL '1 day'
-         LEFT JOIN LATERAL (
-           SELECT d.yod
-             FROM hlpreport_entry_details d
-            WHERE d.entryid = yesterday_entry.id
-              AND (d.masterid = ml.id OR LOWER(d.title) = LOWER(ml.title))
-            ORDER BY (d.masterid = ml.id) DESC, d.id DESC LIMIT 1
-         ) yesterday_detail ON TRUE
-         LEFT JOIN hlpreport_entry_master last_year_entry
-           ON last_year_entry.organizationid = $1
-          AND EXTRACT(YEAR FROM last_year_entry.entrydate) = EXTRACT(YEAR FROM $2::date) - 1
-          AND EXTRACT(MONTH FROM last_year_entry.entrydate) = EXTRACT(MONTH FROM $2::date)
-          AND EXTRACT(DAY FROM last_year_entry.entrydate) = EXTRACT(DAY FROM $2::date)
-         LEFT JOIN LATERAL (
-           SELECT d.yod
-             FROM hlpreport_entry_details d
-            WHERE d.entryid = last_year_entry.id
-              AND (d.masterid = ml.id OR LOWER(d.title) = LOWER(ml.title))
-            ORDER BY (d.masterid = ml.id) DESC, d.id DESC LIMIT 1
-         ) last_year_detail ON TRUE
-         LEFT JOIN hlpreport_entry_master next_year_entry
-           ON next_year_entry.organizationid = $1
-          AND EXTRACT(YEAR FROM next_year_entry.entrydate) = EXTRACT(YEAR FROM $2::date) + 1
-          AND EXTRACT(MONTH FROM next_year_entry.entrydate) = EXTRACT(MONTH FROM $2::date)
-          AND EXTRACT(DAY FROM next_year_entry.entrydate) = EXTRACT(DAY FROM $2::date)
-         LEFT JOIN LATERAL (
-           SELECT d.lyod
-             FROM hlpreport_entry_details d
-            WHERE d.entryid = next_year_entry.id
-              AND (d.masterid = ml.id OR LOWER(d.title) = LOWER(ml.title))
-            ORDER BY (d.masterid = ml.id) DESC, d.id DESC LIMIT 1
-         ) next_year_detail ON TRUE
+         LEFT JOIN current_details current_by_id ON current_by_id.masterid = ml.id
+         LEFT JOIN current_details current_by_title ON current_by_title.masterid <> ml.id
+                                                   AND current_by_title.titlekey = LOWER(ml.title)
+         LEFT JOIN yesterday_details yesterday_by_id ON yesterday_by_id.masterid = ml.id
+         LEFT JOIN yesterday_details yesterday_by_title ON yesterday_by_title.masterid <> ml.id
+                                                       AND yesterday_by_title.titlekey = LOWER(ml.title)
+         LEFT JOIN last_year_details last_year_by_id ON last_year_by_id.masterid = ml.id
+         LEFT JOIN last_year_details last_year_by_title ON last_year_by_title.masterid <> ml.id
+                                                       AND last_year_by_title.titlekey = LOWER(ml.title)
+         LEFT JOIN next_year_details next_year_by_id ON next_year_by_id.masterid = ml.id
+         LEFT JOIN next_year_details next_year_by_title ON next_year_by_title.masterid <> ml.id
+                                                       AND next_year_by_title.titlekey = LOWER(ml.title)
         WHERE ml.organizationid = $1 AND ml.isactive = TRUE
         ORDER BY ml.orderby NULLS LAST, ml.id`,
       [Number(OrganizationID), EntryDate]

@@ -112,6 +112,18 @@ const resolveOrganization = async (userID, requestedOrganizationID = null) => {
   return { OrganizationID: Number(rows[0].organizationid), OrganizationName: rows[0].organizationname, OrganizationShortName: rows[0].shortname };
 };
 
+// List/report views may use an empty organization selector to include every
+// active organization the authenticated user is mapped to.
+const resolveListOrganizations = async (userID, requestedOrganizationID = null) => {
+  if (requestedOrganizationID !== null && requestedOrganizationID !== undefined && requestedOrganizationID !== "") {
+    const organization = await resolveOrganization(userID, requestedOrganizationID);
+    return organization.error ? organization : { OrganizationIDs: [organization.OrganizationID] };
+  }
+  const rows = await repository.resolveAllOrganizations(userID);
+  if (!rows.length) return { error: fail("No active organization is assigned to the authenticated user.", 403) };
+  return { OrganizationIDs: rows.map((row) => Number(row.organizationid)) };
+};
+
 // Resolve an existing record's organization without leaking cross-organization ownership.
 const resolveRecordOrganization = async (client, userID, incidentID) => {
   const record = await repository.findOrganizationByID(client, incidentID);
@@ -166,9 +178,9 @@ const get = async (data) => {
 // Shared database-paginated list implementation powers compact and detailed reports.
 const list = async (data, detailed = false) => {
   try {
-    const organization = await resolveOrganization(data.UserID, data.Query.organizationId);
-    if (organization.error) return organization.error;
-    const result = await repository.list(data.Query, organization.OrganizationID, detailed);
+    const organizations = await resolveListOrganizations(data.UserID, data.Query.organizationId);
+    if (organizations.error) return organizations.error;
+    const result = await repository.list(data.Query, organizations.OrganizationIDs, detailed);
     return {
       success: true,
       message: detailed ? "Incident report data retrieved successfully." : "Incident reports retrieved successfully.",
@@ -200,31 +212,46 @@ const INCIDENT_REPORT_PDF_COLUMNS = Object.freeze([
 ]);
 
 // Generate the current filtered report page using the same service query and DTO.
+
+// Generate PDF with all records matching the applied report filters.
 const reportListPdf = async (data) => {
   try {
-    const response = await list(data, true);
-    if (!response.success) return response;
-    const organization = await resolveOrganization(data.UserID, data.Query.organizationId);
+    const organization = await resolveOrganization(
+      data.UserID,
+      data.Query.organizationId
+    );
+
     if (organization.error) return organization.error;
+
     const query = data.Query;
-    // const metadata = [
-    //   { label: "Organization", value: organization.OrganizationShortName || organization.OrganizationName },
-    //   { label: "Year", value: query.year || "All" },
-    //   { label: "Month", value: query.month || "All" },
-    //   { label: "Search", value: query.search || "All" },
-    //   { label: "From Date", value: query.fromDate ? formatDate(query.fromDate) : "All" },
-    //   { label: "To Date", value: query.toDate ? formatDate(query.toDate) : "All" },
-    //   { label: "Page", value: Number(query.page) },
-    //   { label: "Total Records", value: response.pagination.totalRecords },
-    // ];
+
+    // Fetch ALL matching records without pagination.
+    const result = await repository.list(
+      query,
+      organization.OrganizationID,
+      true,
+      false
+    );
+
+    // Apply the same report DTO used by the report listing.
+    const rows = result.rows.map(reportDTO);
+
     const metadata = [
-      { label: "Organization", value: organization.OrganizationName },
+      {
+        label: "Organization",
+        value: organization.OrganizationName,
+      },
       ...(query.year ? [{ label: "Year", value: query.year }] : []),
       ...(query.month ? [{ label: "Month", value: query.month }] : []),
-      ...(query.fromDate ? [{ label: "From Date", value: formatDate(query.fromDate) }] : []),
-      ...(query.toDate ? [{ label: "To Date", value: formatDate(query.toDate) }] : []),
-      { label: "Total Records", value: response.pagination.totalRecords },
+      ...(query.fromDate
+        ? [{ label: "From Date", value: formatDate(query.fromDate) }]
+        : []),
+      ...(query.toDate
+        ? [{ label: "To Date", value: formatDate(query.toDate) }]
+        : []),
+      { label: "Total Records", value: rows.length },
     ];
+
     const buffer = await generatePdf({
       title: "INCIDENT REPORT",
       reportName: "Incident Report",
@@ -233,10 +260,19 @@ const reportListPdf = async (data) => {
       pageMargins: [16, 22, 16, 34],
       metadata,
       columns: INCIDENT_REPORT_PDF_COLUMNS,
-      rows: response.data.map((row, index) => ({ ...row, Serial: index + 1 })),
+      rows: rows.map((row, index) => ({
+        ...row,
+        Serial: index + 1,
+      })),
       styles: {
-        pdfTableHeader: { fontSize: 5.4, bold: true, color: "#FFFFFF" },
-        pdfTableCell: { fontSize: 5.2 },
+        pdfTableHeader: {
+          fontSize: 5.4,
+          bold: true,
+          color: "#FFFFFF",
+        },
+        pdfTableCell: {
+          fontSize: 5.2,
+        },
       },
       tableOptions: {
         layout: {
@@ -247,6 +283,7 @@ const reportListPdf = async (data) => {
         },
       },
     });
+
     return {
       success: true,
       message: "Incident report PDF generated successfully.",
@@ -255,9 +292,13 @@ const reportListPdf = async (data) => {
     };
   } catch (error) {
     console.error("Incident Report List PDF Error:", error.message);
-    return fail("Unable to generate incident report PDF at this time.", 503);
+    return fail(
+      "Unable to generate Incident Report PDF at this time.",
+      503
+    );
   }
 };
+
 
 // Mutations lock and scope the existing record before applying supplied changes.
 const update = async (data) => {

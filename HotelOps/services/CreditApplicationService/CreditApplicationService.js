@@ -29,6 +29,35 @@ const fail = (message, statusCode = 400) => ({
   statusCode,
   message,
 });
+// Resolve organization scope from live user permissions.  Client supplied
+// OrganizationID is only an optional selector and is never an access grant.
+const resolveAuthorizedCreditOrganizations = async (db, data, requestedOrganizationID) => {
+  const userID = Number(data.UserID);
+  if (!Number.isSafeInteger(userID) || userID <= 0) {
+    return { error: fail("Authenticated UserID is required.", 401) };
+  }
+  const requested = requestedOrganizationID === undefined || requestedOrganizationID === null
+    || String(requestedOrganizationID).trim() === "" ? null : Number(requestedOrganizationID);
+  if (requested !== null && (!Number.isSafeInteger(requested) || requested <= 0)) {
+    return { error: fail("Valid OrganizationID is required.", 400) };
+  }
+  const result = await db.query(`
+    SELECT DISTINCT uom.OrganizationID
+    FROM user_org_mapping uom
+    INNER JOIN user_master um ON um.UserID = uom.UserID
+    INNER JOIN organization_master om ON om.OrganizationID = uom.OrganizationID
+    WHERE uom.UserID = $1
+      AND uom.IsActive = TRUE AND uom.IsDeleted = FALSE
+      AND um.IsActive = TRUE AND um.IsDeleted = FALSE AND um.IsLocked = FALSE
+      AND om.IsActive = TRUE AND om.ActivationStatus = TRUE AND om.IsDeleted = FALSE
+    ORDER BY uom.OrganizationID;`, [userID]);
+  const organizationIDs = result.rows.map((row) => Number(row.organizationid));
+  if (requested !== null && !organizationIDs.includes(requested)) {
+    return { error: fail("You are not authorized for the selected organization.", 403) };
+  }
+  if (!organizationIDs.length) return { error: fail("You are not authorized for any organization.", 403) };
+  return { organizationIDs: requested === null ? organizationIDs : [requested] };
+};
 const databaseFailure = (error, action) => {
   console.error(`${action} Error:`, error.message);
 
@@ -1746,22 +1775,11 @@ const getCreditApplicationList = async (data) => {
     // Organization
     // ============================================================
 
-    const OrganizationID =
-      Number(
-        data.OrganizationID,
-      );
-
-    if (
-      !Number.isSafeInteger(
-        OrganizationID,
-      ) ||
-      OrganizationID <= 0
-    ) {
-      return fail(
-        "OrganizationID is required.",
-        400,
-      );
-    }
+    const organizationScope = await resolveAuthorizedCreditOrganizations(
+      pool, data, data.OrganizationID,
+    );
+    if (organizationScope.error) return organizationScope.error;
+    const OrganizationIDs = organizationScope.organizationIDs;
 
 
     // ============================================================
@@ -2019,12 +2037,12 @@ const getCreditApplicationList = async (data) => {
           SELECT 1 FROM Credit_Application_Approval caa
           INNER JOIN Credit_Application_Entry_Master ca_check
             ON ca_check.CreditApplicationID = caa.CreditApplicationID
-          WHERE ca_check.OrganizationID = $1
+          WHERE ca_check.OrganizationID = ANY($1::bigint[])
             AND ca_check.IsDeleted = FALSE AND caa.IsDeleted = FALSE
             AND ${creditApproverAssignmentSql("caa", "$2", "$3", "$4", "$5")}
         ) AS IsApprover;`,
         [
-          OrganizationID,
+          OrganizationIDs,
           userID,
           username,
           userType,
@@ -2111,11 +2129,11 @@ const getCreditApplicationList = async (data) => {
 
     let whereClause = `
       WHERE ca.IsDeleted = FALSE
-        AND ca.OrganizationID = $1
+        AND ca.OrganizationID = ANY($1::bigint[])
     `;
 
     const params = [
-      OrganizationID,
+      OrganizationIDs,
     ];
 
 
@@ -3337,6 +3355,11 @@ const getCreditApplicationById = async (data) => {
       );
     }
 
+    const organizationScope = await resolveAuthorizedCreditOrganizations(
+      pool, data, result.rows[0].organizationid,
+    );
+    if (organizationScope.error) return organizationScope.error;
+
 
     // ============================================================
     // Attach Documents + Dynamic Approval Rows
@@ -3349,7 +3372,6 @@ const getCreditApplicationById = async (data) => {
 
     const CreditApplication =
       records[0];
-
 
     // ============================================================
     // Approval Rows Must Exist
@@ -4454,6 +4476,14 @@ const processCreditApplicationApproval = async (data) => {
       Number(
         row.organizationid,
       );
+
+    const organizationScope = await resolveAuthorizedCreditOrganizations(
+      client, data, OrganizationID,
+    );
+    if (organizationScope.error) {
+      await client.query("ROLLBACK");
+      return organizationScope.error;
+    }
 
 
     // ============================================================

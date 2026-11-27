@@ -21,6 +21,7 @@ exports.startEquipmentQRCodeJob = (req, res) => {
   try {
     const data = jobs.start({
       OrganizationID: req.body?.OrganizationID ?? req.query.OrganizationID,
+      OrganizationShortName: req.user?.OrganizationShortName,
       UserID: req.user?.UserID,
       UserType: req.user?.UserType,
       DepartmentName: req.user?.DepartmentName,
