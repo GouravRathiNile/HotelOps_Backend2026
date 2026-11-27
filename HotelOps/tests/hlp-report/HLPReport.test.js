@@ -173,13 +173,17 @@ test("HLP entry list requires date and resolves organization/date values", async
 test("HLP entry list reopens saved values and prefills new dates from comparisons", () => {
   const source = read("services/HLPReportService/HLPReportService.js");
   const hlpList = source.match(/const getHLPList[\s\S]*?\n\};/)?.[0] || "";
-  assert.match(hlpList, /yesterday_entry\.entrydate = \$2::date - INTERVAL '1 day'/);
-  assert.match(hlpList, /EXTRACT\(YEAR FROM last_year_entry\.entrydate\) = EXTRACT\(YEAR FROM \$2::date\) - 1/);
-  assert.match(hlpList, /EXTRACT\(MONTH FROM last_year_entry\.entrydate\) = EXTRACT\(MONTH FROM \$2::date\)/);
-  assert.match(hlpList, /EXTRACT\(DAY FROM last_year_entry\.entrydate\) = EXTRACT\(DAY FROM \$2::date\)/);
-  assert.match(hlpList, /COALESCE\(current_detail\.yod, next_year_detail\.lyod, yesterday_detail\.yod, '00'\)/);
-  assert.match(hlpList, /COALESCE\(current_detail\.lyod, last_year_detail\.yod, '00'\)/);
-  assert.match(hlpList, /EXTRACT\(YEAR FROM next_year_entry\.entrydate\) = EXTRACT\(YEAR FROM \$2::date\) \+ 1/);
+  assert.match(hlpList, /WITH entries AS/);
+  assert.match(hlpList, /\(\$2::date - INTERVAL '1 day'\)::date/);
+  assert.match(hlpList, /\(\$2::date - INTERVAL '1 year'\)::date/);
+  assert.match(hlpList, /\(\$2::date \+ INTERVAL '1 year'\)::date/);
+  assert.match(hlpList, /current_details AS/);
+  assert.match(hlpList, /yesterday_details AS/);
+  assert.match(hlpList, /last_year_details AS/);
+  assert.match(hlpList, /next_year_details AS/);
+  assert.match(hlpList, /COALESCE\(current_by_id\.yod, current_by_title\.yod, next_year_by_id\.lyod/);
+  assert.match(hlpList, /COALESCE\(current_by_id\.lyod, current_by_title\.lyod, last_year_by_id\.yod/);
+  assert.doesNotMatch(hlpList, /LEFT JOIN LATERAL/);
   assert.match(hlpList, /YOD: row\.YOD \?\? "00"/);
   assert.match(hlpList, /LYOD: row\.LYOD \?\? "00"/);
 });

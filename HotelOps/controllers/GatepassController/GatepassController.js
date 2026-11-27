@@ -370,11 +370,8 @@ exports.getRGPList = async (req, res) => {
       PageSize,
     } = req.query;
 
-    if (
-      !OrganizationID ||
-      !Number.isInteger(Number(OrganizationID)) ||
-      Number(OrganizationID) <= 0
-    ) {
+    if (OrganizationID !== undefined && OrganizationID !== null && String(OrganizationID).trim() !== "" &&
+      (!Number.isInteger(Number(OrganizationID)) || Number(OrganizationID) <= 0)) {
       throw new AppError(
         "Organization ID must be a valid positive integer",
         STATUS_CODES.BAD_REQUEST,
@@ -434,8 +431,8 @@ exports.getRGPList = async (req, res) => {
 
     const result =
       await GatepassService.getRGPList({
-        OrganizationID:
-          Number(OrganizationID),
+        OrganizationID: OrganizationID == null || String(OrganizationID).trim() === ""
+          ? null : Number(OrganizationID),
 
         RGPNumber:
           RGPNumber

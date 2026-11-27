@@ -36,6 +36,35 @@ const fail = (message,statusCode = 400) => ({
   statusCode,
   message,
 });
+// Organization scope is always derived from active backend mappings.  A
+// requested OrganizationID can narrow that scope but cannot grant access.
+const resolveAuthorizedGatepassOrganizations = async (db, data, requestedOrganizationID) => {
+  const userID = Number(data.UserID);
+  if (!Number.isSafeInteger(userID) || userID <= 0) {
+    return { error: fail("Authenticated UserID is required.", 401) };
+  }
+  const requested = requestedOrganizationID === undefined || requestedOrganizationID === null
+    || String(requestedOrganizationID).trim() === "" ? null : Number(requestedOrganizationID);
+  if (requested !== null && (!Number.isSafeInteger(requested) || requested <= 0)) {
+    return { error: fail("Valid OrganizationID is required.", 400) };
+  }
+  const result = await db.query(`
+    SELECT DISTINCT uom.OrganizationID
+    FROM user_org_mapping uom
+    INNER JOIN user_master um ON um.UserID = uom.UserID
+    INNER JOIN organization_master om ON om.OrganizationID = uom.OrganizationID
+    WHERE uom.UserID = $1
+      AND uom.IsActive = TRUE AND uom.IsDeleted = FALSE
+      AND um.IsActive = TRUE AND um.IsDeleted = FALSE AND um.IsLocked = FALSE
+      AND om.IsActive = TRUE AND om.ActivationStatus = TRUE AND om.IsDeleted = FALSE
+    ORDER BY uom.OrganizationID;`, [userID]);
+  const organizationIDs = result.rows.map((row) => Number(row.organizationid));
+  if (requested !== null && !organizationIDs.includes(requested)) {
+    return { error: fail("You are not authorized for the selected organization.", 403) };
+  }
+  if (!organizationIDs.length) return { error: fail("You are not authorized for any organization.", 403) };
+  return { organizationIDs: requested === null ? organizationIDs : [requested] };
+};
 const databaseFailure = (
   error,
   action,
@@ -1022,14 +1051,11 @@ const getRGPList = async (data) => {
     // 1. Pagination & Validation
     // ==========================================================
 
-    const organizationID = Number(data.OrganizationID);
-
-    if (
-      !Number.isSafeInteger(organizationID) ||
-      organizationID <= 0
-    ) {
-      return fail("Valid OrganizationID is required.", 400);
-    }
+    const organizationScope = await resolveAuthorizedGatepassOrganizations(
+      pool, data, data.OrganizationID,
+    );
+    if (organizationScope.error) return organizationScope.error;
+    const organizationIDs = organizationScope.organizationIDs;
 
     const page = Math.max(Number(data.page) || 1, 1);
 
@@ -1115,11 +1141,11 @@ const getRGPList = async (data) => {
     // 4. Base Conditions
     // ==========================================================
 
-    const values = [organizationID];
+    const values = [organizationIDs];
 
     const conditions = [
       "m.IsDeleted = FALSE",
-      "m.OrganizationID = $1"
+      "m.OrganizationID = ANY($1::bigint[])"
     ];
 
     if (data.RGPNumber) {
@@ -1454,12 +1480,13 @@ const getRGPList = async (data) => {
     // No changes to historical approval permissions.
     // ==========================================================
 
-    let currentFlowStages = [];
+    const currentFlowByOrganization = new Map();
 
     if (result.rows.length > 0) {
       const currentFlowResult = await pool.query(
         `
         SELECT
+          am.organizationid,
           amd.approvalid,
           amd.level,
           amd.approvertype,
@@ -1483,7 +1510,7 @@ const getRGPList = async (data) => {
               ELSE NULL
             END
 
-        WHERE am.organizationid = $1
+        WHERE am.organizationid = ANY($1::bigint[])
           AND UPPER(TRIM(am.modulename)) =
               'GATEPASS MANAGEMENT'
           AND UPPER(am.flowname) ~
@@ -1496,10 +1523,16 @@ const getRGPList = async (data) => {
           amd.level ASC,
           amd.approvalid ASC;
         `,
-        [organizationID]
+        [organizationIDs]
       );
 
-      currentFlowStages = currentFlowResult.rows;
+      for (const stage of currentFlowResult.rows) {
+        const organizationID = Number(stage.organizationid);
+        if (!currentFlowByOrganization.has(organizationID)) {
+          currentFlowByOrganization.set(organizationID, []);
+        }
+        currentFlowByOrganization.get(organizationID).push(stage);
+      }
     }
 
     // ==========================================================
@@ -1507,6 +1540,8 @@ const getRGPList = async (data) => {
     // ==========================================================
 
     const mappedData = result.rows.map((row) => {
+      const currentFlowStages =
+        currentFlowByOrganization.get(Number(row.organizationid)) || [];
       const approvals =
         approvalsByRGP.get(String(row.rgpid)) || [];
 
@@ -2627,6 +2662,11 @@ const getRGPById = async (data) => {
     }
 
     const masterRow = masterResult.rows[0];
+
+    const organizationScope = await resolveAuthorizedGatepassOrganizations(
+      pool, data, masterRow.organizationid,
+    );
+    if (organizationScope.error) return organizationScope.error;
 
     // ============================================================
     // 3. Attach Items, Documents, Saved Approvals
@@ -4674,6 +4714,14 @@ const processRGPApproval = async (data) => {
     }
 
     const master = masterResult.rows[0];
+
+    const organizationScope = await resolveAuthorizedGatepassOrganizations(
+      client, data, master.organizationid,
+    );
+    if (organizationScope.error) {
+      await client.query("ROLLBACK");
+      return organizationScope.error;
+    }
 
     // ============================================================
     // Current Master Status
@@ -15079,17 +15127,12 @@ const getNRGPList = async (data) => {
     // Organization
     // ============================================================
 
-    const organizationID = Number(data.OrganizationID);
-
-    if (
-      !Number.isInteger(organizationID) ||
-      organizationID <= 0
-    ) {
-      return fail("Valid OrganizationID is required.", 400);
-    }
-
-    values.push(organizationID);
-    conditions.push(`m.OrganizationID = $${values.length}`);
+    const organizationScope = await resolveAuthorizedGatepassOrganizations(
+      pool, data, data.OrganizationID,
+    );
+    if (organizationScope.error) return organizationScope.error;
+    values.push(organizationScope.organizationIDs);
+    conditions.push(`m.OrganizationID = ANY($${values.length}::bigint[])`);
 
     // ============================================================
     // Logged-in User
@@ -16275,6 +16318,11 @@ const getNRGPById = async (data) => {
       );
     }
 
+    const organizationScope = await resolveAuthorizedGatepassOrganizations(
+      pool, data, masterResult.rows[0].organizationid,
+    );
+    if (organizationScope.error) return organizationScope.error;
+
     // ============================================================
     // Attach Existing Items + Approvals
     // ============================================================
@@ -17151,6 +17199,14 @@ const processNRGPApproval = async (data) => {
     }
 
     const master = masterResult.rows[0];
+
+    const organizationScope = await resolveAuthorizedGatepassOrganizations(
+      client, data, master.organizationid,
+    );
+    if (organizationScope.error) {
+      await client.query("ROLLBACK");
+      return organizationScope.error;
+    }
 
     const currentStatus = String(master.status || "")
       .trim()

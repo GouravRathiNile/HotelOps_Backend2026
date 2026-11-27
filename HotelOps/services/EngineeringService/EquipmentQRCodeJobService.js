@@ -58,22 +58,47 @@ function createEquipmentQRCodeJobs({ generate, ttlMs = 60 * 60 * 1000,
       job.Message = 'Generating equipment QR codes.';
       job.directory = await fsp.mkdtemp(path.join(tempRoot, 'hotelops-equipment-qr-'));
       job.filePath = path.join(job.directory, 'equipment.zip');
+      const usedFileNames = new Set();
       const { ZipArchive } = await import('archiver');
       archive = new ZipArchive({ zlib: { level: 9 } });
       archive.on('warning', error => archive.destroy(error));
       completion = pipeline(archive, fs.createWriteStream(job.filePath, { flags: 'wx' }));
       // Observe early disk/stream errors even while a QR is being rendered.
-      completion.catch(() => {});
+      completion.catch(() => { });
       const streamEnded = completion.then(() => { throw new Error('ZIP closed before generation finished.'); });
-      streamEnded.catch(() => {});
+      streamEnded.catch(() => { });
 
       const result = await generate(job.input, {
         collect: false,
         onTotal(total) { job.TotalEquipment = total; },
+        onOrganization(name) {
+          if (name) job.OrganizationShortName = name;
+        },
         async onQRCode(qr) {
           const written = once(archive, 'entry');
-          archive.append(qr.QRBuffer, { name: `Equipment-${qr.EquipmentID}-QR.png` });
-          // Wait for each entry: do not retain every QR buffer for a large export.
+
+          const safeEquipmentName = String(
+            qr.EquipmentName || qr.Description || "Equipment"
+          )
+            .trim()
+            .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
+            .replace(/\s+/g, "-")
+            .replace(/-+/g, "-")
+            .replace(/^[.-]+|[.-]+$/g, "") || "Equipment";
+
+          let fileName = `Equipment-${safeEquipmentName}-QR.png`;
+
+          // Duplicate equipment names ke case mein filename unique rakho.
+          let counter = 2;
+          while (usedFileNames.has(fileName.toLowerCase())) {
+            fileName = `Equipment-${safeEquipmentName}-${counter}-QR.png`;
+            counter++;
+          }
+
+          usedFileNames.add(fileName.toLowerCase());
+
+          archive.append(qr.QRBuffer, { name: fileName });
+
           await Promise.race([written, streamEnded]);
         },
         onProgress({ processed, generated, failed }) {
@@ -96,12 +121,12 @@ function createEquipmentQRCodeJobs({ generate, ttlMs = 60 * 60 * 1000,
       job.Percentage = 100;
     } catch (error) {
       archive?.destroy(error);
-      if (completion) await completion.catch(() => {});
+      if (completion) await completion.catch(() => { });
       job.Status = 'Failed';
       job.Message = 'Unable to generate equipment QR ZIP. Please retry.';
       console.error(`Equipment QR job ${job.JobID} failed:`, error.message);
       if (job.directory) {
-        await fsp.rm(job.directory, { recursive: true, force: true }).catch(() => {});
+        await fsp.rm(job.directory, { recursive: true, force: true }).catch(() => { });
       }
     } finally {
       job.expiresAt = now() + ttlMs;
@@ -132,7 +157,7 @@ function createEquipmentQRCodeJobs({ generate, ttlMs = 60 * 60 * 1000,
       }
       if (jobs.size >= maxJobs) throw errorWithStatus('QR export queue is full. Please try again later.', 429);
       const job = {
-        JobID: randomUUID(), owner: String(input.UserID), OrganizationID,
+        JobID: randomUUID(), owner: String(input.UserID), OrganizationID, OrganizationShortName: input.OrganizationShortName,
         Status: 'Queued', Percentage: 0, TotalEquipment: 0, ProcessedEquipment: 0,
         TotalQRCodes: 0, FailedQRCodes: 0, Message: 'QR export queued.',
         downloads: 0, input: { ...input, OrganizationID },
@@ -150,12 +175,27 @@ function createEquipmentQRCodeJobs({ generate, ttlMs = 60 * 60 * 1000,
       }
       job.downloads++;
       let released = false;
+      const safeOrganizationName = String(
+        job.OrganizationShortName || "Organization"
+      )
+        .trim()
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^[.-]+|[.-]+$/g, "") || "Organization";
+
       return {
         filePath: job.filePath,
-        fileName: `Equipment-QR-Organization-${job.OrganizationID}.zip`,
-        release() { if (!released) { released = true; job.downloads--; } },
+        fileName: `Equipment-QR-${safeOrganizationName}.zip`,
+        release() {
+          if (!released) {
+            released = true;
+            job.downloads--;
+          }
+        },
       };
     },
+
     cleanup,
     // Stop the cleanup timer when disposing the store (also used by tests).
     close() { clearInterval(timer); },

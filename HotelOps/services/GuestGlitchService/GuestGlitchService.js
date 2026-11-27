@@ -270,7 +270,12 @@ const withOrganization = (operation, allowMultiple = false) => async (data) => {
   try {
     const organization = await resolveOrganization(data.UserID, allowMultiple);
     if (organization.error) return organization.error;
-    return operation({ ...data, ...organization });
+    // The entry list is the only operation using this multi-organization
+    // wrapper. CEO may view every active Guest Glitch row; record mutations
+    // and detail actions continue to use their existing organization checks.
+    const unrestrictedOrganizationAccess = allowMultiple
+      && String(organization.UserType || "").trim().toUpperCase() === "CEO";
+    return operation({ ...data, ...organization, UnrestrictedOrganizationAccess: unrestrictedOrganizationAccess });
   } catch (error) {
     console.error("Guest Glitch Organization Resolution Error:", error.message);
     return fail("Unable to resolve organization for Guest Glitch at this time.", 503);

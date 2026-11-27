@@ -268,12 +268,15 @@ const softDelete = async (client, id, organizationID, userID, ip) => {
 // };
 const list = async (data, organizationID) => {
   const organizationIDs = Array.isArray(organizationID) ? organizationID : [organizationID];
-  const filters = [
-    "gg.organizationid = ANY($1::bigint[])",
-    "gg.isdeleted = FALSE",
-  ];
+  const filters = ["gg.isdeleted = FALSE"];
+  const values = [];
 
-  const values = [organizationIDs];
+  // CEO list access is intentionally unrestricted. Every other caller remains
+  // limited to the active organization mappings supplied by the service.
+  if (!data.UnrestrictedOrganizationAccess) {
+    values.push(organizationIDs);
+    filters.unshift("gg.organizationid = ANY($1::bigint[])");
+  }
 
   const add = (condition, value) => {
     values.push(value);

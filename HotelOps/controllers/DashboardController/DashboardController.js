@@ -7,6 +7,19 @@ const AppError = require("../../utils/AppError");
 const handleError = require("../../utils/errorHandler");
 // ============================================================ Service
 const DashboardService = require("../../services/DashboardService/DashboardService",);// Dashboard request handlers.
+const { getPendingApprovalEligibility } = require("../../services/PendingApprovalEligibilityService/PendingApprovalEligibilityService");
+
+// Frontend tab visibility must come from this protected backend capability
+// response, not from a static list of dashboard roles.
+exports.getPendingApprovalEligibility = async (req, res) => {
+  try {
+    const result = await getPendingApprovalEligibility({ UserID: req.user?.UserID });
+    if (!result.success) throw new AppError(result.message, result.statusCode || STATUS_CODES.BAD_REQUEST);
+    return res.status(STATUS_CODES.SUCCESS).json(result);
+  } catch (error) {
+    return handleError(error, res);
+  }
+};
 
 // ==============================================================================================CEO Dashboard 
 // 1.=============================================================Top Drr Revenre Data

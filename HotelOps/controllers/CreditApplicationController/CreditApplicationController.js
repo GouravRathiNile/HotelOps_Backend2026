@@ -555,17 +555,8 @@ exports.getCreditApplicationList = async (req, res) => {
       PageSize = 10,
     } = req.query;
 
-    if (!OrganizationID) {
-      throw new AppError(
-        "Organization ID is required",
-        STATUS_CODES.BAD_REQUEST,
-      );
-    }
-
-    if (
-      !Number.isInteger(Number(OrganizationID)) ||
-      Number(OrganizationID) <= 0
-    ) {
+    if (OrganizationID !== undefined && OrganizationID !== null && String(OrganizationID).trim() !== "" &&
+      (!Number.isInteger(Number(OrganizationID)) || Number(OrganizationID) <= 0)) {
       throw new AppError(
         "Organization ID must be a valid positive integer",
         STATUS_CODES.BAD_REQUEST,
@@ -600,7 +591,7 @@ exports.getCreditApplicationList = async (req, res) => {
 
     const response =
       await CreditApplicationService.getCreditApplicationList({
-        OrganizationID: Number(OrganizationID),
+        OrganizationID: OrganizationID == null || String(OrganizationID).trim() === "" ? null : Number(OrganizationID),
 
         CompanyName:
           CompanyName?.trim() || null,

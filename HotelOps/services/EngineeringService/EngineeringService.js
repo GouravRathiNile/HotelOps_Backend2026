@@ -3269,7 +3269,7 @@ const generateBreakdownDetailPdf = async (data) => {
     // =========================================================
 
     const fileName =
-      `Breakdown-Detail-${breakdownID}.pdf`;
+      `Breakdown-Detail.pdf`;
 
     return {
       success: true,
@@ -11800,6 +11800,8 @@ const createAMC = async (data) => {
     await client.query("BEGIN");
     transactionStarted = true;
 
+    await authorizeAMCOrganization(client, OrganizationID, data.UserID);
+
     // ============================================================
     // 1. Validate Organization + Equipment
     // ============================================================
@@ -11987,9 +11989,6 @@ const createAMC = async (data) => {
         ],
       );
     }
-
-    // New contracts always snapshot the selected AMC Builder flow.
-    await AMCWorkflow.getActor(client, data.OrganizationID, data.UserID);
 
     // ============================================================
     // 6. Create AMC Approval Row
@@ -12214,6 +12213,21 @@ const resolveAMCAccess = async ({ UserID, UserType, DepartmentName,
     isCentralRD,
     globalView: isCentralRD && selectedOrganizationID === AMC_RD_ORGANIZATION_ID,
   };
+};
+
+// Use the same live organization authorization as AMC records and workflow
+// actions.  Organization IDs supplied by a client are selectors only.
+const authorizeAMCOrganization = async (db, organizationID, userID) => {
+  const normalizedOrganizationID = Number(organizationID);
+  const normalizedUserID = Number(userID);
+  if (!Number.isSafeInteger(normalizedOrganizationID) || normalizedOrganizationID <= 0) {
+    throw new AppError("Valid OrganizationID is required.", 400);
+  }
+  if (!Number.isSafeInteger(normalizedUserID) || normalizedUserID <= 0) {
+    throw new AppError("Authenticated UserID is required.", 401);
+  }
+  await AMCWorkflow.getActor(db, normalizedOrganizationID, normalizedUserID);
+  return normalizedOrganizationID;
 };
 // ===============Get AMC Approval Flow Helper
 const getAMCApprovalFlow = async (
@@ -12819,6 +12833,12 @@ const getAllAMC = async (data) => {
     const approvalRole =
       access.approvalRole;
 
+    // AMC records without workflow snapshots use this legacy list reader.
+    // A CEO may view all valid AMC records, but action authorization remains
+    // in the separate approval endpoint.
+    const isCEOListViewer =
+      String(data.UserType || "").trim().toUpperCase() === "CEO";
+
     // ============================================================
     // Base From Query
     // ============================================================
@@ -12973,6 +12993,36 @@ const getAllAMC = async (data) => {
 
     const params = [];
 
+    // The legacy reader remains available for records without workflow
+    // snapshots.  Apply the same live organization boundary here as the
+    // workflow reader so an omitted OrganizationID never becomes unrestricted.
+    const authorizedUserID = Number(data.UserID);
+    if (!Number.isSafeInteger(authorizedUserID) || authorizedUserID <= 0) {
+      return fail("Authenticated UserID is required.", 401);
+    }
+    params.push(authorizedUserID);
+    whereClause += `
+      AND EXISTS (
+        SELECT 1
+        FROM user_master access_user
+        WHERE access_user.UserID = $${params.length}
+          AND access_user.IsActive = TRUE
+          AND access_user.IsDeleted = FALSE
+          AND access_user.IsLocked = FALSE
+          AND (
+            ${isCEOListViewer ? "TRUE" : "FALSE"}
+            OR COALESCE(access_user.LoginType = 'SuperAdmin' AND access_user.AllOrganizationAccess, FALSE)
+            OR EXISTS (
+              SELECT 1 FROM user_org_mapping access_mapping
+              WHERE access_mapping.UserID = access_user.UserID
+                AND access_mapping.OrganizationID = am.OrganizationID
+                AND access_mapping.IsActive = TRUE
+                AND access_mapping.IsDeleted = FALSE
+            )
+          )
+      )
+    `;
+
     // Organization 10 is the central RD's explicit global-view selection.
 
     // No OrganizationID means All Organizations.
@@ -13110,6 +13160,7 @@ const getAllAMC = async (data) => {
     // ============================================================
 
     if (
+      !isCEOListViewer &&
       approvalRole &&
       roleStatusColumn
     ) {
@@ -13698,7 +13749,7 @@ const getAllAMC = async (data) => {
     // ============================================================
     // Response
     // ============================================================
-
+// console.log("Amc Data:", records);
     return ok(
       "AMC records fetched successfully.",
       {
@@ -13851,6 +13902,8 @@ const getAMCById = async (data) => {
 
       const row =
         equipmentResult.rows[0];
+
+      await AMCWorkflow.getActor(pool, Number(row.organizationid), data.UserID);
 
       // ============================================================
       // Response for new AMC
@@ -14371,6 +14424,10 @@ const getAMCById = async (data) => {
         row.organizationid,
       );
 
+    // The AMC determines its organization.  Validate access against the
+    // live mapping instead of accepting an organization selected by the UI.
+    await AMCWorkflow.getActor(pool, OrganizationID, data.UserID, AMCID);
+
     const access = await resolveAMCAccess({
       UserID: data.UserID, UserType: data.UserType,
       DepartmentName: data.DepartmentName, OrganizationID,
@@ -14548,18 +14605,10 @@ const updateAMC = async (data) => {
 
   try {
     const AMCID = Number(data.AMCID);
-    const OrganizationID = Number(data.OrganizationID);
     const UserID = Number(data.UserID);
 
     if (!Number.isSafeInteger(AMCID) || AMCID <= 0) {
       return fail("Valid AMCID is required.", 400);
-    }
-
-    if (
-      !Number.isSafeInteger(OrganizationID) ||
-      OrganizationID <= 0
-    ) {
-      return fail("OrganizationID is required.", 400);
     }
 
     if (!Number.isSafeInteger(UserID) || UserID <= 0) {
@@ -14584,7 +14633,10 @@ const updateAMC = async (data) => {
       : [];
 
     await client.query("BEGIN");
-    await AMCWorkflow.authorizeModify(client, AMCID, UserID, OrganizationID);
+    // Resolve the organization from the AMC itself.  A body OrganizationID is
+    // deliberately ignored so it cannot be used to cross organization scope.
+    const authorizedAMC = await AMCWorkflow.authorizeModify(client, AMCID, UserID);
+    const OrganizationID = Number(authorizedAMC.organizationid);
 
     // ============================================================
     // Lock Existing AMC
@@ -15206,6 +15258,10 @@ const processAMCApproval = async (data) => {
     const OrganizationID = Number(
       AMC.organizationid,
     );
+
+    // Resolve the target organization from the locked AMC and verify the
+    // authenticated user's live access before either workflow implementation.
+    await AMCWorkflow.getActor(client, OrganizationID, UserID, AMCID);
 
     const dynamicAction = await AMCWorkflow.applyAction(client, AMC, data);
     if (dynamicAction) {
@@ -15892,6 +15948,8 @@ const createAMCApprovalConfig = async (data) => {
     await client.query("BEGIN");
     transactionStarted = true;
 
+    await authorizeAMCOrganization(client, OrganizationID, data.UserID);
+
     // ============================================================
     // GET EXISTING CONFIG
     // Active + Soft Deleted
@@ -16221,37 +16279,50 @@ const createAMCApprovalConfig = async (data) => {
 // ============================================================AMC Approval Config List
 const getAllAMCApprovalConfig = async (data) => {
   try {
-    const OrganizationID = Number(
-      data.OrganizationID,
-    );
+    const rawOrganizationID = data.OrganizationID;
+    const hasOrganizationID = rawOrganizationID !== undefined && rawOrganizationID !== null
+      && String(rawOrganizationID).trim() !== "";
+    const OrganizationID = hasOrganizationID ? Number(rawOrganizationID) : null;
+    const UserID = Number(data.UserID);
 
-    if (
-      !Number.isSafeInteger(OrganizationID) ||
-      OrganizationID <= 0
-    ) {
-      return fail(
-        "Valid OrganizationID is required.",
-        400,
-      );
+    if (hasOrganizationID) {
+      await authorizeAMCOrganization(pool, OrganizationID, UserID);
+    } else if (!Number.isSafeInteger(UserID) || UserID <= 0) {
+      return fail("Authenticated UserID is required.", 401);
     }
 
     const result = await pool.query(
       `
       SELECT
+        cfg.OrganizationID,
         AMCApprovalConfigID,
         ApprovalLevel,
         ApprovalRole,
         ApprovalOrder,
         IsMandatory,
         CreatedDate
-      FROM Engineering_AMC_Approval_Config
-      WHERE OrganizationID = $1
+      FROM Engineering_AMC_Approval_Config cfg
+      WHERE ($1::bigint IS NULL OR cfg.OrganizationID = $1)
         AND IsDeleted = FALSE
+        AND EXISTS (
+          SELECT 1 FROM user_master um
+          WHERE um.UserID = $2
+            AND um.IsActive = TRUE AND um.IsDeleted = FALSE AND um.IsLocked = FALSE
+            AND (
+              COALESCE(um.LoginType = 'SuperAdmin' AND um.AllOrganizationAccess, FALSE)
+              OR EXISTS (
+                SELECT 1 FROM user_org_mapping uom
+                WHERE uom.UserID = um.UserID AND uom.OrganizationID = cfg.OrganizationID
+                  AND uom.IsActive = TRUE AND uom.IsDeleted = FALSE
+              )
+            )
+        )
       ORDER BY
+        cfg.OrganizationID ASC,
         ApprovalOrder ASC,
         ApprovalLevel ASC;
       `,
-      [OrganizationID],
+      [OrganizationID, UserID],
     );
 
     const CreatedDate =
@@ -16262,6 +16333,7 @@ const getAllAMCApprovalConfig = async (data) => {
     const approvals = result.rows.map((row) => ({
       AMCApprovalConfigID:
         row.amcapprovalconfigid,
+      ...(hasOrganizationID ? {} : { OrganizationID: Number(row.organizationid) }),
       ApprovalLevel:
         row.approvallevel,
       ApprovalRole:
@@ -16275,7 +16347,7 @@ const getAllAMCApprovalConfig = async (data) => {
     return ok(
       "AMC approval config fetched successfully.",
       {
-        OrganizationID,
+        OrganizationID: hasOrganizationID ? OrganizationID : null,
         CreatedDate,
         Count: approvals.length,
         data: approvals,
@@ -16294,6 +16366,7 @@ const getAllAMCApprovalConfig = async (data) => {
 };
 // ============================================================Delete AMC Approval Config
 const deleteAMCApprovalConfig = async (data) => {
+  let client;
   try {
     const AMCApprovalConfigID = Number(
       data.AMCApprovalConfigID,
@@ -16313,7 +16386,24 @@ const deleteAMCApprovalConfig = async (data) => {
       );
     }
 
-    const result = await pool.query(
+    if (!Number.isSafeInteger(UserID) || UserID <= 0) {
+      return fail("Authenticated UserID is required.", 401);
+    }
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+    const configResult = await client.query(
+      `SELECT OrganizationID FROM Engineering_AMC_Approval_Config
+       WHERE AMCApprovalConfigID = $1 AND IsDeleted = FALSE FOR UPDATE;`,
+      [AMCApprovalConfigID],
+    );
+    if (!configResult.rows.length) {
+      await client.query("ROLLBACK");
+      return fail("AMC approval config not found.", 404);
+    }
+    await authorizeAMCOrganization(client, configResult.rows[0].organizationid, UserID);
+
+    const result = await client.query(
       `
       UPDATE Engineering_AMC_Approval_Config
       SET
@@ -16331,11 +16421,14 @@ const deleteAMCApprovalConfig = async (data) => {
     );
 
     if (result.rows.length === 0) {
+      await client.query("ROLLBACK");
       return fail(
         "AMC approval config not found.",
         404,
       );
     }
+
+    await client.query("COMMIT");
 
     return ok(
       "AMC approval config deleted successfully.",
@@ -16344,6 +16437,9 @@ const deleteAMCApprovalConfig = async (data) => {
       },
     );
   } catch (error) {
+    if (client) {
+      try { await client.query("ROLLBACK"); } catch (_) { }
+    }
     console.error(
       "Delete AMC Approval Config Error:",
       error.message,
@@ -16359,6 +16455,8 @@ const deleteAMCApprovalConfig = async (data) => {
     return databaseFailure(
       "Unable to delete AMC approval config.",
     );
+  } finally {
+    if (client) client.release();
   }
 };
 // ============================================================AMC DETAIL PDF
@@ -16368,15 +16466,7 @@ const generateAMCDetailPdf = async (data) => {
     // Validate Input
     // =========================================================
 
-    const organizationID = Number(data.OrganizationID);
     const amcID = Number(data.AMCID);
-
-    if (
-      !Number.isInteger(organizationID) ||
-      organizationID <= 0
-    ) {
-      return fail("Valid OrganizationID is required.", 400);
-    }
 
     if (
       !Number.isInteger(amcID) ||
@@ -16385,7 +16475,8 @@ const generateAMCDetailPdf = async (data) => {
       return fail("Valid AMCID is required.", 400);
     }
 
-    const snapshotDetail = await AMCWorkflowRead.detail({ ...data, AMCID: amcID }, mapAMC);
+    const { OrganizationID: _requestedOrganizationID, ...authorizedData } = data;
+    const snapshotDetail = await AMCWorkflowRead.detail({ ...authorizedData, AMCID: amcID }, mapAMC);
 
     // =========================================================
     // Fetch AMC + Equipment + Approval Details
@@ -16520,13 +16611,12 @@ const generateAMCDetailPdf = async (data) => {
         ON ceo.UserID = aa.CEOStatusApprovedBy
        AND ceo.IsDeleted = FALSE
 
-      WHERE am.OrganizationID = $1
-        AND am.AMCID = $2
+      WHERE am.AMCID = $1
         AND am.IsDeleted = FALSE
 
       LIMIT 1;
       `,
-      [organizationID, amcID],
+      [amcID],
     );
 
     if (result.rows.length === 0) {
@@ -16534,6 +16624,7 @@ const generateAMCDetailPdf = async (data) => {
     }
 
     const row = result.rows[0];
+    await AMCWorkflow.getActor(pool, Number(row.organizationid), data.UserID, amcID);
 
     // =========================================================
     // Map Data
@@ -17054,7 +17145,7 @@ const generateAMCDetailPdf = async (data) => {
     // Approval Table
     // =========================================================
 
-    const approvalFlow = snapshotDetail ? null : await getAMCApprovalFlow(organizationID);
+    const approvalFlow = snapshotDetail ? null : await getAMCApprovalFlow(Number(row.organizationid));
     const approvals = snapshotDetail ? snapshotDetail.Approvals.map(step => ({
       Role: step.ApprovalType, Status: step.Status, ApprovedBy: step.ApprovedByName, Remarks: step.Remarks,
     })) : approvalFlow.map(({ ApprovalRole }) => ({
@@ -17904,7 +17995,7 @@ const generateAMCDetailPdf = async (data) => {
     // =========================================================
 
     const fileName =
-      `AMC-Detail-${amcID}.pdf`;
+      `AMC-Detail.pdf`;
 
     return {
       success: true,
@@ -18414,16 +18505,18 @@ const generateAllEquipmentQRCodes = async (data, options = {}) => {
 
     const equipmentResult = await pool.query(
       `
-      SELECT
-        e.EquipmentID
-      FROM Engineering_Equipment_Entry_Master e
-      INNER JOIN Organization_Master om
-        ON om.OrganizationID = e.OrganizationID
-       AND om.IsDeleted = FALSE
-      WHERE e.OrganizationID = $1
-        AND e.IsDeleted = FALSE
-      ORDER BY e.EquipmentID ASC;
-      `,
+  SELECT
+    e.EquipmentID,
+    e.Description,
+    om.ShortName AS "OrganizationShortName"
+  FROM Engineering_Equipment_Entry_Master e
+  INNER JOIN Organization_Master om
+    ON om.OrganizationID = e.OrganizationID
+   AND om.IsDeleted = FALSE
+  WHERE e.OrganizationID = $1
+    AND e.IsDeleted = FALSE
+  ORDER BY e.EquipmentID ASC;
+  `,
       [OrganizationID],
     );
 
@@ -18445,6 +18538,9 @@ const generateAllEquipmentQRCodes = async (data, options = {}) => {
     let failed = 0;
     await options.onTotal?.(equipmentResult.rows.length);
 
+    await options.onOrganization?.(
+      equipmentResult.rows[0]?.OrganizationShortName
+    );
     for (const row of equipmentResult.rows) {
       const EquipmentID = Number(
         row.equipmentid,
@@ -18488,12 +18584,10 @@ const generateAllEquipmentQRCodes = async (data, options = {}) => {
 
       const qr = {
         EquipmentID,
-        Description:
-          qrResult.data.Description,
-        Area:
-          qrResult.data.Area,
-        QRBuffer:
-          qrBuffer,
+        EquipmentName: qrResult.data.Description,
+        Description: qrResult.data.Description,
+        Area: qrResult.data.Area,
+        QRBuffer: qrBuffer,
       };
       await options.onQRCode?.(qr);
       if (options.collect !== false) QRCodes.push(qr);
@@ -18568,10 +18662,7 @@ const getEngineeringDashboardSummary = async (data) => {
       !Number.isSafeInteger(OrganizationID) ||
       OrganizationID <= 0
     ) {
-      return fail(
-        "Valid OrganizationID is required.",
-        400,
-      );
+      return fail("Valid OrganizationID is required.", 400);
     }
 
     if (
@@ -18886,7 +18977,7 @@ const getEngineeringDashboardSummary = async (data) => {
               TRIM(
                 COALESCE(e.AMCType, '')
               )
-            ) = 'comprehensive'
+            ) IN ('required', 'comprehensive')
         ) AS "Comprehensive",
 
 
@@ -18953,10 +19044,7 @@ const getEngineeringDashboardSummary = async (data) => {
         -- ========================================================
         -- Equipment Coverage - No AMC Required
         --
-        -- Explicit No AMC Required
-        -- OR NULL
-        -- OR Blank
-        -- OR any unmatched AMC Type
+        -- Explicit No AMC Required OR NULL only
         -- ========================================================
 
         (
@@ -18967,15 +19055,9 @@ const getEngineeringDashboardSummary = async (data) => {
           WHERE e.OrganizationID = $1
             AND e.IsDeleted = FALSE
 
-            AND LOWER(
-              TRIM(
-                COALESCE(e.AMCType, '')
-              )
-            ) NOT IN (
-              'comprehensive',
-              'non comprehensive',
-              'on call',
-              'by hotel team'
+            AND (
+              e.AMCType IS NULL
+              OR LOWER(TRIM(e.AMCType)) = 'no amc required'
             )
         ) AS "NoAMCRequired",
 
@@ -19344,10 +19426,7 @@ const getEngineeringMaintenanceChart = async (data) => {
       !Number.isSafeInteger(OrganizationID) ||
       OrganizationID <= 0
     ) {
-      return fail(
-        "Valid OrganizationID is required.",
-        400,
-      );
+      return fail("Valid OrganizationID is required.", 400);
     }
 
     if (!FromDate || !ToDate) {
@@ -19499,10 +19578,7 @@ const getEngineeringMaintenanceDistribution = async (data) => {
       !Number.isSafeInteger(OrganizationID) ||
       OrganizationID <= 0
     ) {
-      return fail(
-        "Valid OrganizationID is required.",
-        400,
-      );
+      return fail("Valid OrganizationID is required.", 400);
     }
 
     // ============================================================
@@ -19698,10 +19774,7 @@ const getEngineeringBreakdownChart = async (data) => {
       !Number.isSafeInteger(OrganizationID) ||
       OrganizationID <= 0
     ) {
-      return fail(
-        "Valid OrganizationID is required.",
-        400,
-      );
+      return fail("Valid OrganizationID is required.", 400);
     }
 
     if (!FromDate || !ToDate) {
@@ -19839,10 +19912,7 @@ const getEngineeringUpcomingMaintenance = async (data) => {
       !Number.isSafeInteger(OrganizationID) ||
       OrganizationID <= 0
     ) {
-      return fail(
-        "Valid OrganizationID is required.",
-        400,
-      );
+      return fail("Valid OrganizationID is required.", 400);
     }
 
     // ============================================================
@@ -20201,10 +20271,7 @@ const getEngineeringRecentlyExpired = async (data) => {
       !Number.isSafeInteger(OrganizationID) ||
       OrganizationID <= 0
     ) {
-      return fail(
-        "Valid OrganizationID is required.",
-        400,
-      );
+      return fail("Valid OrganizationID is required.", 400);
     }
 
     // ============================================================
