@@ -381,7 +381,7 @@ exports.resetPassword = async (req, res) => {
     }
 
     const passwordRegex =
-      /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[@$#!%*?&])[A-Za-z\d@$!#%*?&]{6,}$/;
+      /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d).{6,}$/;
     if (!passwordRegex.test(NewPassword)) {
       throw new AppError("Password does not meet the required password policy", STATUS_CODES.BAD_REQUEST);
     }
@@ -444,11 +444,11 @@ exports.changePassword = async (req, res) => {
     // ========================================================
 
     const passwordRegex =
-      /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[@$!#%*?&])[A-Za-z\d@$!#%*?&]{8,}$/;
+      /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d).{6,}$/;
 
     if (!passwordRegex.test(NewPassword)) {
       throw new AppError(
-        "Password must be 8+ characters with uppercase, lowercase, number & special character",
+        "Password must be 6+ characters with uppercase, lowercase & number",
         STATUS_CODES.BAD_REQUEST
       );
     }

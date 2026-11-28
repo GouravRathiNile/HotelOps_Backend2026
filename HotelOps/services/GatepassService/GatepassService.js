@@ -154,7 +154,7 @@ const resolveRGPApprovalRole = ({
 // ============================Map RGP
 const mapRGP = (row) => ({
   RGPID:
-    Number(row.rgpid),
+    String(row.rgpid),
 
   RGPNumber:
     Number(row.rgpnumber),
@@ -211,7 +211,7 @@ const mapRGPItem = (row) => ({
     Number(row.rgpitemid),
 
   RGPID:
-    Number(row.rgpid),
+    String(row.rgpid),
 
   OrganizationID:
     Number(row.organizationid),
@@ -267,7 +267,7 @@ const mapRGPDocument = (row) => ({
     Number(row.rgpdocumentid),
 
   RGPID:
-    Number(row.rgpid),
+    String(row.rgpid),
 
   FileName:
     row.filename,
@@ -361,7 +361,7 @@ const attachRGPRelatedData = async (
   }
 
   const rgpIDs = rows.map(
-    (row) => Number(row.rgpid),
+    (row) => String(row.rgpid),
   );
 
   // ==========================================================
@@ -486,7 +486,7 @@ const approvalResult = await pool.query(
     const rgp =
       mapRGP(row);
 
-    const belongsToRGP = (related) => Number(related.rgpid) === rgp.RGPID;
+    const belongsToRGP = (related) => String(related.rgpid) === rgp.RGPID;
     const omitParentIDs = ({ RGPID, OrganizationID, ...details }) => details;
 
     rgp.Items = itemResult.rows
@@ -1100,7 +1100,10 @@ const getRGPList = async (data) => {
     const isAssignedApprover = (approval, departmentID) => {
       if (!approval) return false;
 
-      const type = normalizeType(approval.approvertype);
+      const storedType = normalizeType(approval.approvertype);
+      const type = ["HOD", "DOF", "FC", "GM", "CEO"].includes(storedType)
+        ? "ROLE"
+        : storedType;
 
       // USER / REGIONAL: selected user only
       if (type === "USER" || type === "REGIONAL") {
@@ -1221,7 +1224,7 @@ const getRGPList = async (data) => {
           OR
           (
             UPPER(TRIM(COALESCE(myApproval.ApproverType, 'ROLE')))
-              = 'ROLE'
+              IN ('ROLE', 'HOD', 'DOF', 'FC', 'GM', 'CEO')
             AND
             (
               CASE
@@ -1266,7 +1269,7 @@ const getRGPList = async (data) => {
                     myApproval.ApprovalOrder
                 AND UPPER(TRIM(COALESCE(
                   previousApproval.Status, 'PENDING'
-                ))) <> 'APPROVED'
+                ))) NOT IN ('APPROVED', 'HOD_APPROVED', 'DOF_APPROVED', 'GM_APPROVED')
             )
         )
       `);
@@ -1332,9 +1335,14 @@ const getRGPList = async (data) => {
               WHERE myApproval.RGPID = m.RGPID
                 AND myApproval.IsDeleted = FALSE
                 AND ${assignmentSQL}
-                AND UPPER(TRIM(COALESCE(
-                  myApproval.Status, 'PENDING'
-                ))) = $${statusIndex}
+                AND (
+                  UPPER(TRIM(COALESCE(myApproval.Status, 'PENDING'))) = $${statusIndex}
+                  OR (
+                    $${statusIndex} = 'APPROVED'
+                    AND UPPER(TRIM(COALESCE(myApproval.Status, 'PENDING')))
+                      IN ('HOD_APPROVED', 'DOF_APPROVED', 'GM_APPROVED')
+                  )
+                )
                 AND NOT EXISTS (
                   SELECT 1
                   FROM Gatepass_RGP_Approval previousApproval
@@ -1344,7 +1352,7 @@ const getRGPList = async (data) => {
                         myApproval.ApprovalOrder
                     AND UPPER(TRIM(COALESCE(
                       previousApproval.Status, 'PENDING'
-                    ))) <> 'APPROVED'
+                    ))) NOT IN ('APPROVED', 'HOD_APPROVED', 'DOF_APPROVED', 'GM_APPROVED')
                 )
             )
           `);
@@ -2072,7 +2080,7 @@ const getRGPTotalList = async (data) => {
 
     if (result.rows.length > 0) {
       const rgpIDs = result.rows.map(
-        (row) => Number(row.rgpid)
+        (row) => String(row.rgpid)
       );
 
       const approvalResult = await pool.query(
@@ -2404,7 +2412,7 @@ const getRGPTotalList = async (data) => {
             stage.ismandatory !== false,
 
           Status:
-            "NOT APPLICABLE",
+            "-",
 
           StatusDateTime:
             null,
@@ -2426,7 +2434,7 @@ const getRGPTotalList = async (data) => {
 
       return {
         RGPID:
-          Number(row.rgpid),
+          String(row.rgpid),
 
         RGPNumber:
           Number(row.rgpnumber),
@@ -2585,9 +2593,9 @@ const getRGPById = async (data) => {
     // 1. Validate RGP ID
     // ============================================================
 
-    const RGPID = Number(data.RGPID);
+    const RGPID = String(data.RGPID ?? "").trim();
 
-    if (!Number.isSafeInteger(RGPID) || RGPID <= 0) {
+    if (!/^[1-9]\d*$/.test(RGPID)) {
       return fail("Valid RGPID is required.", 400);
     }
 
@@ -14368,9 +14376,14 @@ const DEFAULT_NRGP_APPROVALS = Object.freeze([
   },
 ]);
 // ======================== NRGP Mapping Helpers
+const normalizeNRGPStatus = (value) => {
+  const status = String(value || "").trim().toUpperCase();
+  return status.endsWith("_APPROVED") ? "APPROVED" : status || null;
+};
+
 const mapNRGPMaster = (row) => ({
   NRGPID:
-    Number(row.nrgpid),
+    String(row.nrgpid),
 
   NRGPNumber:
     Number(row.nrgpnumber),
@@ -14405,7 +14418,7 @@ const mapNRGPMaster = (row) => ({
     row.takenby,
 
   Status:
-    row.status,
+    normalizeNRGPStatus(row.status),
 
 
 CreatedDate:
@@ -14428,7 +14441,7 @@ const mapNRGPItem = (row) => ({
     Number(row.nrgpitemid),
 
   NRGPID:
-    Number(row.nrgpid),
+    String(row.nrgpid),
 
   OrganizationID:
     Number(row.organizationid),
@@ -14496,7 +14509,7 @@ const mapNRGPApproval = (row) => ({
 
   IsMandatory: row.ismandatory !== false,
 
-  Status: row.status,
+  Status: normalizeNRGPStatus(row.status),
 
   ActionBy:
     row.actionby == null
@@ -14582,7 +14595,7 @@ const attachNRGPRelatedData = async (rows) => {
 
   const NRGPIDs =
     rows.map((row) =>
-      Number(row.nrgpid),
+      String(row.nrgpid),
     );
 
   // ============================================================
@@ -15266,7 +15279,7 @@ const getNRGPList = async (data) => {
         (
           UPPER(
             TRIM(COALESCE(${alias}.ApproverType, 'ROLE'))
-          ) = 'ROLE'
+          ) IN ('ROLE', 'HOD', 'DOF', 'FC', 'GM', 'CEO')
 
           AND (
             CASE
@@ -15500,9 +15513,14 @@ const getNRGPList = async (data) => {
                 departmentIndex
               )}
 
-              AND UPPER(
-                TRIM(COALESCE(sa.Status, 'PENDING'))
-              ) = $${statusIndex}
+              AND (
+                UPPER(TRIM(COALESCE(sa.Status, 'PENDING'))) = $${statusIndex}
+                OR (
+                  $${statusIndex} = 'APPROVED'
+                  AND UPPER(TRIM(COALESCE(sa.Status, 'PENDING')))
+                    IN ('HOD_APPROVED', 'DOF_APPROVED', 'GM_APPROVED')
+                )
+              )
           )
         `);
       }
@@ -16063,7 +16081,7 @@ const getTotalNRGP = async (data) => {
         ${whereClause}
 
         ORDER BY
-          m.NRGPID DESC
+          m.NRGPNumber DESC
 
         LIMIT $${limitIndex}
         OFFSET $${offsetIndex};
@@ -16083,7 +16101,7 @@ const getTotalNRGP = async (data) => {
       const NRGPIDs =
         result.rows.map(
           (row) =>
-            Number(row.nrgpid),
+            String(row.nrgpid),
         );
 
     
@@ -16248,11 +16266,10 @@ const getNRGPById = async (data) => {
     // Validate
     // ============================================================
 
-    const NRGPID = Number(data.NRGPID);
+    const NRGPID = String(data.NRGPID ?? "").trim();
 
     if (
-      !Number.isInteger(NRGPID) ||
-      NRGPID <= 0
+      !/^[1-9]\d*$/.test(NRGPID)
     ) {
       return fail(
         "Valid NRGPID is required.",

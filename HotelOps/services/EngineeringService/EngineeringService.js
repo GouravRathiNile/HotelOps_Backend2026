@@ -12176,6 +12176,44 @@ const authorizeAMCOrganization = async (db, organizationID, userID) => {
   await AMCWorkflow.getActor(db, normalizedOrganizationID, normalizedUserID);
   return normalizedOrganizationID;
 };
+
+// View-only access for legacy AMC rows that predate workflow snapshots.
+// Their pending RD stage follows the active Regional/RD-FC assignment at the
+// user's primary company organization.
+const hasLegacyRegionalRDViewAccess = async (db, amcID, userID) => {
+  const result = await db.query(`
+    SELECT EXISTS (
+      SELECT 1
+      FROM engineering_amc_master am
+      JOIN engineering_amc_approval aa
+        ON aa.amcid = am.amcid AND NOT aa.isdeleted
+      JOIN organization_master hotel
+        ON hotel.organizationid = am.organizationid AND NOT hotel.isdeleted
+      JOIN user_primary_organization primary_org
+        ON primary_org.userid = $2
+       AND primary_org.organizationid = COALESCE(hotel.parentorganizationid, hotel.organizationid)
+       AND primary_org.isactive AND NOT primary_org.isdeleted
+      JOIN approval_master flow
+        ON flow.organizationid = primary_org.organizationid
+       AND flow.isactive AND NOT flow.isdelete
+       AND UPPER(TRIM(flow.modulename)) IN ('AMC', 'AMC RENEWAL')
+      JOIN approval_master_details detail
+        ON detail.approvalmasterid = flow.approvalmasterid
+       AND NOT detail.isdelete
+      WHERE am.amcid = $1
+        AND NOT am.isdeleted
+        AND NOT EXISTS (SELECT 1 FROM engineering_amc_workflow_step step WHERE step.amcid = am.amcid)
+        AND UPPER(TRIM(COALESCE(aa.fcstatus, 'Pending'))) = 'APPROVED'
+        AND UPPER(TRIM(COALESCE(aa.gmstatus, 'Pending'))) = 'APPROVED'
+        AND UPPER(TRIM(COALESCE(aa.rdstatus, 'Pending'))) = 'PENDING'
+        AND UPPER(TRIM(detail.approvertype)) = 'REGIONAL'
+        AND TRIM(detail.role) = $2::text
+        AND UPPER(TRIM(detail.approvaltype)) IN ('RD', 'RD-FC')
+        AND detail.ismandatory = TRUE
+    ) AS "allowed";
+  `, [amcID, userID]);
+  return result.rows[0]?.allowed === true;
+};
 // ===============Get AMC Approval Flow Helper
 const getAMCApprovalFlow = async (
   OrganizationID,
@@ -12777,8 +12815,41 @@ const getAllAMC = async (data) => {
       return access.error;
     }
 
+    // Legacy AMC rows have no workflow snapshot.  A Regional user selected
+    // for RD-FC in the active flow of their primary company must therefore
+    // be treated as the pending RD approver for that company's child hotels.
+    let isRegionalRDViewer = false;
+    if (OrganizationID) {
+      const regionalViewerResult = await pool.query(
+        `
+        SELECT EXISTS (
+          SELECT 1
+          FROM user_primary_organization primary_org
+          INNER JOIN approval_master flow
+            ON flow.organizationid = primary_org.organizationid
+           AND flow.isactive = TRUE
+           AND flow.isdelete = FALSE
+           AND UPPER(TRIM(flow.modulename)) IN ('AMC', 'AMC RENEWAL')
+          INNER JOIN approval_master_details detail
+            ON detail.approvalmasterid = flow.approvalmasterid
+           AND detail.isdelete = FALSE
+          WHERE primary_org.userid = $1
+            AND primary_org.organizationid = $2
+            AND primary_org.isactive = TRUE
+            AND primary_org.isdeleted = FALSE
+            AND UPPER(TRIM(detail.approvertype)) = 'REGIONAL'
+            AND TRIM(detail.role) = $1::text
+            AND UPPER(TRIM(detail.approvaltype)) IN ('RD', 'RD-FC')
+            AND detail.ismandatory = TRUE
+        ) AS "isRegionalRDViewer";
+        `,
+        [data.UserID, OrganizationID],
+      );
+      isRegionalRDViewer = regionalViewerResult.rows[0]?.isRegionalRDViewer === true;
+    }
+
     const approvalRole =
-      access.approvalRole;
+      isRegionalRDViewer ? "RD" : access.approvalRole;
 
     // AMC records without workflow snapshots use this legacy list reader.
     // A CEO may view all valid AMC records, but action authorization remains
@@ -12966,6 +13037,17 @@ const getAllAMC = async (data) => {
                 AND access_mapping.IsActive = TRUE
                 AND access_mapping.IsDeleted = FALSE
             )
+            OR (
+              ${isRegionalRDViewer ? "TRUE" : "FALSE"}
+              AND EXISTS (
+                SELECT 1
+                FROM user_primary_organization primary_org
+                WHERE primary_org.UserID = access_user.UserID
+                  AND primary_org.OrganizationID = COALESCE(om.ParentOrganizationID, om.OrganizationID)
+                  AND primary_org.IsActive = TRUE
+                  AND primary_org.IsDeleted = FALSE
+              )
+            )
           )
       )
     `;
@@ -12980,7 +13062,7 @@ const getAllAMC = async (data) => {
       OrganizationID !== null &&
       String(OrganizationID).trim() !== "";
 
-    if (access.globalView || !hasOrganizationId) {
+    if (access.globalView || !hasOrganizationId || isCEOListViewer || isRegionalRDViewer) {
       whereClause += `
     AND om.IsActive = TRUE
     AND om.ActivationStatus = TRUE
@@ -13105,6 +13187,13 @@ const getAllAMC = async (data) => {
     // ============================================================
     // APPROVER
     // ============================================================
+
+    if (isCEOListViewer && Status === "PENDING") {
+      whereClause += `
+        AND UPPER(COALESCE(current_stage.ApprovalRole, '')) = 'CEO'
+        AND UPPER(TRIM(COALESCE(current_stage.Status, 'Pending'))) = 'PENDING'
+      `;
+    }
 
     if (
       !isCEOListViewer &&
@@ -14373,14 +14462,22 @@ const getAMCById = async (data) => {
 
     // The AMC determines its organization.  Validate access against the
     // live mapping instead of accepting an organization selected by the UI.
-    await AMCWorkflow.getActor(pool, OrganizationID, data.UserID, AMCID);
+    let legacyRegionalAccess = false;
+    try {
+      await AMCWorkflow.getActor(pool, OrganizationID, data.UserID, AMCID);
+    } catch (error) {
+      legacyRegionalAccess =
+        error?.statusCode === 403 &&
+        await hasLegacyRegionalRDViewAccess(pool, AMCID, data.UserID);
+      if (!legacyRegionalAccess) throw error;
+    }
 
     const access = await resolveAMCAccess({
       UserID: data.UserID, UserType: data.UserType,
       DepartmentName: data.DepartmentName, OrganizationID,
     });
     if (access.error) return access.error;
-    const approvalRole = access.approvalRole;
+    const approvalRole = legacyRegionalAccess ? "RD" : access.approvalRole;
 
     // ============================================================
     // Approval Access Check
@@ -15208,9 +15305,19 @@ const processAMCApproval = async (data) => {
 
     // Resolve the target organization from the locked AMC and verify the
     // authenticated user's live access before either workflow implementation.
-    await AMCWorkflow.getActor(client, OrganizationID, UserID, AMCID);
+    let legacyRegionalAction = false;
+    try {
+      await AMCWorkflow.getActor(client, OrganizationID, UserID, AMCID);
+    } catch (error) {
+      legacyRegionalAction =
+        error?.statusCode === 403 &&
+        await hasLegacyRegionalRDViewAccess(client, AMCID, UserID);
+      if (!legacyRegionalAction) throw error;
+    }
 
-    const dynamicAction = await AMCWorkflow.applyAction(client, AMC, data);
+    const dynamicAction = legacyRegionalAction
+      ? null
+      : await AMCWorkflow.applyAction(client, AMC, data);
     if (dynamicAction) {
       await client.query("COMMIT");
       notifyCommittedAMCApproval({
@@ -15231,7 +15338,7 @@ const processAMCApproval = async (data) => {
       UserID, UserType: data.UserType,
       DepartmentName: data.DepartmentName, OrganizationID,
     }, client);
-    const approvalRole = access.approvalRole;
+    const approvalRole = legacyRegionalAction ? "RD" : access.approvalRole;
 
     if (!approvalRole) {
       await client.query("ROLLBACK");

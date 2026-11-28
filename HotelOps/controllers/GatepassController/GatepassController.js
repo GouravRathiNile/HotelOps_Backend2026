@@ -662,12 +662,10 @@ exports.getRGPTotalList = async (req, res) => {
 // ============================================================ Get RGP By ID
 exports.getRGPById = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id ?? "").trim();
 
     if (
-      !id ||
-      !Number.isInteger(Number(id)) ||
-      Number(id) <= 0
+      !/^[1-9]\d*$/.test(id)
     ) {
       throw new AppError(
         "RGP ID must be a valid positive integer",
@@ -677,7 +675,7 @@ exports.getRGPById = async (req, res) => {
 
     const result =
       await GatepassService.getRGPById({
-        RGPID: Number(id),
+        RGPID: id,
 
         // Trusted JWT
         UserID: req.user.UserID,

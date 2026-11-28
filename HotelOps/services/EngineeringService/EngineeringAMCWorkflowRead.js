@@ -11,6 +11,17 @@ const positiveID = (value,name) => {
 };
 const assignmentSQL = (step='s') => `(
     (${step}->>'approvertype'='REGIONAL' AND r.regionaleligible AND ${step}->>'assigneduserid'=$1::text)
+    OR (${step}->>'approvertype'='ROLE' AND ${step}->>'role'='RD' AND r.regionaleligible AND EXISTS (
+      SELECT 1 FROM approval_master am
+      JOIN approval_master_details d ON d.approvalmasterid=am.approvalmasterid AND NOT d.isdelete
+      -- RD-FC is assigned at the primary/company organization.  A pending
+      -- AMC from any child hotel therefore follows that company's flow.
+      WHERE am.organizationid=r.companyorganizationid AND UPPER(TRIM(am.modulename)) IN ('AMC','AMC RENEWAL')
+        AND am.isactive AND NOT am.isdelete
+        AND UPPER(TRIM(d.approvertype))='REGIONAL'
+        AND TRIM(d.role)=$1::text
+        AND UPPER(TRIM(d.approvaltype)) IN ('RD','RD-FC')
+        AND d.ismandatory=TRUE))
     OR (${step}->>'approvertype'='ROLE' AND ${step}->>'role'='RD' AND r.iscentralrd)
     OR (r.organizationaccess AND (
       (${step}->>'approvertype'='USER' AND ${step}->>'assigneduserid'=$1::text)
@@ -98,7 +109,7 @@ const buildQuery = (data={},list=false) => {
         positiveID(data.OrganizationID,'OrganizationID');
         values.push(data.OrganizationID);
         const param=`$${values.length}`;
-        conditions.push(`(r.organizationid=${param} OR (r.iscentralrd AND ${param}::bigint=${AMC_RD_ORGANIZATION_ID})
+        conditions.push(`(${listVisibilityBypass} OR r.organizationid=${param} OR (r.iscentralrd AND ${param}::bigint=${AMC_RD_ORGANIZATION_ID})
           OR (r.regionaleligible AND r.companyorganizationid=${param} AND ${assigned}))`);
         if (list && Number(data.OrganizationID)!==AMC_RD_ORGANIZATION_ID) {
             // Legacy RD global selection is distinct from selecting an unmapped hotel.
@@ -127,6 +138,13 @@ const buildQuery = (data={},list=false) => {
           OR EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s WHERE (s->>'ismandatory')::boolean
             AND ${assignmentSQL()} AND UPPER(s->>'status')=${param}
             AND (${param}<>'PENDING' OR s->>'stepid'=r.currentstep->>'stepid')))`);
+        if (ceoListViewer && status==='PENDING') {
+            conditions.push(`EXISTS(SELECT 1 FROM jsonb_array_elements(r.steps) s
+              WHERE (s->>'ismandatory')::boolean
+                AND ${amcApprovalStageSQL("s->>'approvaltype'")}='CEO'
+                AND UPPER(s->>'status')='PENDING'
+                AND s->>'stepid'=r.currentstep->>'stepid')`);
+        }
     }
     return {cte:base,where:' WHERE '+conditions.join(' AND '),values};
 };
